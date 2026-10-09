@@ -1,0 +1,16 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Gatekeeper.Api/Gatekeeper.Api.csproj" />
+    <Project Path="src/Gatekeeper.Application/Gatekeeper.Application.csproj" />
+    <Project Path="src/Gatekeeper.Cli/Gatekeeper.Cli.csproj" />
+    <Project Path="src/Gatekeeper.Domain/Gatekeeper.Domain.csproj" />
+    <Project Path="src/Gatekeeper.Infrastructure/Gatekeeper.Infrastructure.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Gatekeeper.Api.Tests/Gatekeeper.Api.Tests.csproj" />
+    <Project Path="tests/Gatekeeper.Application.Tests/Gatekeeper.Application.Tests.csproj" />
+    <Project Path="tests/Gatekeeper.Cli.Tests/Gatekeeper.Cli.Tests.csproj" />
+    <Project Path="tests/Gatekeeper.Domain.Tests/Gatekeeper.Domain.Tests.csproj" />
+    <Project Path="tests/Gatekeeper.Store.Contract.Tests/Gatekeeper.Store.Contract.Tests.csproj" />
+  </Folder>
+</Solution>
