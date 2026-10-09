@@ -1,0 +1,24 @@
+# .NET
+bin/
+obj/
+*.user
+*.suo
+.vs/
+TestResults/
+coverage/
+*.nupkg
+
+# IDE
+.idea/
+.vscode/
+
+# Secrets and local config
+.env
+.env.*
+appsettings.Local.json
+*.pfx
+*.key
+*.pem
+
+# Claude Code local state
+.claude/settings.local.json

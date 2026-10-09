@@ -1,0 +1,28 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      # Skips cleanly until a solution exists (slice 1).
+      - name: Build and test
+        run: |
+          if ls *.sln *.slnx >/dev/null 2>&1; then
+            dotnet restore
+            dotnet build --no-restore -warnaserror
+            dotnet test --no-build
+          else
+            echo "No solution yet, skipping."
+          fi
