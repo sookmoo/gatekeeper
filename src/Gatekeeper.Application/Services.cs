@@ -42,7 +42,6 @@ public sealed class RoleService(IAppRepository apps, IRoleRepository roles)
     public async Task<Role> CreateAsync(Guid appId, string? name, string? description)
     {
         Validation.RoleFields(name, description);
-        await RequireApp(appId);
         return await roles.AddAsync(new Role(Guid.NewGuid(), appId, name!, description ?? ""));
     }
 
@@ -65,7 +64,7 @@ public sealed class RoleService(IAppRepository apps, IRoleRepository roles)
     }
 }
 
-public sealed class UserService(IUserRepository users, IRoleRepository roles)
+public sealed class UserService(IUserRepository users)
 {
     public Task<IReadOnlyList<User>> ListAsync(bool? active = null, string? username = null) =>
         users.ListAsync(active, username);
@@ -80,7 +79,7 @@ public sealed class UserService(IUserRepository users, IRoleRepository roles)
         return users.AddAsync(new User(Guid.NewGuid(), username!, email!, displayName ?? "", isActive, now, now));
     }
 
-    public async Task<User> UpdateAsync(Guid id, string? username, string? email, string? displayName, bool isActive)
+    public async Task<User> UpdateAsync(Guid id, string? username, string? email, string? displayName, bool? isActive)
     {
         Validation.UserFields(username, email, displayName);
         var existing = await GetAsync(id);
@@ -89,7 +88,7 @@ public sealed class UserService(IUserRepository users, IRoleRepository roles)
             Username = username!,
             Email = email!,
             DisplayName = displayName ?? "",
-            IsActive = isActive,
+            IsActive = isActive ?? existing.IsActive,
             UpdatedAt = DateTimeOffset.UtcNow,
         };
         return await users.UpdateAsync(updated) ?? throw new NotFoundException($"User {id} not found.");
@@ -108,9 +107,7 @@ public sealed class UserService(IUserRepository users, IRoleRepository roles)
 
     public async Task AssignRoleAsync(Guid userId, Guid roleId)
     {
-        await GetAsync(userId);
-        if (await roles.GetAsync(roleId) is null) throw new NotFoundException($"Role {roleId} not found.");
-        await users.AssignRoleAsync(userId, roleId);
+        await users.AssignRoleAsync(userId, roleId); // store verifies user and role atomically
     }
 
     public async Task RevokeRoleAsync(Guid userId, Guid roleId)

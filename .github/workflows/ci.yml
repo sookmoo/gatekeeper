@@ -19,7 +19,7 @@ jobs:
       # Skips cleanly until a solution exists (slice 1).
       - name: Build and test
         run: |
-          if ls *.sln *.slnx >/dev/null 2>&1; then
+          if compgen -G "*.sln" >/dev/null || compgen -G "*.slnx" >/dev/null; then
             dotnet restore
             dotnet build --no-restore -warnaserror
             dotnet test --no-build

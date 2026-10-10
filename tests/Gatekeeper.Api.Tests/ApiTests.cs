@@ -107,6 +107,26 @@ public class ApiTests : IClassFixture<WebApplicationFactory<Program>>
             (await _http.PostAsJsonAsync($"/v1/applications/{Guid.NewGuid()}/roles", new { name = "x" })).StatusCode);
 
     [Fact]
+    public async Task Put_without_isActive_keeps_existing_value()
+    {
+        var name = Unique("user");
+        var user = await Create("/v1/users", new { username = name, email = $"{name}@example.com", isActive = false });
+        var id = user.GetProperty("id").GetGuid();
+        var put = await _http.PutAsJsonAsync($"/v1/users/{id}", new { username = name, email = $"{name}@example.com" });
+        Assert.Equal(HttpStatusCode.OK, put.StatusCode);
+        Assert.False((await put.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("isActive").GetBoolean());
+    }
+
+    [Fact]
+    public async Task Malformed_json_returns_400_problem_details()
+    {
+        var response = await _http.PostAsync("/v1/users",
+            new StringContent("{not json", System.Text.Encoding.UTF8, "application/json"));
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("application/problem+json", response.Content.Headers.ContentType?.MediaType);
+    }
+
+    [Fact]
     public async Task Openapi_document_is_served()
     {
         var doc = await _http.GetFromJsonAsync<JsonElement>("/openapi/v1.json");

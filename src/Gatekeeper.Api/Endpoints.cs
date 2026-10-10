@@ -54,7 +54,7 @@ public static class Endpoints
         });
         users.MapGet("/{id:guid}", (Guid id, UserService s) => s.GetAsync(id));
         users.MapPut("/{id:guid}", (Guid id, UserRequest r, UserService s) =>
-            s.UpdateAsync(id, r.Username, r.Email, r.DisplayName, r.IsActive ?? true));
+            s.UpdateAsync(id, r.Username, r.Email, r.DisplayName, r.IsActive));
         users.MapDelete("/{id:guid}", async (Guid id, UserService s) =>
         {
             await s.DeleteAsync(id);

@@ -18,7 +18,7 @@ public class ServiceTests
         var userRepo = new InMemoryUserRepository(s);
         _apps = new AppService(appRepo);
         _roles = new RoleService(appRepo, roleRepo);
-        _users = new UserService(userRepo, roleRepo);
+        _users = new UserService(userRepo);
     }
 
     [Fact]

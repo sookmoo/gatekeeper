@@ -37,8 +37,9 @@ public static class CliApp
                 try
                 {
                     var baseUrl = parse.GetValue(url) ?? Environment.GetEnvironmentVariable("GATEKEEPER_URL") ?? DefaultUrl;
-                    if (!Uri.TryCreate(baseUrl, UriKind.Absolute, out var uri))
-                        throw new CliException(1, $"Invalid URL '{baseUrl}'.");
+                    if (!Uri.TryCreate(baseUrl, UriKind.Absolute, out var uri)
+                        || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
+                        throw new CliException(1, $"Invalid URL '{baseUrl}': expected http:// or https://.");
                     await run(new Ctx(parse, new ApiClient(httpFactory(uri)), parse.GetValue(json), stdout));
                     return 0;
                 }
@@ -46,6 +47,13 @@ public static class CliApp
                 {
                     await stderr.WriteLineAsync($"error: {ex.Message}");
                     return ex.ExitCode;
+                }
+                catch (Exception ex) when (ex is JsonException or InvalidOperationException or KeyNotFoundException
+                                               or FormatException or NotSupportedException)
+                {
+                    // The server answered with something this client does not understand.
+                    await stderr.WriteLineAsync($"error: unexpected response from server ({ex.GetType().Name}).");
+                    return 1;
                 }
             });
             return c;
