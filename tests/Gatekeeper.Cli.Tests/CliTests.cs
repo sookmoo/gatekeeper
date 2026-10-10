@@ -91,6 +91,16 @@ public class CliTests : IClassFixture<WebApplicationFactory<Program>>
         Assert.Equal("Orig", root.GetProperty("displayName").GetString());
     }
 
+    [Theory]
+    [InlineData("file:///etc/passwd")]
+    [InlineData("ftp://example.com")]
+    public async Task Non_http_url_exits_1(string url)
+    {
+        var r = await Gk("app", "list", "--url", url);
+        Assert.Equal(1, r.Code);
+        Assert.Contains("http", r.Err);
+    }
+
     [Fact]
     public async Task Unreachable_server_exits_4()
     {

@@ -8,10 +8,10 @@ public static partial class Validation
     public const int MaxTextLength = 256;
 
     // Lowercase slug: letters, digits, '.', '_', '-'; must start with a letter or digit.
-    [GeneratedRegex(@"^[a-z0-9][a-z0-9._-]*$")]
+    [GeneratedRegex(@"\A[a-z0-9][a-z0-9._-]*\z")]
     private static partial Regex Slug();
 
-    [GeneratedRegex(@"^[^@\s]+@[^@\s]+\.[^@\s]+$")]
+    [GeneratedRegex(@"\A[^@\s]+@[^@\s]+\.[^@\s]+\z")]
     private static partial Regex EmailShape();
 
     public static void AppName(string? name) => Throw(Check(("name", SlugError(name))));
@@ -31,9 +31,10 @@ public static partial class Validation
     {
         if (string.IsNullOrWhiteSpace(value)) return "is required.";
         if (value.Length > MaxNameLength) return $"must be at most {MaxNameLength} characters.";
-        return Slug().IsMatch(value)
-            ? null
-            : "must be lowercase letters, digits, '.', '_' or '-', starting with a letter or digit.";
+        if (!Slug().IsMatch(value))
+            return "must be lowercase letters, digits, '.', '_' or '-', starting with a letter or digit.";
+        // The CLI accepts a name or an id; a name that parses as a GUID would be ambiguous.
+        return Guid.TryParse(value, out _) ? "must not look like a GUID." : null;
     }
 
     private static string? EmailError(string? value)

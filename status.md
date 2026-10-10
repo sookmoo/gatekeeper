@@ -23,16 +23,19 @@ Gatekeeper: a central repository for user and role management for multiple servi
 - Repo prepared locally 2026-10-09: `git init -b main`, origin = https://github.com/sookmoo/gatekeeper.git, .gitignore, .gitattributes, .editorconfig, placeholder CI workflow. Nothing committed or pushed yet.
 - .NET SDK 10.0.111 is installed locally.
 - Pending: front-end language (after slice 1).
+- Usernames stay lowercase slugs (user decision 2026-10-10); uniqueness remains case-insensitive.
+- Slugs (app, role, username) must not look like GUIDs, because the CLI accepts name or id.
+- Planner note (user): add PATCH (partial update) alongside GET/POST/PUT in the API at some point; the CLI `update` commands currently emulate it with GET + PUT.
 
 ## Open questions
-- Git `user.name`/`user.email` are not configured; needed before the first commit.
 - Auth model for external systems (tokens/JWT, API keys, OIDC).
 - Git remote/branching conventions; deadline; user/system scale.
 
-## Slice 1 progress (branch `feat/slice-1-crud`, uncommitted)
-- Done: solution (Domain/Application/Infrastructure/Api/Cli + 5 test projects), in-memory store, REST API under /v1, `gk` CLI, `docs/openapi.json`, README. `dotnet build -warnaserror` clean; 45 tests pass.
+## Slice 1 progress (PR #1, branch `feat/slice-1-crud`)
+- Done: solution, in-memory store, REST API under /v1, `gk` CLI, `docs/openapi.json`, README; PR #1 open.
+- QA and security reviews done (2026-10-10). Fixed on the branch: atomic parent checks in the repositories (role->app, assignment->user/role, contract tests added), loopback-only startup guard, AllowedHosts restricted, `\z` regex anchors, GUID-shaped slugs rejected, global exception handler + 400 for malformed JSON, PUT keeps `isActive` when omitted, CLI maps malformed responses to exit 1 and accepts only http(s) URLs. 86 tests pass.
+- Deferred to the auth/Postgres slices: reject control/bidi characters and escape CLI output; request body size limit; pagination and rate limiting; https required for non-loopback CLI URLs; CI hardening (pin action SHAs, `persist-credentials: false`, `global.json`, lock files); central package management; trim/normalise email.
 - Naming: the application entity is `App` in code (avoids clash with the `Gatekeeper.Application` namespace); API path is `/applications`.
-- Remaining: QA/security agent pass, commit + push + PR (needs git identity and the GitHub repo).
 
 ## Next action
-Review slice 1, set git identity, create the GitHub repo, then commit/push and open the PR. After that: slice 2 (Postgres store).
+Merge PR #1 once CI is green, then slice 2 (Postgres store; install Podman first).

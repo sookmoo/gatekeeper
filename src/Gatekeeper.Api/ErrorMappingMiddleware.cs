@@ -16,6 +16,10 @@ public sealed class ErrorMappingMiddleware(RequestDelegate next)
             await Results.ValidationProblem(
                 ex.Errors.ToDictionary(e => e.Key, e => new[] { e.Value })).ExecuteAsync(context);
         }
+        catch (BadHttpRequestException ex)
+        {
+            await Results.Problem(ex.Message, statusCode: StatusCodes.Status400BadRequest).ExecuteAsync(context);
+        }
         catch (NotFoundException ex)
         {
             await Results.Problem(ex.Message, statusCode: StatusCodes.Status404NotFound).ExecuteAsync(context);

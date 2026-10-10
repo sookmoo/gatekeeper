@@ -4,6 +4,8 @@ namespace Gatekeeper.Application;
 
 // Contract for all stores (in-memory now, Postgres later). Uniqueness violations throw
 // ConflictException; missing rows yield null/false. Deletes cascade to dependents.
+// Writes that reference a parent (role -> app, assignment -> user/role) verify the parent
+// atomically with the write and throw NotFoundException if it is gone (FK in Postgres).
 
 public interface IAppRepository
 {
@@ -31,7 +33,7 @@ public interface IUserRepository
     Task<User?> UpdateAsync(User user);
     Task<bool> DeleteAsync(Guid id);
 
-    /// <summary>Idempotent. Both user and role must exist (caller checks).</summary>
+    /// <summary>Idempotent. Throws NotFoundException if the user or role does not exist.</summary>
     Task AssignRoleAsync(Guid userId, Guid roleId);
     Task<bool> RevokeRoleAsync(Guid userId, Guid roleId);
     Task<IReadOnlyList<Role>> ListRolesAsync(Guid userId, Guid? appId = null);

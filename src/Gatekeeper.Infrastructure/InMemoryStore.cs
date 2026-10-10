@@ -78,6 +78,7 @@ public sealed class InMemoryRoleRepository(InMemoryStore s) : IRoleRepository
     {
         lock (s.Gate)
         {
+            if (!s.Apps.ContainsKey(role.AppId)) throw new NotFoundException($"Application {role.AppId} not found.");
             EnsureNameFree(role);
             s.Roles[role.Id] = role;
             return Task.FromResult(role);
@@ -175,7 +176,12 @@ public sealed class InMemoryUserRepository(InMemoryStore s) : IUserRepository
 
     public Task AssignRoleAsync(Guid userId, Guid roleId)
     {
-        lock (s.Gate) s.Assignments.Add((userId, roleId));
+        lock (s.Gate)
+        {
+            if (!s.Users.ContainsKey(userId)) throw new NotFoundException($"User {userId} not found.");
+            if (!s.Roles.ContainsKey(roleId)) throw new NotFoundException($"Role {roleId} not found.");
+            s.Assignments.Add((userId, roleId));
+        }
         return Task.CompletedTask;
     }
 
@@ -190,7 +196,8 @@ public sealed class InMemoryUserRepository(InMemoryStore s) : IUserRepository
             return Task.FromResult<IReadOnlyList<Role>>(
                 s.Assignments
                     .Where(a => a.UserId == userId)
-                    .Select(a => s.Roles[a.RoleId])
+                    .Select(a => s.Roles.GetValueOrDefault(a.RoleId))
+                    .OfType<Role>()
                     .Where(r => appId is null || r.AppId == appId)
                     .OrderBy(r => r.Name)
                     .ToList());

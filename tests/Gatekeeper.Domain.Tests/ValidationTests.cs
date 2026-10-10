@@ -20,6 +20,18 @@ public class ValidationTests
     public void AppName_rejects_invalid(string? name) =>
         Assert.Contains("name", Assert.Throws<ValidationException>(() => Validation.AppName(name)).Errors.Keys);
 
+    [Theory]
+    [InlineData("admin\n")]
+    [InlineData("3f2504e0-4f89-11d3-9a0c-0305e82c3301")]
+    [InlineData("3f2504e04f8911d39a0c0305e82c3301")]
+    public void Slug_rejects_trailing_newline_and_guid_lookalikes(string name) =>
+        Assert.Throws<ValidationException>(() => Validation.AppName(name));
+
+    [Fact]
+    public void Email_rejects_trailing_newline() =>
+        Assert.Contains("email",
+            Assert.Throws<ValidationException>(() => Validation.UserFields("alice", "a@b.co\n", null)).Errors.Keys);
+
     [Fact]
     public void AppName_rejects_too_long() =>
         Assert.Throws<ValidationException>(() => Validation.AppName(new string('a', 65)));

@@ -106,6 +106,25 @@ public abstract class StoreContract
     }
 
     [Fact]
+    public async Task Role_for_missing_app_is_rejected()
+    {
+        var (_, roles, _) = CreateStore();
+        await Assert.ThrowsAsync<NotFoundException>(() => roles.AddAsync(NewRole(NewApp("ghost"), "admin")));
+    }
+
+    [Fact]
+    public async Task Assignment_for_missing_user_or_role_is_rejected_and_leaves_nothing()
+    {
+        var (apps, roles, users) = CreateStore();
+        var app = await apps.AddAsync(NewApp("a"));
+        var role = await roles.AddAsync(NewRole(app, "admin"));
+        var user = await users.AddAsync(NewUser("alice"));
+        await Assert.ThrowsAsync<NotFoundException>(() => users.AssignRoleAsync(Guid.NewGuid(), role.Id));
+        await Assert.ThrowsAsync<NotFoundException>(() => users.AssignRoleAsync(user.Id, Guid.NewGuid()));
+        Assert.Empty(await users.ListRolesAsync(user.Id));
+    }
+
+    [Fact]
     public async Task Deleting_role_user_or_app_removes_assignments()
     {
         var (apps, roles, users) = CreateStore();
