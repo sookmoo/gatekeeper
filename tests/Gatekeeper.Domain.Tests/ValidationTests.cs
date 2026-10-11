@@ -27,6 +27,53 @@ public class ValidationTests
     public void Slug_rejects_trailing_newline_and_guid_lookalikes(string name) =>
         Assert.Throws<ValidationException>(() => Validation.AppName(name));
 
+    [Theory]
+    [InlineData("a\0b")]
+    [InlineData("a\u001bb")]
+    [InlineData("a\r\nb")]
+    [InlineData("a\u202eb")]
+    [InlineData("\0")]
+    public void Free_text_rejects_control_characters_and_invalid_unicode(string text)
+    {
+        Assert.Contains("displayName",
+            Assert.Throws<ValidationException>(() => Validation.UserFields("alice", "a@b.co", text)).Errors.Keys);
+        Assert.Contains("description",
+            Assert.Throws<ValidationException>(() => Validation.RoleFields("admin", text)).Errors.Keys);
+    }
+
+    [Fact]
+    public void Free_text_rejects_lone_surrogates()
+    {
+        // Built at runtime: xunit would replace a lone surrogate in InlineData with U+FFFD.
+        var text = "a" + (char)0xD800 + "b";
+        Assert.Contains("displayName",
+            Assert.Throws<ValidationException>(() => Validation.UserFields("alice", "a@b.co", text)).Errors.Keys);
+        Assert.True(Validation.IsCleanText("a😀b"));
+        Assert.False(Validation.IsCleanText("a\ude00b"));
+    }
+
+    [Theory]
+    [InlineData("emoji 😀🎉 日本語 ñ")]
+    [InlineData("")]
+    [InlineData("  padded  ")]
+    public void Free_text_accepts_normal_unicode(string text) =>
+        Validation.UserFields("alice", "a@b.co", text);
+
+    [Theory]
+    [InlineData("émile@example.com")]
+    [InlineData("a@exämple.com")]
+    [InlineData("a b@example.com")]
+    [InlineData("a@b")]
+    [InlineData("a@@b.co")]
+    [InlineData("a\0@b.co")]
+    public void Email_rejects_non_ascii_and_malformed(string email) =>
+        Assert.Contains("email", Assert.Throws<ValidationException>(() => Validation.UserFields("alice", email, null)).Errors.Keys);
+
+    [Theory]
+    [InlineData("alice@example.com")]
+    [InlineData("A.B+tag@Sub.Example.COM")]
+    public void Email_accepts_ascii(string email) => Validation.UserFields("alice", email, null);
+
     [Fact]
     public void Email_rejects_trailing_newline() =>
         Assert.Contains("email",

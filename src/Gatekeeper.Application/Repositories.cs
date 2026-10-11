@@ -38,3 +38,9 @@ public interface IUserRepository
     Task<bool> RevokeRoleAsync(Guid userId, Guid roleId);
     Task<IReadOnlyList<Role>> ListRolesAsync(Guid userId, Guid? appId = null);
 }
+
+/// <summary>Reports whether the backing store is reachable (used by /health/ready).</summary>
+public interface IReadinessProbe
+{
+    Task<bool> IsReadyAsync(CancellationToken ct = default);
+}

@@ -1,3 +1,5 @@
+using System.Buffers;
+using System.Text;
 using System.Text.RegularExpressions;
 
 namespace Gatekeeper.Domain;
@@ -11,7 +13,8 @@ public static partial class Validation
     [GeneratedRegex(@"\A[a-z0-9][a-z0-9._-]*\z")]
     private static partial Regex Slug();
 
-    [GeneratedRegex(@"\A[^@\s]+@[^@\s]+\.[^@\s]+\z")]
+    // ASCII only: printable local part, dotted ASCII domain. Keeps case folding identical in every store.
+    [GeneratedRegex(@"\A[!-?A-~]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+\z")]
     private static partial Regex EmailShape();
 
     public static void AppName(string? name) => Throw(Check(("name", SlugError(name))));
@@ -46,9 +49,31 @@ public static partial class Validation
 
     private static string? Length(string? value, int max, bool required)
     {
-        if (string.IsNullOrWhiteSpace(value)) return required ? "is required." : null;
-        return value.Length > max ? $"must be at most {max} characters." : null;
+        if (value is null) return required ? "is required." : null;
+        if (required && string.IsNullOrWhiteSpace(value)) return "is required.";
+        if (value.Length > max) return $"must be at most {max} characters.";
+        return IsCleanText(value) ? null : "must not contain control characters or invalid Unicode.";
     }
+
+    /// <summary>
+    /// True if the text is well-formed UTF-16 with no control characters (NUL, ESC, CR/LF, ...) and
+    /// no bidirectional override/isolate characters. Postgres cannot store NUL, and the rest can be
+    /// used to spoof terminal or log output.
+    /// </summary>
+    public static bool IsCleanText(string value)
+    {
+        for (var i = 0; i < value.Length;)
+        {
+            if (Rune.DecodeFromUtf16(value.AsSpan(i), out var rune, out var consumed) != OperationStatus.Done)
+                return false;
+            if (Rune.IsControl(rune) || IsBidiControl(rune.Value)) return false;
+            i += consumed;
+        }
+        return true;
+    }
+
+    private static bool IsBidiControl(int c) =>
+        c is 0x061C or 0x200E or 0x200F or (>= 0x202A and <= 0x202E) or (>= 0x2066 and <= 0x2069);
 
     private static Dictionary<string, string> Check(params (string Field, string? Error)[] checks) =>
         checks.Where(c => c.Error is not null).ToDictionary(c => c.Field, c => c.Error!);

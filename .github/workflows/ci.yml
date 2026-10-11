@@ -11,12 +11,28 @@ permissions:
 jobs:
   build-test:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: ci-only
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # Admin connection for the Postgres contract/API tests (each test creates its own database).
+      GATEKEEPER_TEST_PG: Host=localhost;Port=5432;Username=postgres;Password=ci-only;Database=postgres
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 10.0.x
-      # Skips cleanly until a solution exists (slice 1).
+      # Skips cleanly until a solution exists.
       - name: Build and test
         run: |
           if compgen -G "*.sln" >/dev/null || compgen -G "*.slnx" >/dev/null; then
@@ -26,3 +42,7 @@ jobs:
           else
             echo "No solution yet, skipping."
           fi
+      - name: Check migrations are up to date with the model
+        run: |
+          dotnet tool restore
+          dotnet tool run dotnet-ef migrations has-pending-model-changes --project src/Gatekeeper.Infrastructure.Postgres

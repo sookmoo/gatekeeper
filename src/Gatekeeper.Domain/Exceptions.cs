@@ -10,4 +10,10 @@ public sealed class ValidationException(IReadOnlyDictionary<string, string> erro
 
 public sealed class NotFoundException(string message) : GatekeeperException(message);
 
+/// <summary>The backing store cannot be reached or is overloaded; the caller may retry later.</summary>
+public sealed class StoreUnavailableException(string message, Exception? inner = null) : GatekeeperException(message)
+{
+    public Exception? Cause { get; } = inner;
+}
+
 public sealed class ConflictException(string message) : GatekeeperException(message);

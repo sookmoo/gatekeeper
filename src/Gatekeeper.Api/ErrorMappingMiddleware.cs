@@ -20,6 +20,12 @@ public sealed class ErrorMappingMiddleware(RequestDelegate next)
         {
             await Results.Problem(ex.Message, statusCode: StatusCodes.Status400BadRequest).ExecuteAsync(context);
         }
+        catch (StoreUnavailableException ex)
+        {
+            context.RequestServices.GetRequiredService<ILogger<ErrorMappingMiddleware>>()
+                .LogError(ex.Cause ?? ex, "Data store unavailable.");
+            await Results.Problem(ex.Message, statusCode: StatusCodes.Status503ServiceUnavailable).ExecuteAsync(context);
+        }
         catch (NotFoundException ex)
         {
             await Results.Problem(ex.Message, statusCode: StatusCodes.Status404NotFound).ExecuteAsync(context);

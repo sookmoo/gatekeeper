@@ -221,5 +221,11 @@ public static class InMemoryServiceCollectionExtensions
         .AddSingleton<InMemoryStore>()
         .AddSingleton<IAppRepository, InMemoryAppRepository>()
         .AddSingleton<IRoleRepository, InMemoryRoleRepository>()
-        .AddSingleton<IUserRepository, InMemoryUserRepository>();
+        .AddSingleton<IUserRepository, InMemoryUserRepository>()
+        .AddSingleton<IReadinessProbe, AlwaysReady>();
+}
+
+internal sealed class AlwaysReady : IReadinessProbe
+{
+    public Task<bool> IsReadyAsync(CancellationToken ct = default) => Task.FromResult(true);
 }

@@ -67,7 +67,10 @@ public sealed class RoleService(IAppRepository apps, IRoleRepository roles)
 public sealed class UserService(IUserRepository users)
 {
     public Task<IReadOnlyList<User>> ListAsync(bool? active = null, string? username = null) =>
-        users.ListAsync(active, username);
+        // No valid username contains control characters or malformed Unicode, so such a filter matches nothing.
+        username is not null && !Validation.IsCleanText(username)
+            ? Task.FromResult<IReadOnlyList<User>>([])
+            : users.ListAsync(active, username);
 
     public async Task<User> GetAsync(Guid id) =>
         await users.GetAsync(id) ?? throw new NotFoundException($"User {id} not found.");
@@ -75,7 +78,7 @@ public sealed class UserService(IUserRepository users)
     public Task<User> CreateAsync(string? username, string? email, string? displayName, bool isActive = true)
     {
         Validation.UserFields(username, email, displayName);
-        var now = DateTimeOffset.UtcNow;
+        var now = Clock.UtcNowMicros();
         return users.AddAsync(new User(Guid.NewGuid(), username!, email!, displayName ?? "", isActive, now, now));
     }
 
@@ -89,7 +92,7 @@ public sealed class UserService(IUserRepository users)
             Email = email!,
             DisplayName = displayName ?? "",
             IsActive = isActive ?? existing.IsActive,
-            UpdatedAt = DateTimeOffset.UtcNow,
+            UpdatedAt = Clock.UtcNowMicros(),
         };
         return await users.UpdateAsync(updated) ?? throw new NotFoundException($"User {id} not found.");
     }
