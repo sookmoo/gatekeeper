@@ -34,13 +34,14 @@ Gatekeeper: a central repository for user and role management for multiple servi
 ## Slice 1: done (PRs #1 and #2 merged 2026-10-10)
 In-memory store, REST API under /v1, `gk` CLI, OpenAPI contract, QA + security review fixes. The application entity is `App` in code (avoids clash with the `Gatekeeper.Application` namespace); API path is `/applications`.
 
-## Slice 2: PostgreSQL store (branch `feat/slice-2-postgres`, in progress)
-- Done: `Gatekeeper.Infrastructure.Postgres` (EF Core mapping, `InitialCreate` migration, repositories with constraint-to-exception translation), `Store:Provider` switch, `migrate` command, `/health/ready`, `scripts/dev-db.sh` and `scripts/test-pg.sh`, CI with a Postgres service and a migration drift check. Contract suite runs against both stores (race tests included). 106 tests pass with Postgres, Postgres tests show as skipped without `GATEKEEPER_TEST_PG`.
-- Manually verified: migrate, persistence across API restart, cascade on app delete, fail-fast without a connection string.
-- Remaining: PR, independent qa + security review of the Postgres adapter (focus: connection string handling, least-privilege DB role for app vs migrator).
+## Slice 2: PostgreSQL store (branch `feat/slice-2-postgres`, reviews done, PR not yet opened)
+- Done: `Gatekeeper.Infrastructure.Postgres` (EF Core, `InitialCreate` migration, repositories), `Store:Provider` switch, `migrate` command, `/health/ready`, dev/test scripts, CI Postgres service + migration drift check.
+- QA + security review fixes applied (2026-10-11): separate owner (migrations) and app (data-only) roles with tests that run the stores as the app role; NUL/control/bidi/invalid-UTF-16 rejected in free text; ASCII-only emails; microsecond timestamps; username-before-email and user-before-role error precedence match in both stores; connection failures become `StoreUnavailableException` -> 503 (CLI exit 4); `migrate` fails cleanly (exit 1, no arguments allowed); `/health/ready` logs failures and checks pending migrations; EF log levels reduced; TLS guidance in README.
+- Tests: 153 pass with Postgres (`scripts/test-pg.sh`); without `GATEKEEPER_TEST_PG` the Postgres tests show as skipped. QA parity tests (in-memory vs Postgres) are kept.
+- Manually verified with the real roles: migrate as owner, serve as app, DDL refused for the app role, DB-down gives 503 and recovery, migrate failure paths.
 
 ## Deferred hardening (from slice 1 reviews)
-Reject control/bidi characters and escape CLI output; request body size limit; pagination and rate limiting; https required for non-loopback CLI URLs; CI hardening (pin action SHAs, `persist-credentials: false`, `global.json`, lock files); central package management; trim/normalise email; username filter on Postgres relies on citext parameter typing (covered by tests).
+Escape control characters in CLI output; request body size limit; pagination and rate limiting; https required for non-loopback CLI URLs; CI hardening (pin action SHAs, `persist-credentials: false`, `global.json`, lock files); central package management; paging + cancellation tokens (before slice 4); unbounded lists today.
 
 ## Planner backlog (user ideas, not analysed yet)
 1. Local Gatekeeper instances for systems that implement Gatekeeper, with a central master Gatekeeper remaining the source of truth (federated/edge deployment, replication or caching).
@@ -48,4 +49,4 @@ Reject control/bidi characters and escape CLI output; request body size limit; p
 3. PATCH (partial update) alongside GET/POST/PUT in the API; the CLI `update` commands currently emulate it with GET + PUT.
 
 ## Next action
-Open the slice 2 PR, then run the independent qa and security reviews of the Postgres adapter. After merge: slice 3 (Containerfile, Quadlet, compose for dev, image build in CI), then slice 4 (passwords, login, JWT + JWKS, caller identities).
+Open the slice 2 PR (needs the user's go-ahead to push). Then slice 3 (containers). Security notes for slice 3: keep `LoopbackGuard` but add an explicit in-container opt-in, run `migrate` as a separate one-shot job with the owner credentials, passwords via podman secrets, digest-pinned non-root images, TLS to non-local databases. Slice 4 (auth): paging/cancellation first, audit table with INSERT-only rights, protect `/health/ready`, consider 409 messages as an enumeration channel.

@@ -4,26 +4,35 @@ using Gatekeeper.Infrastructure;
 using Gatekeeper.Infrastructure.Postgres;
 
 // `Gatekeeper.Api migrate` is a one-off admin step: apply database migrations, then exit.
+// It uses ConnectionStrings:GatekeeperMigrations (an owner role); serving uses ConnectionStrings:Gatekeeper
+// (a role with data access only), so the running service never holds DDL rights.
+if (args.Length > 1 && args[0] == "migrate") return Fail("'migrate' takes no arguments.");
 var migrateOnly = args is ["migrate"];
 var builder = WebApplication.CreateBuilder(migrateOnly ? [] : args);
+if (migrateOnly)
+{
+    // EF logs the expected "history table does not exist yet" probe on an empty database as an error.
+    builder.Logging.AddFilter("Microsoft.EntityFrameworkCore.Database.Command", LogLevel.None);
+    builder.Logging.AddFilter("Microsoft.EntityFrameworkCore.Database.Connection", LogLevel.None);
+}
 
 var provider = builder.Configuration["Store:Provider"] ?? "InMemory";
 switch (provider)
 {
     case "InMemory":
-        if (migrateOnly) throw new InvalidOperationException("Nothing to migrate: Store:Provider is InMemory.");
+        if (migrateOnly) return Fail("Nothing to migrate: Store:Provider is InMemory.");
         builder.Services.AddInMemoryStore();
         break;
     case "Postgres":
-        var connection = builder.Configuration.GetConnectionString("Gatekeeper");
+        var setting = migrateOnly ? "GatekeeperMigrations" : "Gatekeeper";
+        var connection = builder.Configuration.GetConnectionString(setting);
         if (string.IsNullOrWhiteSpace(connection))
-            throw new InvalidOperationException(
-                "Store:Provider is Postgres but ConnectionStrings:Gatekeeper is not set " +
-                "(use the ConnectionStrings__Gatekeeper environment variable).");
+            return Fail($"Store:Provider is Postgres but ConnectionStrings:{setting} is not set " +
+                        $"(use the ConnectionStrings__{setting} environment variable).");
         builder.Services.AddPostgresStore(connection);
         break;
     default:
-        throw new InvalidOperationException($"Unknown Store:Provider '{provider}'. Use InMemory or Postgres.");
+        return Fail($"Unknown Store:Provider '{provider}'. Use InMemory or Postgres.");
 }
 
 builder.Services
@@ -37,9 +46,17 @@ var app = builder.Build();
 
 if (migrateOnly)
 {
-    await PostgresStoreExtensions.MigrateAsync(app.Services);
-    Console.WriteLine("Migrations applied.");
-    return;
+    try
+    {
+        await PostgresStoreExtensions.MigrateAsync(app.Services);
+        Console.WriteLine("Migrations applied.");
+        return 0;
+    }
+    catch (Exception ex)
+    {
+        // Npgsql messages do not include the password.
+        return Fail($"Migration failed: {ex.GetType().Name}: {ex.Message}");
+    }
 }
 
 // Registered in every environment so unhandled errors never leak stack traces or headers.
@@ -56,5 +73,12 @@ app.MapApi();
 await app.StartAsync();
 LoopbackGuard.EnsureLoopbackOnly(app);
 await app.WaitForShutdownAsync();
+return 0;
+
+static int Fail(string message)
+{
+    Console.Error.WriteLine($"error: {message}");
+    return 1;
+}
 
 public partial class Program;

@@ -22,4 +22,8 @@
     <ProjectReference Include="..\..\src\Gatekeeper.Infrastructure.Postgres\Gatekeeper.Infrastructure.Postgres.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Compile Include="..\Shared\PgTestDatabase.cs" Link="PgTestDatabase.cs" />
+  </ItemGroup>
+
 </Project>

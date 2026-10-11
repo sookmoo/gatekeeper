@@ -50,6 +50,7 @@ public sealed class ApiClient(HttpClient http)
             {
                 HttpStatusCode.NotFound => 2,
                 HttpStatusCode.Conflict => 3,
+                HttpStatusCode.ServiceUnavailable => 4,
                 _ => 1,
             };
             throw new CliException(code, message);

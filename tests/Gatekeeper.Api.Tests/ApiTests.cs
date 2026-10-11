@@ -130,6 +130,32 @@ public class ApiTests : IClassFixture<WebApplicationFactory<Program>>
         Assert.Equal("application/problem+json", response.Content.Headers.ContentType?.MediaType);
     }
 
+    [Theory]
+    [InlineData("a\\u0000b")]
+    [InlineData("a\\u001b[31mb")]
+    [InlineData("a\\ud800b")]
+    [InlineData("a\\u202eb")]
+    public async Task Unsafe_text_is_rejected_with_400(string displayJson)
+    {
+        var body = new StringContent($$"""{"username":"bob","email":"bob@example.com","displayName":"{{displayJson}}"}""",
+            System.Text.Encoding.UTF8, "application/json");
+        Assert.Equal(HttpStatusCode.BadRequest, (await _http.PostAsync("/v1/users", body)).StatusCode);
+    }
+
+    [Fact]
+    public async Task Username_filter_with_control_characters_matches_nothing()
+    {
+        var list = await _http.GetFromJsonAsync<JsonElement>("/v1/users?username=a%00");
+        Assert.Equal(0, list.GetArrayLength());
+    }
+
+    [Fact]
+    public async Task Non_ascii_email_is_rejected()
+    {
+        var r = await _http.PostAsJsonAsync("/v1/users", new { username = Unique("u"), email = "émile@example.com" });
+        Assert.Equal(HttpStatusCode.BadRequest, r.StatusCode);
+    }
+
     [Fact]
     public async Task Openapi_document_is_served()
     {

@@ -5,28 +5,30 @@ using Gatekeeper.Infrastructure.Postgres;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.DependencyInjection;
-using Npgsql;
+using Gatekeeper.Tests;
 
 namespace Gatekeeper.Api.Tests;
 
 /// <summary>End-to-end flow against Postgres. Skipped unless GATEKEEPER_TEST_PG is set (scripts/test-pg.sh).</summary>
 public class PostgresApiTests : IDisposable
 {
-    private readonly string? _admin = Environment.GetEnvironmentVariable("GATEKEEPER_TEST_PG");
-    private readonly string _database = $"gk_test_{Guid.NewGuid():N}";
+    private PgTestDatabase? _db;
     private WebApplicationFactory<Program>? _factory;
 
-    private HttpClient CreateClient()
+    private HttpClient CreateClient(string? connection = null)
     {
-        Skip.If(string.IsNullOrWhiteSpace(_admin), "GATEKEEPER_TEST_PG is not set; Postgres API tests skipped.");
-        Exec($"CREATE DATABASE {_database}");
-        var connection = new NpgsqlConnectionStringBuilder(_admin!) { Database = _database }.ConnectionString;
+        _db = PgTestDatabase.TryCreate();
+        Skip.If(_db is null, "GATEKEEPER_TEST_PG is not set; Postgres API tests skipped.");
+
+        using (var migrator = new ServiceCollection().AddPostgresStore(_db!.MigratorConnection).BuildServiceProvider())
+            PostgresStoreExtensions.MigrateAsync(migrator).GetAwaiter().GetResult();
+        _db.GrantAppAccess();
+
         _factory = new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
         {
             b.UseSetting("Store:Provider", "Postgres");
-            b.UseSetting("ConnectionStrings:Gatekeeper", connection);
+            b.UseSetting("ConnectionStrings:Gatekeeper", connection ?? _db.AppConnection);
         });
-        PostgresStoreExtensions.MigrateAsync(_factory.Services).GetAwaiter().GetResult();
         return _factory.CreateClient();
     }
 
@@ -40,8 +42,13 @@ public class PostgresApiTests : IDisposable
         var appId = app.GetProperty("id").GetGuid();
         var role = await (await http.PostAsJsonAsync($"/v1/applications/{appId}/roles", new { name = "admin" })).Content.ReadFromJsonAsync<JsonElement>();
         var roleId = role.GetProperty("id").GetGuid();
-        var user = await (await http.PostAsJsonAsync("/v1/users", new { username = "alice", email = "alice@example.com" })).Content.ReadFromJsonAsync<JsonElement>();
-        var userId = user.GetProperty("id").GetGuid();
+        var created = await (await http.PostAsJsonAsync("/v1/users", new { username = "alice", email = "alice@example.com" })).Content.ReadFromJsonAsync<JsonElement>();
+        var userId = created.GetProperty("id").GetGuid();
+
+        // The POST response must equal what a later GET returns (timestamps are microsecond-aligned).
+        var fetched = await http.GetFromJsonAsync<JsonElement>($"/v1/users/{userId}");
+        Assert.Equal(created.GetProperty("createdAt").GetString(), fetched.GetProperty("createdAt").GetString());
+        Assert.Equal(created.GetProperty("updatedAt").GetString(), fetched.GetProperty("updatedAt").GetString());
 
         Assert.Equal(HttpStatusCode.Conflict, (await http.PostAsJsonAsync("/v1/applications", new { name = "billing" })).StatusCode);
         Assert.Equal(HttpStatusCode.NoContent, (await http.PutAsync($"/v1/users/{userId}/roles/{roleId}", null)).StatusCode);
@@ -50,25 +57,55 @@ public class PostgresApiTests : IDisposable
         Assert.Equal(1, roles.GetArrayLength());
         var byName = await http.GetFromJsonAsync<JsonElement>("/v1/users?username=ALICE");
         Assert.Equal(1, byName.GetArrayLength());
+        Assert.Equal(0, (await http.GetFromJsonAsync<JsonElement>("/v1/users?username=a%00")).GetArrayLength());
 
         Assert.Equal(HttpStatusCode.NoContent, (await http.DeleteAsync($"/v1/applications/{appId}")).StatusCode);
         Assert.Equal(HttpStatusCode.NotFound, (await http.GetAsync($"/v1/roles/{roleId}")).StatusCode);
         Assert.Equal(0, (await http.GetFromJsonAsync<JsonElement>($"/v1/users/{userId}/roles")).GetArrayLength());
     }
 
+    [SkippableTheory]
+    [InlineData("a\\u0000b")]
+    [InlineData("a\\u001b[31mb")]
+    [InlineData("a\\ud800b")]
+    [InlineData("a\\u202eb")]
+    public async Task Unsafe_text_is_rejected_with_400_not_500(string displayJson)
+    {
+        var http = CreateClient();
+        var body = new StringContent($$"""{"username":"bob","email":"bob@example.com","displayName":"{{displayJson}}"}""",
+            System.Text.Encoding.UTF8, "application/json");
+        Assert.Equal(HttpStatusCode.BadRequest, (await http.PostAsync("/v1/users", body)).StatusCode);
+    }
+
+    [SkippableFact]
+    public async Task Unreachable_database_gives_503_and_not_ready()
+    {
+        // Port 1 refuses connections.
+        var http = CreateClient("Host=127.0.0.1;Port=1;Database=x;Username=x;Password=x;Timeout=2;Command Timeout=2");
+        var response = await http.GetAsync("/v1/users");
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+        Assert.Equal("application/problem+json", response.Content.Headers.ContentType?.MediaType);
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, (await http.GetAsync("/health/ready")).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await http.GetAsync("/health")).StatusCode);
+    }
+
+    [SkippableFact]
+    public async Task Unmigrated_database_is_not_ready()
+    {
+        _db = PgTestDatabase.TryCreate();
+        Skip.If(_db is null, "GATEKEEPER_TEST_PG is not set; Postgres API tests skipped.");
+        _db!.GrantAppAccess(); // empty database: no tables, no migrations applied
+        _factory = new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
+        {
+            b.UseSetting("Store:Provider", "Postgres");
+            b.UseSetting("ConnectionStrings:Gatekeeper", _db.AppConnection);
+        });
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, (await _factory.CreateClient().GetAsync("/health/ready")).StatusCode);
+    }
+
     public void Dispose()
     {
         _factory?.Dispose();
-        if (_admin is null) return;
-        NpgsqlConnection.ClearAllPools();
-        Exec($"DROP DATABASE IF EXISTS {_database} WITH (FORCE)");
-    }
-
-    private void Exec(string sql)
-    {
-        using var conn = new NpgsqlConnection(_admin);
-        conn.Open();
-        using var cmd = new NpgsqlCommand(sql, conn);
-        cmd.ExecuteNonQuery();
+        _db?.Dispose();
     }
 }

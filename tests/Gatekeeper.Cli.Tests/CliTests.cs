@@ -102,6 +102,26 @@ public class CliTests : IClassFixture<WebApplicationFactory<Program>>
     }
 
     [Fact]
+    public async Task Service_unavailable_exits_4_with_message()
+    {
+        var o = new StringWriter(); var e = new StringWriter();
+        var handler = new StubHandler(_ => new HttpResponseMessage(System.Net.HttpStatusCode.ServiceUnavailable)
+        {
+            Content = new StringContent("""{"title":"Service Unavailable","detail":"The data store is currently unavailable."}""",
+                System.Text.Encoding.UTF8, "application/problem+json"),
+        });
+        var code = await CliApp.RunAsync(["app", "list"], uri => new HttpClient(handler) { BaseAddress = uri }, o, e);
+        Assert.Equal(4, code);
+        Assert.Contains("unavailable", e.ToString());
+    }
+
+    private sealed class StubHandler(Func<HttpRequestMessage, HttpResponseMessage> respond) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct) =>
+            Task.FromResult(respond(request));
+    }
+
+    [Fact]
     public async Task Unreachable_server_exits_4()
     {
         var o = new StringWriter(); var e = new StringWriter();
