@@ -4,6 +4,7 @@
     <Project Path="src/Gatekeeper.Application/Gatekeeper.Application.csproj" />
     <Project Path="src/Gatekeeper.Cli/Gatekeeper.Cli.csproj" />
     <Project Path="src/Gatekeeper.Domain/Gatekeeper.Domain.csproj" />
+    <Project Path="src/Gatekeeper.Infrastructure.Postgres/Gatekeeper.Infrastructure.Postgres.csproj" />
     <Project Path="src/Gatekeeper.Infrastructure/Gatekeeper.Infrastructure.csproj" />
   </Folder>
   <Folder Name="/tests/">

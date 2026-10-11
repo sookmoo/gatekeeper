@@ -3,6 +3,7 @@
   <ItemGroup>
     <ProjectReference Include="..\Gatekeeper.Application\Gatekeeper.Application.csproj" />
     <ProjectReference Include="..\Gatekeeper.Infrastructure\Gatekeeper.Infrastructure.csproj" />
+    <ProjectReference Include="..\Gatekeeper.Infrastructure.Postgres\Gatekeeper.Infrastructure.Postgres.csproj" />
   </ItemGroup>
 
   <ItemGroup>

@@ -5,8 +5,10 @@ using Gatekeeper.Infrastructure;
 namespace Gatekeeper.Store.Contract.Tests;
 
 /// <summary>Behaviour every store implementation must satisfy. Subclass per store.</summary>
-public abstract class StoreContract
+public abstract class StoreContract : IDisposable
 {
+    public virtual void Dispose() => GC.SuppressFinalize(this);
+
     protected abstract (IAppRepository Apps, IRoleRepository Roles, IUserRepository Users) CreateStore();
 
     private static User NewUser(string name, string? email = null) =>
@@ -16,7 +18,7 @@ public abstract class StoreContract
 
     private static Role NewRole(App app, string name) => new(Guid.NewGuid(), app.Id, name, "");
 
-    [Fact]
+    [SkippableFact]
     public async Task App_roundtrip_update_delete()
     {
         var (apps, _, _) = CreateStore();
@@ -31,7 +33,7 @@ public abstract class StoreContract
         Assert.Null(await apps.UpdateAsync(app));
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task App_names_are_unique_case_insensitively()
     {
         var (apps, _, _) = CreateStore();
@@ -42,7 +44,7 @@ public abstract class StoreContract
         await apps.UpdateAsync(other with { Name = "crm" }); // same name on itself is fine
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task Role_names_are_unique_per_app_only()
     {
         var (apps, roles, _) = CreateStore();
@@ -54,7 +56,7 @@ public abstract class StoreContract
         Assert.Single(await roles.ListByAppAsync(a.Id));
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task User_username_and_email_are_unique()
     {
         var (_, _, users) = CreateStore();
@@ -63,7 +65,7 @@ public abstract class StoreContract
         await Assert.ThrowsAsync<ConflictException>(() => users.AddAsync(NewUser("bob", "Alice@Example.com")));
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task User_list_filters()
     {
         var (_, _, users) = CreateStore();
@@ -75,7 +77,7 @@ public abstract class StoreContract
         Assert.Equal(["alice"], (await users.ListAsync(username: "ALICE")).Select(u => u.Username));
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task Assign_is_idempotent_and_revoke_reports_presence()
     {
         var (apps, roles, users) = CreateStore();
@@ -89,7 +91,7 @@ public abstract class StoreContract
         Assert.False(await users.RevokeRoleAsync(user.Id, role.Id));
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task ListRoles_filters_by_app()
     {
         var (apps, roles, users) = CreateStore();
@@ -105,14 +107,14 @@ public abstract class StoreContract
         Assert.Equal(["x"], (await users.ListRolesAsync(user.Id, a.Id)).Select(r => r.Name));
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task Role_for_missing_app_is_rejected()
     {
         var (_, roles, _) = CreateStore();
         await Assert.ThrowsAsync<NotFoundException>(() => roles.AddAsync(NewRole(NewApp("ghost"), "admin")));
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task Assignment_for_missing_user_or_role_is_rejected_and_leaves_nothing()
     {
         var (apps, roles, users) = CreateStore();
@@ -124,7 +126,88 @@ public abstract class StoreContract
         Assert.Empty(await users.ListRolesAsync(user.Id));
     }
 
-    [Fact]
+    [SkippableFact]
+    public async Task Parallel_duplicate_creates_yield_exactly_one_winner()
+    {
+        var (apps, _, _) = CreateStore();
+        var results = await Task.WhenAll(Enumerable.Range(0, 30).Select(async _ =>
+        {
+            try
+            {
+                await apps.AddAsync(NewApp("same-name"));
+                return true;
+            }
+            catch (ConflictException)
+            {
+                return false;
+            }
+        }));
+        Assert.Equal(1, results.Count(r => r));
+        Assert.Single(await apps.ListAsync());
+    }
+
+    [SkippableFact]
+    public async Task Creating_role_while_deleting_app_leaves_no_orphan_role()
+    {
+        var (apps, roles, _) = CreateStore();
+        for (var i = 0; i < 40; i++)
+        {
+            var app = await apps.AddAsync(NewApp($"race-{i}"));
+            var role = NewRole(app, "r");
+            await Task.WhenAll(
+                Swallow(() => roles.AddAsync(role)),
+                Swallow(() => apps.DeleteAsync(app.Id)));
+            Assert.Empty(await roles.ListByAppAsync(app.Id));
+            Assert.Null(await roles.GetAsync(role.Id));
+        }
+    }
+
+    [SkippableFact]
+    public async Task Assigning_while_deleting_role_leaves_no_assignment()
+    {
+        var (apps, roles, users) = CreateStore();
+        var app = await apps.AddAsync(NewApp("a"));
+        var user = await users.AddAsync(NewUser("alice"));
+        for (var i = 0; i < 40; i++)
+        {
+            var role = await roles.AddAsync(NewRole(app, $"r{i}"));
+            await Task.WhenAll(
+                Swallow(() => users.AssignRoleAsync(user.Id, role.Id)),
+                Swallow(() => roles.DeleteAsync(role.Id)));
+            Assert.DoesNotContain(await users.ListRolesAsync(user.Id), r => r.Id == role.Id);
+        }
+    }
+
+    [SkippableFact]
+    public async Task User_timestamps_round_trip()
+    {
+        var (_, _, users) = CreateStore();
+        var created = DateTimeOffset.UtcNow;
+        var user = await users.AddAsync(NewUser("alice") with { CreatedAt = created, UpdatedAt = created });
+        var read = await users.GetAsync(user.Id);
+        Assert.True(Math.Abs((read!.CreatedAt - created).TotalMilliseconds) < 1);
+        Assert.Equal(TimeSpan.Zero, read.CreatedAt.Offset);
+    }
+
+    // Races may legitimately end in NotFound; anything else is a failure.
+    private static async Task Swallow<T>(Func<Task<T>> action)
+    {
+        try
+        {
+            await action();
+        }
+        catch (NotFoundException)
+        {
+        }
+    }
+
+    private static Task Swallow(Func<Task> action) => Swallow(async () =>
+    {
+        await action();
+        return 0;
+    });
+
+    [SkippableFact]
     public async Task Deleting_role_user_or_app_removes_assignments()
     {
         var (apps, roles, users) = CreateStore();

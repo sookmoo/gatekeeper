@@ -30,6 +30,10 @@ public class ApiTests : IClassFixture<WebApplicationFactory<Program>>
         Assert.Equal(HttpStatusCode.OK, (await _http.GetAsync("/health")).StatusCode);
 
     [Fact]
+    public async Task Ready_is_ok_for_in_memory_store() =>
+        Assert.Equal(HttpStatusCode.OK, (await _http.GetAsync("/health/ready")).StatusCode);
+
+    [Fact]
     public async Task Full_flow_application_role_user_assignment()
     {
         var app = await Create("/v1/applications", new { name = Unique("app") });
