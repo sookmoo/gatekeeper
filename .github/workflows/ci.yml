@@ -46,3 +46,28 @@ jobs:
         run: |
           dotnet tool restore
           dotnet tool run dotnet-ef migrations has-pending-model-changes --project src/Gatekeeper.Infrastructure.Postgres
+
+  image:
+    needs: build-test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ghcr.io/sookmoo/gatekeeper
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build -f Containerfile -t "$IMAGE:${GITHUB_SHA}" .
+      - name: Smoke test (refuses to start without the non-loopback opt-in)
+        run: |
+          out=$(docker run --rm "$IMAGE:${GITHUB_SHA}" 2>&1 || true)
+          echo "$out" | grep -q "Refusing to listen on non-loopback"
+      # Build once, promote the same image: only main publishes, tagged with the commit SHA.
+      - name: Push to GHCR
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker tag "$IMAGE:${GITHUB_SHA}" "$IMAGE:latest"
+          docker push "$IMAGE:${GITHUB_SHA}"
+          docker push "$IMAGE:latest"

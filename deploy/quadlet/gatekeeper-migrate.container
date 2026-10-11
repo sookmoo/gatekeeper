@@ -1,0 +1,19 @@
+[Unit]
+Description=Gatekeeper database migrations (one-shot, owner role)
+Requires=gatekeeper-db.service
+After=gatekeeper-db.service
+
+[Container]
+ContainerName=gatekeeper-migrate
+Image=ghcr.io/sookmoo/gatekeeper:latest
+Network=gatekeeper.network
+Environment=Store__Provider=Postgres
+Secret=gatekeeper-conn-migrations,type=env,target=ConnectionStrings__GatekeeperMigrations
+Exec=migrate
+ReadOnly=true
+DropCapability=ALL
+NoNewPrivileges=true
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes

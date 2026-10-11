@@ -1,0 +1,29 @@
+[Unit]
+Description=Gatekeeper API
+Requires=gatekeeper-migrate.service
+After=gatekeeper-migrate.service
+
+[Container]
+ContainerName=gatekeeper-api
+Image=ghcr.io/sookmoo/gatekeeper:latest
+Network=gatekeeper.network
+# Loopback only on the host. The API has no authentication yet; do not widen this until slice 4.
+PublishPort=127.0.0.1:5080:8080
+Environment=Store__Provider=Postgres
+Environment=Gatekeeper__AllowNonLoopback=true
+# Data-only role: the running service holds no DDL rights.
+Secret=gatekeeper-conn-app,type=env,target=ConnectionStrings__Gatekeeper
+ReadOnly=true
+DropCapability=ALL
+NoNewPrivileges=true
+# JSON form: the chiseled image has no shell for CMD-SHELL.
+HealthCmd=["dotnet", "Gatekeeper.Api.dll", "healthcheck"]
+HealthInterval=30s
+HealthStartPeriod=10s
+HealthRetries=3
+
+[Service]
+Restart=always
+
+[Install]
+WantedBy=default.target

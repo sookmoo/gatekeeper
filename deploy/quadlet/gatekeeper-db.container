@@ -1,0 +1,27 @@
+[Unit]
+Description=Gatekeeper PostgreSQL
+
+[Container]
+ContainerName=gatekeeper-db
+Image=docker.io/library/postgres:17-alpine@sha256:aa90e97ee862e558111d34cfb8b2c4bec768c2b039fb791341686928560263b3
+Network=gatekeeper.network
+Volume=gatekeeper-db.volume:/var/lib/postgresql/data
+# Only used on first start (empty data directory): creates the owner and app roles and the database.
+Volume=%h/.config/gatekeeper/postgres-init/10-roles.sh:/docker-entrypoint-initdb.d/10-roles.sh:ro,Z
+Volume=%h/.config/gatekeeper/postgres-init/db-roles.sql:/docker-entrypoint-initdb.d/db-roles.sql.tpl:ro,Z
+Environment=POSTGRES_USER=postgres
+Secret=gatekeeper-pg-admin,type=env,target=POSTGRES_PASSWORD
+Secret=gatekeeper-owner-pw,type=env,target=GK_OWNER_PW
+Secret=gatekeeper-app-pw,type=env,target=GK_APP_PW
+# Not published: only containers on the gatekeeper network can reach it.
+HealthCmd=pg_isready -U postgres
+HealthInterval=5s
+HealthRetries=12
+Notify=healthy
+NoNewPrivileges=true
+
+[Service]
+Restart=always
+
+[Install]
+WantedBy=default.target

@@ -7,6 +7,8 @@ using Gatekeeper.Infrastructure.Postgres;
 // It uses ConnectionStrings:GatekeeperMigrations (an owner role); serving uses ConnectionStrings:Gatekeeper
 // (a role with data access only), so the running service never holds DDL rights.
 if (args.Length > 1 && args[0] == "migrate") return Fail("'migrate' takes no arguments.");
+// `Gatekeeper.Api healthcheck` is the container HEALTHCHECK (the runtime image has no shell or curl).
+if (args is ["healthcheck"]) return await HealthCheck.RunAsync();
 var migrateOnly = args is ["migrate"];
 var builder = WebApplication.CreateBuilder(migrateOnly ? [] : args);
 if (migrateOnly)
