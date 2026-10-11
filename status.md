@@ -34,11 +34,17 @@ Gatekeeper: a central repository for user and role management for multiple servi
 ## Slice 1: done (PRs #1 and #2 merged 2026-10-10)
 In-memory store, REST API under /v1, `gk` CLI, OpenAPI contract, QA + security review fixes. The application entity is `App` in code (avoids clash with the `Gatekeeper.Application` namespace); API path is `/applications`.
 
-## Slice 2: PostgreSQL store (branch `feat/slice-2-postgres`, reviews done, PR not yet opened)
+## Slice 2: PostgreSQL store (done, PR #3 merged 2026-10-11)
 - Done: `Gatekeeper.Infrastructure.Postgres` (EF Core, `InitialCreate` migration, repositories), `Store:Provider` switch, `migrate` command, `/health/ready`, dev/test scripts, CI Postgres service + migration drift check.
 - QA + security review fixes applied (2026-10-11): separate owner (migrations) and app (data-only) roles with tests that run the stores as the app role; NUL/control/bidi/invalid-UTF-16 rejected in free text; ASCII-only emails; microsecond timestamps; username-before-email and user-before-role error precedence match in both stores; connection failures become `StoreUnavailableException` -> 503 (CLI exit 4); `migrate` fails cleanly (exit 1, no arguments allowed); `/health/ready` logs failures and checks pending migrations; EF log levels reduced; TLS guidance in README.
 - Tests: 153 pass with Postgres (`scripts/test-pg.sh`); without `GATEKEEPER_TEST_PG` the Postgres tests show as skipped. QA parity tests (in-memory vs Postgres) are kept.
 - Manually verified with the real roles: migrate as owner, serve as app, DDL refused for the app role, DB-down gives 503 and recovery, migrate failure paths.
+
+## Slice 3: containers (branch `feat/slice-3-containers`)
+- Done: `Containerfile` (digest-pinned sdk and chiseled aspnet runtime, non-root), `healthcheck` command (no shell in image), explicit `Gatekeeper:AllowNonLoopback` opt-in for the loopback guard, Quadlet units in `deploy/quadlet/` (network, volume, db, one-shot migrate, api), `deploy/install.sh` (podman secrets), CI `image` job (build on PRs, push to GHCR from main).
+- Verified locally with Quadlet: migrate runs before the API, API healthy, data persists across restarts, app role cannot DDL, image refuses to start without the opt-in.
+- Decision: no podman-compose; Quadlet is used for local and server alike (one mechanism).
+- Not done: tag-based promotion to staging/production (needs a server), image vulnerability scan, Dependabot for base-image digests.
 
 ## Deferred hardening (from slice 1 reviews)
 Escape control characters in CLI output; request body size limit; pagination and rate limiting; https required for non-loopback CLI URLs; CI hardening (pin action SHAs, `persist-credentials: false`, `global.json`, lock files); central package management; paging + cancellation tokens (before slice 4); unbounded lists today.
@@ -49,4 +55,4 @@ Escape control characters in CLI output; request body size limit; pagination and
 3. PATCH (partial update) alongside GET/POST/PUT in the API; the CLI `update` commands currently emulate it with GET + PUT.
 
 ## Next action
-Open the slice 2 PR (needs the user's go-ahead to push). Then slice 3 (containers). Security notes for slice 3: keep `LoopbackGuard` but add an explicit in-container opt-in, run `migrate` as a separate one-shot job with the owner credentials, passwords via podman secrets, digest-pinned non-root images, TLS to non-local databases. Slice 4 (auth): paging/cancellation first, audit table with INSERT-only rights, protect `/health/ready`, consider 409 messages as an enumeration channel.
+Open the slice 3 PR (needs the user's go-ahead to push). Then slice 4 (auth): paging/cancellation first, audit table with INSERT-only rights, protect `/health/ready`, consider 409 messages as an enumeration channel.

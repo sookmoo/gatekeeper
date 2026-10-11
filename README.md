@@ -63,3 +63,20 @@ scripts/test-pg.sh          # full suite against a disposable Postgres container
 Layout: `Domain` (entities, validation) -> `Application` (services, repository interfaces) ->
 `Infrastructure` (in-memory store) and `Infrastructure.Postgres` (EF Core) -> `Api` (ASP.NET Core minimal API); `Cli` talks to the API over HTTP.
 Every store implementation (in-memory and Postgres) must pass `tests/Gatekeeper.Store.Contract.Tests`.
+
+## Container and Quadlet (rootless Podman)
+
+Build the image: `podman build -t gatekeeper-api -f Containerfile .` (digest-pinned bases, chiseled non-root runtime, no shell).
+CI builds it on every PR and publishes `ghcr.io/sookmoo/gatekeeper:<sha>` and `:latest` from `main`.
+
+Run the full stack (Postgres, one-shot migrations as the owner role, API as the data-only role) as systemd user services:
+
+    deploy/install.sh [image]            # copies units to ~/.config/containers/systemd, creates podman secrets
+    systemctl --user start gatekeeper-api.service
+
+- The API is published on `127.0.0.1:5080` only. Inside the container it binds `0.0.0.0:8080`, which the loopback guard
+  refuses unless `Gatekeeper__AllowNonLoopback=true` is set (the unit sets it). There is still no authentication.
+- Passwords and connection strings are podman secrets (random, created by `install.sh`); nothing secret is in the repo or image.
+- Roles are created on the first start with an empty data volume. To start over: stop the units, `podman volume rm gatekeeper-db-data`.
+- Update: pull or build a new image and `systemctl --user restart gatekeeper-api` (re-runs migrations first).
+- For the service to survive logout/reboot: `loginctl enable-linger $USER`.
