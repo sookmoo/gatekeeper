@@ -211,6 +211,13 @@ public sealed class InMemoryUserRepository(InMemoryStore s) : IUserRepository
                     .OrderBy(r => r.Name).ThenBy(r => r.Id), slice));
     }
 
+    public Task<int> CountActiveWithRoleAsync(Guid roleId, Guid? excludingUserId = null, CancellationToken ct = default)
+    {
+        lock (s.Gate)
+            return Task.FromResult(s.Assignments.Count(a =>
+                a.RoleId == roleId && a.UserId != excludingUserId && s.Users.TryGetValue(a.UserId, out var u) && u.IsActive));
+    }
+
     private void EnsureUnique(User user)
     {
         foreach (var other in s.Users.Values.Where(u => u.Id != user.Id))
@@ -238,6 +245,16 @@ public sealed class InMemoryCredentialRepository(InMemoryStore s) : ICredentialR
     public Task<string?> GetHashAsync(Guid userId, CancellationToken ct = default)
     {
         lock (s.Gate) return Task.FromResult(s.Credentials.GetValueOrDefault(userId));
+    }
+
+    public Task<bool> ReplaceHashAsync(Guid userId, string expectedHash, string newHash, DateTimeOffset at, CancellationToken ct = default)
+    {
+        lock (s.Gate)
+        {
+            if (!s.Credentials.TryGetValue(userId, out var current) || current != expectedHash) return Task.FromResult(false);
+            s.Credentials[userId] = newHash;
+            return Task.FromResult(true);
+        }
     }
 }
 

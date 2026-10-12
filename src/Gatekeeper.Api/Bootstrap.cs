@@ -3,11 +3,14 @@ using Gatekeeper.Domain;
 
 namespace Gatekeeper.Api;
 
-/// <summary>Creates the admin application, its admin role and the first administrator. Refuses if the user exists.</summary>
+/// <summary>
+/// Creates the admin application, its admin role and an administrator. If the user already exists this repairs it:
+/// reactivates, resets the password and re-assigns the admin role (the recovery path when the last admin is locked out).
+/// </summary>
 public static class Bootstrap
 {
     /// <summary>Ensures the admin app and role exist, then creates the user with the password and the admin role.</summary>
-    public static async Task CreateAdminAsync(IServiceProvider services, string username, string email, string password)
+    public static async Task<bool> CreateAdminAsync(IServiceProvider services, string username, string email, string password)
     {
         var apps = services.GetRequiredService<IAppRepository>();
         var roles = services.GetRequiredService<IRoleRepository>();
@@ -15,9 +18,13 @@ public static class Bootstrap
         var app = await apps.GetByNameAsync(Reserved.AdminApp) ?? await apps.AddAsync(new App(Guid.NewGuid(), Reserved.AdminApp));
         var role = (await roles.ListByAppAsync(app.Id)).FirstOrDefault(r => r.Name == Reserved.AdminRole)
                    ?? await roles.AddAsync(new Role(Guid.NewGuid(), app.Id, Reserved.AdminRole, "Manages Gatekeeper"));
-        var user = await users.CreateAsync(username, email, username);
+        var existing = (await services.GetRequiredService<IUserRepository>().ListAsync(username: username, slice: new Slice(0, 1))).FirstOrDefault();
+        var user = existing ?? await users.CreateAsync(username, email, username);
+        if (existing is { IsActive: false })
+            await users.UpdateAsync(existing.Id, existing.Username, existing.Email, existing.DisplayName, true);
         await services.GetRequiredService<CredentialService>().SetPasswordAsync(user.Id, password);
         await users.AssignRoleAsync(user.Id, role.Id);
+        return existing is null;
     }
 
     public static async Task<int> RunAsync(IServiceProvider services, string username, string email)
@@ -37,13 +44,10 @@ public static class Bootstrap
             Validation.Password(password);
             Validation.UserFields(username, email, null);
 
-            if ((await services.GetRequiredService<IUserRepository>().ListAsync(username: username, slice: new Slice(0, 1))).Count > 0)
-            {
-                Console.Error.WriteLine($"error: user '{username}' already exists; nothing changed.");
-                return 1;
-            }
-            await CreateAdminAsync(services, username, email, password!);
-            Console.WriteLine($"Administrator '{username}' created.");
+            var created = await CreateAdminAsync(services, username, email, password!);
+            Console.WriteLine(created
+                ? $"Administrator '{username}' created."
+                : $"Administrator '{username}' already existed: reactivated, password reset, admin role ensured.");
             return 0;
         }
         catch (ValidationException ex)

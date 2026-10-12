@@ -30,7 +30,11 @@ public class PostgresApiTests : IDisposable
             b.UseSetting("Auth:SigningKeyPem", TestKey.Pem);
             b.UseSetting("ConnectionStrings:Gatekeeper", connection ?? _db.AppConnection);
         });
-        return _factory.CreateAdminClient();
+        if (connection is null) return _factory.CreateAdminClient();
+        // The database is deliberately unreachable, so no administrator can be created in it: use a synthetic token.
+        var c = _factory.CreateClient();
+        c.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", TestAuth.Token(_factory, "gatekeeper", ["admin"]));
+        return c;
     }
 
     [SkippableFact]

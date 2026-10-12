@@ -45,19 +45,29 @@ dotnet bin/Debug/net10.0/Gatekeeper.Api.dll           # serve, uses Gatekeeper
 
 - `POST /v1/auth/login {"username","password","application"}` returns a short-lived (15 min) ES256 access token.
   It is a JWT with `iss`, `aud` (the application), `sub` (user id), `preferred_username`, `exp`, `jti` and `roles`
-  (the user's roles in that application only). Every failure is an identical `401`; repeated failures get `429`.
+  (the user's roles in that application only). Every credential failure is an identical `401` (malformed JSON is a `400`).
+  Failed logins are throttled per client address and username (`429` with `Retry-After`); the owner of an account is never
+  locked out from another address. At most a few passwords are hashed at once; beyond that the API answers `503` quickly.
 - Consuming systems verify tokens offline with the public keys at `GET /.well-known/jwks.json`: check the signature
   (ES256 only), `iss`, `aud` (your application's name), `exp` and `typ` (`at+jwt`), then read `roles`.
-  A deactivated user keeps a valid token until it expires.
+  Use `sub` (not `preferred_username`) to identify the user. The management API re-checks that the token's user is still an
+  active administrator (cached for 10 s), so demoting or deactivating an admin takes effect almost immediately; tokens for
+  other applications stay valid until `exp`, so keep consumers' acceptance windows short.
 - The management API (`/v1/applications`, `/v1/roles`, `/v1/users`) needs a token for the application `gatekeeper`
-  with the role `admin`. That application and role are reserved and cannot be renamed or deleted.
-- Create the first administrator once (password on stdin or `GATEKEEPER_BOOTSTRAP_PASSWORD`, 12-128 characters):
-  `echo -n ... | dotnet Gatekeeper.Api.dll bootstrap-admin <username> <email>` (Postgres store; see `deploy/bootstrap-admin.sh`).
-- Settings: `Auth__SigningKeyPem` (PKCS#8 EC P-256 PEM; required with Postgres, a temporary key is generated for the
-  in-memory store), `Auth__Issuer` (default `gatekeeper`), `Auth__AccessTokenMinutes` (1-60, default 15).
+  with the role `admin`. That application and role are reserved: they cannot be renamed or deleted, no other application can take the name, and the
+  last active administrator cannot be deleted, deactivated or stripped of the role.
+- Create the first administrator (password on stdin or `GATEKEEPER_BOOTSTRAP_PASSWORD`, 12-128 characters):
+  `echo ... | dotnet Gatekeeper.Api.dll bootstrap-admin <username> <email>` (Postgres store; see `deploy/bootstrap-admin.sh`).
+  Running it for an existing user repairs that user (reactivates, resets the password, restores the admin role): the recovery
+  path for a lost admin password.
+- Settings: `Auth__SigningKeyPemFile` (path to a PKCS#8 EC P-256 PEM; the Quadlet unit mounts a podman secret there) or
+  `Auth__SigningKeyPem` (the PEM itself); one is required with Postgres, a temporary key is generated for the in-memory store;
+  `Auth__TrustedProxies` (comma-separated proxy IPs whose `X-Forwarded-For` is trusted for throttling; unset by default), `Auth__Issuer` (default `gatekeeper`), `Auth__AccessTokenMinutes` (1-60, default 15).
   Generate a key: `openssl ecparam -genkey -name prime256v1 -noout | openssl pkcs8 -topk8 -nocrypt`.
 - Passwords are hashed with Argon2id (64 MiB, 3 passes) and stored apart from users. Plain HTTP only: keep the port on
-  loopback or put TLS in front, because logins carry passwords.
+  loopback or put TLS in front, because logins carry passwords. Behind a proxy also set `Auth__TrustedProxies` and make the
+  proxy send `Host: localhost` (or extend `AllowedHosts`).
+- The service refuses to start in a container/proxy setup (`Gatekeeper__AllowNonLoopback`) without an explicit `Store__Provider`.
 - Not yet: refresh tokens and revocation, key rotation tooling, service/client credentials, audit log.
 
 ## CLI
@@ -73,7 +83,9 @@ gk user roles alice            # add --json for raw JSON
 
 First `gk login --user <admin>` (password from a hidden prompt, or stdin when piped; never an argument). The token is
 saved in `$XDG_STATE_HOME/gatekeeper/token.json` (mode 0600), sent only to the server that issued it, and removed by
-`gk logout`. `GATEKEEPER_TOKEN` overrides it. `gk user set-password <user>` sets a password.
+`gk logout`. `GATEKEEPER_TOKEN` overrides it (and is sent to whatever URL you point at).
+The CLI refuses plain `http://` to non-local hosts (override: `GATEKEEPER_ALLOW_INSECURE=1`), never follows redirects, and
+strips control characters from server text before printing. `gk user set-password <user>` sets a password.
 
 Server URL: `--url` or `GATEKEEPER_URL` (default `http://localhost:5080`).
 Exit codes: 0 ok, 1 error, 2 not found, 3 conflict, 4 server unreachable or store unavailable, 5 not logged in or not allowed.

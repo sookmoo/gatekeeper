@@ -86,6 +86,10 @@ public static class CliApp
                     if (!Uri.TryCreate(baseUrl, UriKind.Absolute, out var uri)
                         || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
                         throw new CliException(1, $"Invalid URL '{baseUrl}': expected http:// or https://.");
+                    // Logins and tokens must not cross the network in clear text.
+                    if (uri.Scheme == Uri.UriSchemeHttp && !uri.IsLoopback
+                        && Environment.GetEnvironmentVariable("GATEKEEPER_ALLOW_INSECURE") != "1")
+                        throw new CliException(1, $"Refusing plain http to {uri.Host}: use https:// (or set GATEKEEPER_ALLOW_INSECURE=1 for a trusted network).");
                     await run(new Ctx(parse, new ApiClient(httpFactory(uri), TokenFor(uri)), parse.GetValue(json), stdout, uri.GetLeftPart(UriPartial.Authority)));
                     return 0;
                 }
@@ -314,9 +318,9 @@ public static class CliApp
             item.TryGetProperty(field, out var v)
                 ? v.ValueKind switch
                 {
-                    JsonValueKind.String => v.GetString() ?? "",
+                    JsonValueKind.String => Safe.Text(v.GetString()),
                     JsonValueKind.Null => "",
-                    _ => v.ToString(),
+                    _ => Safe.Text(v.ToString()),
                 }
                 : "";
 

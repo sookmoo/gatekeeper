@@ -27,8 +27,18 @@ if (migrateOnly)
     builder.Logging.AddFilter("Microsoft.EntityFrameworkCore.Database.Connection", LogLevel.None);
 }
 
+builder.WebHost.ConfigureKestrel(k =>
+{
+    k.AddServerHeader = false;
+    k.Limits.MaxRequestBodySize = 64 * 1024; // the largest legitimate body is a few hundred bytes
+});
 var ephemeralKey = false;
 var provider = builder.Configuration["Store:Provider"] ?? "InMemory";
+// A container or proxy deployment that forgot Store__Provider must not silently run an empty in-memory store.
+if (builder.Configuration["Store:Provider"] is null && builder.Configuration.GetValue<bool>("Gatekeeper:AllowNonLoopback"))
+    return Fail("Store:Provider is not set (use the Store__Provider environment variable).");
+if (builder.Configuration.GetValue<bool>("Auth:SeedDevAdmin") && builder.Configuration.GetValue<bool>("Gatekeeper:AllowNonLoopback"))
+    return Fail("Auth:SeedDevAdmin must not be combined with Gatekeeper:AllowNonLoopback.");
 switch (provider)
 {
     case "InMemory":
@@ -54,6 +64,10 @@ builder.Services
     .AddSingleton<UserService>()
     .AddSingleton<IPasswordHasher, Argon2PasswordHasher>()
     .AddSingleton<CredentialService>()
+    .AddSingleton<HashLimiter>()
+    .AddSingleton<AdminGuard>()
+    .AddSingleton<AdminAccessCheck>()
+    .AddMemoryCache()
     .AddSingleton<AuthService>()
     .AddSingleton<LoginThrottle>()
     .AddProblemDetails()
@@ -62,12 +76,24 @@ builder.Services
 if (!migrateOnly && !bootstrap)
 {
     var pem = builder.Configuration["Auth:SigningKeyPem"];
+    var pemFile = builder.Configuration["Auth:SigningKeyPemFile"];
+    if (!string.IsNullOrWhiteSpace(pemFile))
+    {
+        try
+        {
+            pem = File.ReadAllText(pemFile);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return Fail($"Cannot read Auth:SigningKeyPemFile: {ex.Message}");
+        }
+    }
     ECDsa signingKey;
     try
     {
         signingKey = !string.IsNullOrWhiteSpace(pem) ? TokenService.LoadKey(pem)
             : provider == "InMemory" ? TokenService.NewKey()
-            : throw new InvalidOperationException("Auth:SigningKeyPem is not set (use the Auth__SigningKeyPem environment variable).");
+            : throw new InvalidOperationException("Auth:SigningKeyPem is not set (use a secret file with Auth__SigningKeyPemFile, or Auth__SigningKeyPem).");
         ephemeralKey = string.IsNullOrWhiteSpace(pem);
     }
     catch (Exception ex) when (ex is CryptographicException or ArgumentException or InvalidOperationException)
@@ -94,9 +120,25 @@ if (!migrateOnly && !bootstrap)
     builder.Services.AddSingleton(tokenService);
     builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddJwtBearer();
     // The management API accepts only our own access tokens issued for the admin application.
-    builder.Services.AddOptions<JwtBearerOptions>(JwtBearerDefaults.AuthenticationScheme).Configure<TokenService>((o, tokens) =>
+    builder.Services.AddOptions<JwtBearerOptions>(JwtBearerDefaults.AuthenticationScheme).Configure<TokenService, AdminAccessCheck>((o, tokens, access) =>
     {
         o.MapInboundClaims = false;
+        // A valid signature is not enough: the user must still be an active administrator right now.
+        o.Events = new JwtBearerEvents
+        {
+            // Only the management API uses tokens: a stray Authorization header must not make /health or the JWKS touch the store.
+            OnMessageReceived = ctx =>
+            {
+                if (!ctx.Request.Path.StartsWithSegments("/v1")) ctx.NoResult();
+                return Task.CompletedTask;
+            },
+            OnTokenValidated = async ctx =>
+            {
+                if (!Guid.TryParse(ctx.Principal?.FindFirst("sub")?.Value, out var userId)
+                    || !await access.IsAdminAsync(userId, ctx.HttpContext.RequestAborted))
+                    ctx.Fail("The user is no longer an active administrator.");
+            },
+        };
         o.TokenValidationParameters = new TokenValidationParameters
         {
             ValidateIssuer = true,
@@ -117,6 +159,25 @@ if (!migrateOnly && !bootstrap)
     });
     builder.Services.AddAuthorizationBuilder()
         .AddPolicy(Endpoints.AdminPolicy, p => p.RequireAuthenticatedUser().RequireRole(Reserved.AdminRole));
+}
+
+var proxies = (builder.Configuration["Auth:TrustedProxies"] ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+if (proxies.Length > 0)
+{
+    var parsed = new List<System.Net.IPAddress>();
+    foreach (var p in proxies)
+    {
+        if (!System.Net.IPAddress.TryParse(p, out var ip)) return Fail($"Auth:TrustedProxies contains an invalid address '{p}'.");
+        parsed.Add(ip);
+    }
+    builder.Services.Configure<Microsoft.AspNetCore.Builder.ForwardedHeadersOptions>(o =>
+    {
+        o.ForwardedHeaders = Microsoft.AspNetCore.HttpOverrides.ForwardedHeaders.XForwardedFor;
+        o.ForwardLimit = 1;
+        o.KnownProxies.Clear();
+        o.KnownIPNetworks.Clear();
+        foreach (var ip in parsed) o.KnownProxies.Add(ip);
+    });
 }
 
 var app = builder.Build();
@@ -150,6 +211,7 @@ if (migrateOnly)
     }
 }
 
+if (proxies.Length > 0) app.UseForwardedHeaders(); // before anything that reads the client address
 // Registered in every environment so unhandled errors never leak stack traces or headers.
 app.UseExceptionHandler();
 app.UseStatusCodePages();
@@ -158,8 +220,18 @@ app.UseAuthentication();
 app.UseAuthorization();
 app.MapOpenApi("/openapi/{documentName}.json");
 app.MapGet("/health", () => Results.Ok(new { status = "ok" })).ExcludeFromDescription();
+// Unauthenticated and it queries the store, so remember the answer briefly instead of letting callers amplify load.
+var readyLock = new object();
+var readyAt = DateTimeOffset.MinValue;
+var readyResult = false;
 app.MapGet("/health/ready", async (IReadinessProbe probe, CancellationToken ct) =>
-        await probe.IsReadyAsync(ct) ? Results.Ok(new { status = "ready" }) : Results.StatusCode(StatusCodes.Status503ServiceUnavailable))
+    {
+        bool cached;
+        lock (readyLock) cached = DateTimeOffset.UtcNow - readyAt < TimeSpan.FromSeconds(2);
+        var ready = cached ? readyResult : await probe.IsReadyAsync(ct);
+        if (!cached) lock (readyLock) (readyAt, readyResult) = (DateTimeOffset.UtcNow, ready);
+        return ready ? Results.Ok(new { status = "ready" }) : Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
+    })
     .ExcludeFromDescription();
 app.MapApi();
 app.MapAuth();

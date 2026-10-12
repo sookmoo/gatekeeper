@@ -41,6 +41,9 @@ public interface IUserRepository
     Task AssignRoleAsync(Guid userId, Guid roleId, CancellationToken ct = default);
     Task<bool> RevokeRoleAsync(Guid userId, Guid roleId, CancellationToken ct = default);
     Task<IReadOnlyList<Role>> ListRolesAsync(Guid userId, Guid? appId = null, Slice? slice = null, CancellationToken ct = default);
+
+    /// <summary>Number of active users holding the role, optionally not counting one user.</summary>
+    Task<int> CountActiveWithRoleAsync(Guid roleId, Guid? excludingUserId = null, CancellationToken ct = default);
 }
 
 /// <summary>
@@ -51,6 +54,9 @@ public interface ICredentialRepository
 {
     Task SetAsync(Guid userId, string hash, DateTimeOffset at, CancellationToken ct = default);
     Task<string?> GetHashAsync(Guid userId, CancellationToken ct = default);
+
+    /// <summary>Compare-and-set: replaces the hash only if it still equals <paramref name="expectedHash"/>. Returns whether it did.</summary>
+    Task<bool> ReplaceHashAsync(Guid userId, string expectedHash, string newHash, DateTimeOffset at, CancellationToken ct = default);
 }
 
 public interface IPasswordHasher

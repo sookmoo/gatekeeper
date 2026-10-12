@@ -5,6 +5,7 @@ using System.Security.Claims;
 using System.Security.Cryptography;
 using System.Text.Json;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.IdentityModel.JsonWebTokens;
 using Microsoft.IdentityModel.Tokens;
 
@@ -140,12 +141,12 @@ public class AuthApiTests
     {
         using var f = NewFactory();
         var seed = f.CreateAdminClient();
-        var adminName = await Seed(seed, "gatekeeper", "admin");
+        var adminName = TestAuth.AdminName;
         await Seed(seed, "shop", "buyer");
         var shopUser = (await Seed(seed, "shop-b", "buyer"));
 
         var anon = f.CreateClient();
-        var login = await Login(anon, adminName, Password, "gatekeeper");
+        var login = await Login(anon, adminName, TestAuth.AdminPassword, "gatekeeper");
         var token = (await login.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("accessToken").GetString()!;
         var real = f.CreateClient();
         real.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
@@ -163,7 +164,8 @@ public class AuthApiTests
     {
         using var f = NewFactory();
         var c = f.CreateClient();
-        c.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", TestAuth.Token(f, "gatekeeper", ["viewer"]));
+        // A real administrator whose token (somehow) lacks the admin role claim: the policy refuses it.
+        c.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", TestAuth.Mint(f, TestAuth.EnsureAdmin(f), "gatekeeper", ["viewer"]));
         Assert.Equal(HttpStatusCode.Forbidden, (await c.GetAsync("/v1/applications")).StatusCode);
     }
 
@@ -250,17 +252,104 @@ public class AuthApiTests
         Assert.NotNull(blocked.Headers.RetryAfter);
     }
 
+    private static async Task<Guid> FindId(HttpClient c, string url, string name)
+    {
+        var page = await c.GetFromJsonAsync<JsonElement>(url);
+        return page.GetProperty("items").EnumerateArray().Single(x => x.GetProperty("name").GetString() == name).GetProperty("id").GetGuid();
+    }
+
     [Fact]
     public async Task Reserved_admin_app_and_role_cannot_be_renamed_or_deleted()
     {
         using var f = NewFactory();
         var admin = f.CreateAdminClient();
-        var app = await Post(admin, "/v1/applications", new { name = "gatekeeper" });
-        var role = await Post(admin, $"/v1/applications/{app}/roles", new { name = "admin" });
+        var app = await FindId(admin, "/v1/applications?limit=200", "gatekeeper");
+        var role = await FindId(admin, $"/v1/applications/{app}/roles", "admin");
         Assert.Equal(HttpStatusCode.Conflict, (await admin.DeleteAsync($"/v1/applications/{app}")).StatusCode);
         Assert.Equal(HttpStatusCode.Conflict, (await admin.PutAsJsonAsync($"/v1/applications/{app}", new { name = "renamed" })).StatusCode);
         Assert.Equal(HttpStatusCode.Conflict, (await admin.DeleteAsync($"/v1/roles/{role}")).StatusCode);
         Assert.Equal(HttpStatusCode.Conflict, (await admin.PutAsJsonAsync($"/v1/roles/{role}", new { name = "boss" })).StatusCode);
         Assert.Equal(HttpStatusCode.OK, (await admin.PutAsJsonAsync($"/v1/roles/{role}", new { name = "admin", description = "fine" })).StatusCode);
+        // nobody else can claim the name
+        Assert.Equal(HttpStatusCode.Conflict, (await admin.PostAsJsonAsync("/v1/applications", new { name = "gatekeeper" })).StatusCode);
+        var other = await Post(admin, "/v1/applications", new { name = "other" });
+        Assert.Equal(HttpStatusCode.Conflict, (await admin.PutAsJsonAsync($"/v1/applications/{other}", new { name = "gatekeeper" })).StatusCode);
+    }
+
+    [Fact]
+    public async Task A_valid_token_for_someone_who_is_not_an_administrator_is_rejected()
+    {
+        using var f = NewFactory();
+        TestAuth.EnsureAdmin(f);
+        var c = f.CreateClient();
+        // Correctly signed, right audience and role claim, but the subject is not an administrator in the store.
+        c.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", TestAuth.Token(f, "gatekeeper", ["admin"]));
+        Assert.Equal(HttpStatusCode.Unauthorized, (await c.GetAsync("/v1/applications")).StatusCode);
+    }
+
+    private static async Task<(Guid Id, string Name, string Token)> SecondAdmin(WebApplicationFactory<Program> f, HttpClient admin)
+    {
+        var app = await FindId(admin, "/v1/applications?limit=200", "gatekeeper");
+        var role = await FindId(admin, $"/v1/applications/{app}/roles", "admin");
+        var name = await SeedUser(admin, role);
+        var user = (await (await admin.GetAsync($"/v1/users?username={name}")).Content.ReadFromJsonAsync<JsonElement>()).GetProperty("items")[0];
+        var id = user.GetProperty("id").GetGuid();
+        var token = TestAuth.Mint(f, new Gatekeeper.Domain.User(id, name, $"{name}@example.com", "", true, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow), "gatekeeper", ["admin"]);
+        return (id, name, token);
+    }
+
+    [Fact]
+    public async Task Demoted_or_deactivated_administrators_lose_access_immediately()
+    {
+        using var f = NewFactory();
+        var admin = f.CreateAdminClient();
+        var role = await FindId(admin, $"/v1/applications/{await FindId(admin, "/v1/applications?limit=200", "gatekeeper")}/roles", "admin");
+
+        var (id1, _, token1) = await SecondAdmin(f, admin);
+        Assert.Equal(HttpStatusCode.NoContent, (await admin.DeleteAsync($"/v1/users/{id1}/roles/{role}")).StatusCode); // not the last admin
+        var c1 = f.CreateClient(); c1.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token1);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await c1.GetAsync("/v1/applications")).StatusCode);
+
+        var (id2, name2, token2) = await SecondAdmin(f, admin);
+        var current = await (await admin.GetAsync($"/v1/users/{id2}")).Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(HttpStatusCode.OK, (await admin.PutAsJsonAsync($"/v1/users/{id2}",
+            new { username = name2, email = current.GetProperty("email").GetString(), displayName = "", isActive = false })).StatusCode);
+        var c2 = f.CreateClient(); c2.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token2);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await c2.GetAsync("/v1/applications")).StatusCode);
+    }
+
+    [Fact]
+    public async Task The_last_active_administrator_cannot_be_removed_deactivated_or_demoted()
+    {
+        using var f = NewFactory();
+        var admin = f.CreateAdminClient();
+        var role = await FindId(admin, $"/v1/applications/{await FindId(admin, "/v1/applications?limit=200", "gatekeeper")}/roles", "admin");
+        var me = TestAuth.EnsureAdmin(f).Id;
+
+        Assert.Equal(HttpStatusCode.Conflict, (await admin.DeleteAsync($"/v1/users/{me}")).StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, (await admin.DeleteAsync($"/v1/users/{me}/roles/{role}")).StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, (await admin.PutAsJsonAsync($"/v1/users/{me}",
+            new { username = TestAuth.AdminName, email = "test-admin@example.com", displayName = "", isActive = false })).StatusCode);
+
+        // with a second administrator the first can go, and then the second is the last one
+        var (id2, _, token2) = await SecondAdmin(f, admin);
+        Assert.Equal(HttpStatusCode.NoContent, (await admin.DeleteAsync($"/v1/users/{me}")).StatusCode);
+        var c2 = f.CreateClient();
+        c2.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token2);
+        Assert.Equal(HttpStatusCode.Conflict, (await c2.DeleteAsync($"/v1/users/{id2}")).StatusCode); // now the last one
+    }
+
+    [Fact]
+    public async Task Bootstrap_repairs_an_existing_administrator()
+    {
+        using var f = NewFactory();
+        var admin = f.CreateAdminClient();
+        var me = TestAuth.EnsureAdmin(f);
+        // lock the admin out: wrong password known only to the attacker-less test; then bootstrap resets it
+        Assert.Equal(HttpStatusCode.NoContent, (await admin.PutAsJsonAsync($"/v1/users/{me.Id}/password", new { password = "something else entirely" })).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await Login(f.CreateClient(), TestAuth.AdminName, TestAuth.AdminPassword, "gatekeeper")).StatusCode);
+        var created = await Bootstrap.CreateAdminAsync(f.Services, TestAuth.AdminName, "test-admin@example.com", TestAuth.AdminPassword);
+        Assert.False(created);
+        Assert.Equal(HttpStatusCode.OK, (await Login(f.CreateClient(), TestAuth.AdminName, TestAuth.AdminPassword, "gatekeeper")).StatusCode);
     }
 }

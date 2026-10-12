@@ -19,8 +19,9 @@ public sealed class ApiClient(HttpClient http, string? bearerToken = null)
     {
         var items = new List<JsonElement>();
         string? cursor = null;
-        for (var pages = 0; pages < MaxPages; pages++)
+        for (var pages = 0; ; pages++)
         {
+            if (pages >= MaxPages) throw new CliException(1, $"The list has more than {MaxPages} pages; refusing to print a partial result.");
             var sep = path.Contains('?') ? '&' : '?';
             var url = $"{path}{sep}limit=200" + (cursor is null ? "" : $"&cursor={Uri.EscapeDataString(cursor)}");
             var page = await GetAsync(url);
@@ -69,12 +70,16 @@ public sealed class ApiClient(HttpClient http, string? bearerToken = null)
             if (response.IsSuccessStatusCode)
                 return string.IsNullOrEmpty(text) ? default : JsonDocument.Parse(text).RootElement.Clone();
 
+            if ((int)response.StatusCode is >= 300 and < 400)
+                throw new CliException(1, "The server answered with a redirect, which is not followed (it could forward your password to another host).");
+
             var message = response.StatusCode switch
             {
+                HttpStatusCode.Unauthorized when path == LoginPath => "Login failed: invalid credentials.",
                 HttpStatusCode.Unauthorized when bearerToken is not null => "Your session is invalid or has expired. Run 'gk login'.",
-                HttpStatusCode.Unauthorized when path != LoginPath => "Not logged in. Run 'gk login'.",
+                HttpStatusCode.Unauthorized => "Not logged in. Run 'gk login'.",
                 HttpStatusCode.Forbidden => "You are not allowed to do that (administrator role required).",
-                _ => Describe(text) ?? response.ReasonPhrase ?? response.StatusCode.ToString(),
+                _ => Safe.Text(Describe(text) ?? response.ReasonPhrase ?? response.StatusCode.ToString()),
             };
             var code = response.StatusCode switch
             {

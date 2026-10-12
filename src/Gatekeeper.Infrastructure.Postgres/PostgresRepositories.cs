@@ -210,6 +210,12 @@ public sealed class PostgresUserRepository(Factory factory) : PostgresRepository
         return await query.OrderBy(r => r.Name).ThenBy(r => r.Id).Page(slice).ToListAsync(ct);
     }, ct: ct);
 
+    public Task<int> CountActiveWithRoleAsync(Guid roleId, Guid? excludingUserId = null, CancellationToken ct = default) => Run(db =>
+        db.UserRoles.AsNoTracking()
+            .Where(x => x.RoleId == roleId && x.UserId != excludingUserId)
+            .Join(db.Users.Where(u => u.IsActive), x => x.UserId, u => u.Id, (x, _) => x)
+            .CountAsync(ct), ct: ct);
+
     // Both unique indexes may be violated at once and Postgres reports only one. Report the username
     // first, like the in-memory store, by checking it explicitly.
     private static Translator TranslateUnique(User user) => async (lookup, pg) =>
@@ -230,6 +236,10 @@ public sealed class PostgresCredentialRepository(Factory factory) : PostgresRepo
         return 0;
     }, (_, pg) => Task.FromResult<GatekeeperException?>(
         pg.ConstraintName == Names.CredentialUserFk ? new NotFoundException($"User {userId} not found.") : null), ct);
+
+    public Task<bool> ReplaceHashAsync(Guid userId, string expectedHash, string newHash, DateTimeOffset at, CancellationToken ct = default) => Run(async db =>
+        await db.Database.ExecuteSqlInterpolatedAsync(
+            $"UPDATE user_credentials SET hash = {newHash}, updated_at = {at} WHERE user_id = {userId} AND hash = {expectedHash}", ct) > 0, ct: ct);
 
     public Task<string?> GetHashAsync(Guid userId, CancellationToken ct = default) =>
         Run<string?>(db => db.Credentials.AsNoTracking().Where(c => c.UserId == userId).Select(c => c.Hash).FirstOrDefaultAsync(ct), ct: ct);

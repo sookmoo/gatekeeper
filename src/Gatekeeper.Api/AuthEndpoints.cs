@@ -10,6 +10,8 @@ public sealed record LoginResponse(string AccessToken, string TokenType, int Exp
 
 public static class AuthEndpoints
 {
+    private const int SlowDownAfterFailures = 20;
+
     public static void MapAuth(this IEndpointRouteBuilder routes)
     {
         routes.MapGet("/.well-known/jwks.json", (TokenService tokens) => Results.Json(tokens.Jwks()))
@@ -29,12 +31,15 @@ public static class AuthEndpoints
                 if (result is null)
                 {
                     throttle.RecordFailure(address, r.Username);
+                    // Many failures against one account from many addresses: do not lock the owner out, just slow the guessing.
+                    if (throttle.UserFailures(r.Username) >= SlowDownAfterFailures)
+                        await Task.Delay(TimeSpan.FromSeconds(2), ct);
                     // One response for every failure: unknown user, wrong password, inactive account, no access to the application.
                     http.Response.Headers.WWWAuthenticate = "Bearer";
                     return Results.Problem("Invalid credentials.", statusCode: StatusCodes.Status401Unauthorized);
                 }
 
-                throttle.RecordSuccess(r.Username);
+                throttle.RecordSuccess(address, r.Username);
                 var (token, expires) = tokens.Issue(result);
                 http.Response.Headers.CacheControl = "no-store";
                 return Results.Ok(new LoginResponse(token, "Bearer", (int)(expires - DateTimeOffset.UtcNow).TotalSeconds));

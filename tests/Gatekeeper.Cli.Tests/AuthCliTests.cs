@@ -27,6 +27,13 @@ public class AuthCliTests : IClassFixture<WebApplicationFactory<Program>>
         return (code, o.ToString(), e.ToString());
     }
 
+    private async Task<(int Code, string Out, string Err)> GkWithPassword(string password, params string[] args)
+    {
+        var o = new StringWriter(); var e = new StringWriter();
+        var code = await CliApp.RunAsync(args, _ => _factory.CreateClient(), o, e, _tokens, (_, _) => password);
+        return (code, o.ToString(), e.ToString());
+    }
+
     [Fact]
     public async Task Without_a_login_commands_exit_5()
     {
@@ -38,19 +45,14 @@ public class AuthCliTests : IClassFixture<WebApplicationFactory<Program>>
     [Fact]
     public async Task Login_saves_a_token_that_is_then_used_and_logout_removes_it()
     {
-        var name = $"adm{Guid.NewGuid():N}"[..12];
-        // Seed the admin app, role and user with the minted admin client.
-        Assert.Equal(0, (await Gk(true, null, "app", "create", "gatekeeper")).Code is 0 or 3 ? 0 : 1);
-        await Gk(true, null, "role", "create", "admin", "--app", "gatekeeper");
-        Assert.Equal(0, (await Gk(true, null, "user", "create", name, "--email", $"{name}@example.com")).Code);
-        Assert.Equal(0, (await Gk(true, Password, "user", "set-password", name)).Code);
-        Assert.Equal(0, (await Gk(true, null, "user", "assign", name, "admin", "--app", "gatekeeper")).Code);
+        TestAuth.AdminToken(_factory); // creates the reserved admin app, role and the test administrator
+        var name = TestAuth.AdminName;
 
-        var login = await GkAsLoggedIn("login", "--user", name);
+        var login = await GkWithPassword(TestAuth.AdminPassword, "login", "--user", name);
         Assert.Equal(0, login.Code);
         Assert.Contains("logged in", login.Out);
         Assert.NotNull(_tokens.Current);
-        Assert.DoesNotContain(Password, login.Out + login.Err);
+        Assert.DoesNotContain(TestAuth.AdminPassword, login.Out + login.Err);
 
         Assert.Equal(0, (await GkAsLoggedIn("app", "list")).Code);
 
@@ -73,8 +75,8 @@ public class AuthCliTests : IClassFixture<WebApplicationFactory<Program>>
         _tokens.Save(new StoredToken("http://localhost:5080", AdminToken(), DateTimeOffset.UtcNow.AddMinutes(5), "x"));
         string? seen = null;
         var o = new StringWriter(); var e = new StringWriter();
-        await CliApp.RunAsync(["--url", "http://evil.example:9999", "app", "list"],
-            _ => new HttpClient(new Capture(r => seen = r.Headers.Authorization?.ToString())) { BaseAddress = new Uri("http://evil.example:9999") }, o, e, _tokens);
+        await CliApp.RunAsync(["--url", "http://localhost:9999", "app", "list"],
+            _ => new HttpClient(new Capture(r => seen = r.Headers.Authorization?.ToString())) { BaseAddress = new Uri("http://localhost:9999") }, o, e, _tokens);
         Assert.Null(seen);
 
         await CliApp.RunAsync(["--url", "http://localhost:5080", "app", "list"],
@@ -127,5 +129,55 @@ public class AuthCliTests : IClassFixture<WebApplicationFactory<Program>>
             seen(request);
             return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.Unauthorized));
         }
+    }
+}
+
+public class CliSafetyTests
+{
+    [Fact]
+    public void Safe_text_replaces_escape_sequences_and_bidi_controls()
+    {
+        Assert.Equal("ok\uFFFD[31mred", Safe.Text("ok\u001b[31mred"));
+        Assert.Equal("a\uFFFDb\uFFFDc", Safe.Text("a\u202Eb\u0007c"));
+        Assert.Equal("plain \u00e5\u00e4\u00f6 \U0001F600", Safe.Text("plain \u00e5\u00e4\u00f6 \U0001F600"));
+        Assert.Equal("", Safe.Text(null));
+    }
+
+    private sealed class Stub(Func<HttpRequestMessage, HttpResponseMessage> respond) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage r, CancellationToken ct) => Task.FromResult(respond(r));
+    }
+
+    private static async Task<(int Code, string Err)> Run(Func<HttpRequestMessage, HttpResponseMessage> respond, params string[] args)
+    {
+        var e = new StringWriter();
+        var code = await CliApp.RunAsync(args, u => new HttpClient(new Stub(respond)) { BaseAddress = u }, new StringWriter(), e, new MemoryTokenStore(), (_, _) => "a long enough password");
+        return (code, e.ToString());
+    }
+
+    [Fact]
+    public async Task Redirects_are_an_error_and_are_not_followed()
+    {
+        var r = await Run(_ => new HttpResponseMessage(System.Net.HttpStatusCode.TemporaryRedirect), "login", "--user", "alice");
+        Assert.Equal(1, r.Code);
+        Assert.Contains("redirect", r.Err);
+    }
+
+    [Fact]
+    public async Task Plain_http_to_a_non_local_host_is_refused()
+    {
+        var called = false;
+        var r = await Run(_ => { called = true; return new HttpResponseMessage(System.Net.HttpStatusCode.OK); }, "--url", "http://gatekeeper.example", "login", "--user", "alice");
+        Assert.Equal(1, r.Code);
+        Assert.False(called);
+        Assert.Contains("https", r.Err);
+    }
+
+    [Fact]
+    public async Task Server_text_in_error_messages_is_sanitised()
+    {
+        var r = await Run(_ => new HttpResponseMessage(System.Net.HttpStatusCode.BadRequest)
+            { Content = new StringContent("{\"detail\":\"bad\\u001b[2Jthing\"}") }, "app", "create", "x");
+        Assert.DoesNotContain('\u001b', r.Err);
     }
 }

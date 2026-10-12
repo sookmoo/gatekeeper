@@ -17,3 +17,6 @@ public sealed class StoreUnavailableException(string message, Exception? inner =
 }
 
 public sealed class ConflictException(string message) : GatekeeperException(message);
+
+/// <summary>Too much password hashing is queued; the caller may retry shortly (HTTP 503).</summary>
+public sealed class BusyException() : GatekeeperException("The server is busy. Try again shortly.");

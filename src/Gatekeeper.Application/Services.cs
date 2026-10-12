@@ -16,6 +16,7 @@ public sealed class AppService(IAppRepository apps)
     public Task<App> CreateAsync(string? name, CancellationToken ct = default)
     {
         Validation.AppName(name);
+        RejectReservedName(name!);
         return apps.AddAsync(new App(Guid.NewGuid(), name!), ct);
     }
 
@@ -23,6 +24,7 @@ public sealed class AppService(IAppRepository apps)
     {
         Validation.AppName(name);
         await RejectReserved(id, "renamed", ct);
+        RejectReservedName(name!);
         return await apps.UpdateAsync(new App(id, name!), ct)
             ?? throw new NotFoundException($"Application {id} not found.");
     }
@@ -31,6 +33,13 @@ public sealed class AppService(IAppRepository apps)
     {
         await RejectReserved(id, "deleted", ct);
         if (!await apps.DeleteAsync(id, ct)) throw new NotFoundException($"Application {id} not found.");
+    }
+
+    // Only bootstrap-admin creates the admin app; letting anyone claim the name would hand them the admin audience.
+    private static void RejectReservedName(string name)
+    {
+        if (string.Equals(name, Reserved.AdminApp, StringComparison.OrdinalIgnoreCase))
+            throw new ConflictException($"Application name '{name}' is reserved.");
     }
 
     // Renaming or deleting the admin app would lock every administrator out.
@@ -87,7 +96,7 @@ public sealed class RoleService(IAppRepository apps, IRoleRepository roles)
     }
 }
 
-public sealed class UserService(IUserRepository users)
+public sealed class UserService(IUserRepository users, AdminGuard? guard = null)
 {
     public async Task<Page<User>> ListAsync(bool? active = null, string? username = null, PageQuery? page = null, CancellationToken ct = default)
     {
@@ -111,6 +120,18 @@ public sealed class UserService(IUserRepository users)
     {
         Validation.UserFields(username, email, displayName);
         var existing = await GetAsync(id, ct);
+        if (isActive == false && existing.IsActive && guard is not null)
+            return await guard.ExclusiveAsync(async () =>
+            {
+                await guard.EnsureNotLastAdminAsync(id, ct);
+                return await Save(existing, username, email, displayName, isActive, ct);
+            }, ct);
+        return await Save(existing, username, email, displayName, isActive, ct);
+    }
+
+    private async Task<User> Save(User existing, string? username, string? email, string? displayName, bool? isActive, CancellationToken ct)
+    {
+        var id = existing.Id;
         var updated = existing with
         {
             Username = username!,
@@ -123,6 +144,17 @@ public sealed class UserService(IUserRepository users)
     }
 
     public async Task DeleteAsync(Guid id, CancellationToken ct = default)
+    {
+        if (guard is null) { await Delete(id, ct); return; }
+        await guard.ExclusiveAsync(async () =>
+        {
+            await guard.EnsureNotLastAdminAsync(id, ct);
+            await Delete(id, ct);
+            return 0;
+        }, ct);
+    }
+
+    private async Task Delete(Guid id, CancellationToken ct)
     {
         if (!await users.DeleteAsync(id, ct)) throw new NotFoundException($"User {id} not found.");
     }
@@ -142,20 +174,74 @@ public sealed class UserService(IUserRepository users)
     public async Task RevokeRoleAsync(Guid userId, Guid roleId, CancellationToken ct = default)
     {
         await GetAsync(userId, ct);
+        if (guard is null) { await Revoke(userId, roleId, ct); return; }
+        await guard.ExclusiveAsync(async () =>
+        {
+            if (await guard.AdminRoleIdAsync(ct) == roleId) await guard.EnsureNotLastAdminAsync(userId, ct);
+            await Revoke(userId, roleId, ct);
+            return 0;
+        }, ct);
+    }
+
+    private async Task Revoke(Guid userId, Guid roleId, CancellationToken ct)
+    {
         // Revoking an assignment that does not exist is a 404 so callers notice typos.
         if (!await users.RevokeRoleAsync(userId, roleId, ct))
             throw new NotFoundException($"User {userId} does not have role {roleId}.");
     }
 }
 
-public sealed class CredentialService(IUserRepository users, ICredentialRepository credentials, IPasswordHasher hasher)
+/// <summary>
+/// Keeps at least one active administrator. Admin-affecting changes (delete, deactivate, revoke the admin role)
+/// run one at a time in this process and are refused if they would leave nobody able to manage Gatekeeper.
+/// </summary>
+public sealed class AdminGuard(IAppRepository apps, IRoleRepository roles, IUserRepository users)
 {
+    private readonly SemaphoreSlim _gate = new(1, 1);
+
+    public async Task<T> ExclusiveAsync<T>(Func<Task<T>> action, CancellationToken ct)
+    {
+        await _gate.WaitAsync(ct);
+        try
+        {
+            return await action();
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public async Task<Guid?> AdminRoleIdAsync(CancellationToken ct)
+    {
+        var app = await apps.GetByNameAsync(Reserved.AdminApp, ct);
+        if (app is null) return null;
+        var role = (await roles.ListByAppAsync(app.Id, ct: ct)).FirstOrDefault(r =>
+            string.Equals(r.Name, Reserved.AdminRole, StringComparison.OrdinalIgnoreCase));
+        return role?.Id;
+    }
+
+    /// <summary>Throws Conflict if the user is an active administrator and nobody else active holds the admin role.</summary>
+    public async Task EnsureNotLastAdminAsync(Guid userId, CancellationToken ct)
+    {
+        if (await AdminRoleIdAsync(ct) is not { } adminRole) return;
+        var held = (await users.ListRolesAsync(userId, slice: new Slice(0, 10_000), ct: ct)).Any(r => r.Id == adminRole);
+        if (!held || await users.GetAsync(userId, ct) is not { IsActive: true }) return;
+        if (await users.CountActiveWithRoleAsync(adminRole, userId, ct) == 0)
+            throw new ConflictException("This would leave Gatekeeper without an active administrator.");
+    }
+}
+
+public sealed class CredentialService(IUserRepository users, ICredentialRepository credentials, IPasswordHasher hasher, HashLimiter? limiter = null)
+{
+    private readonly HashLimiter _limiter = limiter ?? new HashLimiter();
+
     public async Task SetPasswordAsync(Guid userId, string? password, CancellationToken ct = default)
     {
         Validation.Password(password);
         _ = await users.GetAsync(userId, ct) ?? throw new NotFoundException($"User {userId} not found.");
-        // Argon2 is CPU and memory heavy; keep it off the request thread.
-        var hash = await Task.Run(() => hasher.Hash(password!), ct);
+        // Argon2 is CPU and memory heavy: bounded parallelism, off the request thread.
+        var hash = await _limiter.RunAsync(() => hasher.Hash(password!), ct);
         await credentials.SetAsync(userId, hash, Clock.UtcNowMicros(), ct);
     }
 }
@@ -168,14 +254,15 @@ public sealed record AuthResult(User User, App App, IReadOnlyList<string> Roles)
 /// A hash is verified on every attempt (against a dummy for unknown users) so timing does not reveal which case it was.
 /// </summary>
 public sealed class AuthService(
-    IUserRepository users, IAppRepository apps, ICredentialRepository credentials, IPasswordHasher hasher)
+    IUserRepository users, IAppRepository apps, ICredentialRepository credentials, IPasswordHasher hasher, HashLimiter? limiter = null)
 {
+    private readonly HashLimiter _limiter = limiter ?? new HashLimiter();
     private readonly Lazy<string> _dummyHash = new(() => hasher.Hash(Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(24))));
 
     public async Task<AuthResult?> LoginAsync(string? username, string? password, string? application, CancellationToken ct = default)
     {
         // Malformed input can never match; reject cheaply but still spend a hash so the response time stays similar.
-        var wellFormed = username is { Length: > 0 and <= Validation.MaxNameLength } && Validation.IsCleanText(username)
+        var wellFormed = Validation.LooksLikeUsername(username) && Validation.IsCleanText(username!)
                          && password is { Length: >= Validation.MinPasswordLength and <= Validation.MaxPasswordLength }
                          && application is { Length: > 0 and <= Validation.MaxNameLength } && Validation.IsCleanText(application);
 
@@ -189,18 +276,30 @@ public sealed class AuthService(
             if (user is not null) stored = await credentials.GetHashAsync(user.Id, ct);
         }
 
-        var hash = stored ?? _dummyHash.Value;
+        var hash = stored ?? await _limiter.RunAsync(() => _dummyHash.Value, ct);
         var candidate = wellFormed ? password! : "dummy password for malformed input";
-        var verified = await Task.Run(() => hasher.Verify(hash, candidate), ct);
+        var verified = await _limiter.RunAsync(() => hasher.Verify(hash, candidate), ct);
 
         if (!wellFormed || user is null || stored is null || app is null || !verified || !user.IsActive) return null;
 
-        var roles = await users.ListRolesAsync(user.Id, app.Id, new Slice(0, PageQuery.MaxLimit), ct);
-        if (roles.Count == 0) return null;
+        // All of the user's roles in this application: a silent cut-off would make consumers deny legitimate access.
+        var names = new List<string>();
+        const int pageSize = PageQuery.MaxLimit;
+        while (true)
+        {
+            var batch = await users.ListRolesAsync(user.Id, app.Id, new Slice(names.Count, pageSize), ct);
+            names.AddRange(batch.Select(r => r.Name));
+            if (batch.Count < pageSize) break;
+        }
+        if (names.Count == 0) return null;
 
         if (hasher.NeedsRehash(stored))
-            await credentials.SetAsync(user.Id, await Task.Run(() => hasher.Hash(password!), ct), Clock.UtcNowMicros(), ct);
+        {
+            // Compare-and-set: if the password was changed meanwhile, the newer hash must win.
+            var upgraded = await _limiter.RunAsync(() => hasher.Hash(password!), ct);
+            await credentials.ReplaceHashAsync(user.Id, stored, upgraded, Clock.UtcNowMicros(), ct);
+        }
 
-        return new AuthResult(user, app, roles.Select(r => r.Name).ToList());
+        return new AuthResult(user, app, names);
     }
 }
