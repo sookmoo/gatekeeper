@@ -129,3 +129,15 @@ public sealed class UserService(IUserRepository users)
             throw new NotFoundException($"User {userId} does not have role {roleId}.");
     }
 }
+
+public sealed class CredentialService(IUserRepository users, ICredentialRepository credentials, IPasswordHasher hasher)
+{
+    public async Task SetPasswordAsync(Guid userId, string? password, CancellationToken ct = default)
+    {
+        Validation.Password(password);
+        _ = await users.GetAsync(userId, ct) ?? throw new NotFoundException($"User {userId} not found.");
+        // Argon2 is CPU and memory heavy; keep it off the request thread.
+        var hash = await Task.Run(() => hasher.Hash(password!), ct);
+        await credentials.SetAsync(userId, hash, Clock.UtcNowMicros(), ct);
+    }
+}

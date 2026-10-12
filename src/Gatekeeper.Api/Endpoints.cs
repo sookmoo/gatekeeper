@@ -9,6 +9,8 @@ public sealed record RoleRequest(string? Name, string? Description);
 
 public sealed record UserRequest(string? Username, string? Email, string? DisplayName, bool? IsActive);
 
+public sealed record PasswordRequest(string? Password);
+
 public static class Endpoints
 {
     public static void MapApi(this IEndpointRouteBuilder routes)
@@ -61,6 +63,11 @@ public static class Endpoints
         users.MapDelete("/{id:guid}", async (Guid id, UserService s, CancellationToken ct) =>
         {
             await s.DeleteAsync(id, ct);
+            return Results.NoContent();
+        });
+        users.MapPut("/{id:guid}/password", async (Guid id, PasswordRequest r, CredentialService s, CancellationToken ct) =>
+        {
+            await s.SetPasswordAsync(id, r.Password, ct);
             return Results.NoContent();
         });
         users.MapGet("/{id:guid}/roles", (Guid id, UserService s, Guid? application, int? limit, string? cursor, CancellationToken ct) =>

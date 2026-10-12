@@ -41,6 +41,23 @@ public interface IUserRepository
     Task<IReadOnlyList<Role>> ListRolesAsync(Guid userId, Guid? appId = null, Slice? slice = null, CancellationToken ct = default);
 }
 
+/// <summary>
+/// Password hashes live apart from users so they never travel with user DTOs. Cascades with the user.
+/// SetAsync is an upsert and throws NotFoundException if the user does not exist.
+/// </summary>
+public interface ICredentialRepository
+{
+    Task SetAsync(Guid userId, string hash, DateTimeOffset at, CancellationToken ct = default);
+    Task<string?> GetHashAsync(Guid userId, CancellationToken ct = default);
+}
+
+public interface IPasswordHasher
+{
+    string Hash(string password);
+    bool Verify(string hash, string password);
+    bool NeedsRehash(string hash);
+}
+
 /// <summary>Reports whether the backing store is reachable (used by /health/ready).</summary>
 public interface IReadinessProbe
 {

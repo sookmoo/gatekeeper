@@ -41,6 +41,8 @@ builder.Services
     .AddSingleton<AppService>()
     .AddSingleton<RoleService>()
     .AddSingleton<UserService>()
+    .AddSingleton<IPasswordHasher, Argon2PasswordHasher>()
+    .AddSingleton<CredentialService>()
     .AddProblemDetails()
     .AddOpenApi();
 

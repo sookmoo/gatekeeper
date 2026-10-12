@@ -217,3 +217,17 @@ public sealed class PostgresUserRepository(Factory factory) : PostgresRepository
         return new ConflictException($"Email '{user.Email}' is already in use.");
     };
 }
+
+public sealed class PostgresCredentialRepository(Factory factory) : PostgresRepository(factory), ICredentialRepository
+{
+    public Task SetAsync(Guid userId, string hash, DateTimeOffset at, CancellationToken ct = default) => Run(async db =>
+    {
+        await db.Database.ExecuteSqlInterpolatedAsync(
+            $"INSERT INTO user_credentials (user_id, hash, updated_at) VALUES ({userId}, {hash}, {at}) ON CONFLICT (user_id) DO UPDATE SET hash = EXCLUDED.hash, updated_at = EXCLUDED.updated_at", ct);
+        return 0;
+    }, (_, pg) => Task.FromResult<GatekeeperException?>(
+        pg.ConstraintName == Names.CredentialUserFk ? new NotFoundException($"User {userId} not found.") : null), ct);
+
+    public Task<string?> GetHashAsync(Guid userId, CancellationToken ct = default) =>
+        Run<string?>(db => db.Credentials.AsNoTracking().Where(c => c.UserId == userId).Select(c => c.Hash).FirstOrDefaultAsync(ct), ct: ct);
+}

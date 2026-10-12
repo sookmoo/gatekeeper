@@ -121,6 +121,26 @@ namespace Gatekeeper.Infrastructure.Postgres.Migrations
                     b.ToTable("users", (string)null);
                 });
 
+            modelBuilder.Entity("Gatekeeper.Infrastructure.Postgres.UserCredentialRow", b =>
+                {
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.Property<string>("Hash")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("hash");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("UserId");
+
+                    b.ToTable("user_credentials", (string)null);
+                });
+
             modelBuilder.Entity("Gatekeeper.Infrastructure.Postgres.UserRoleRow", b =>
                 {
                     b.Property<Guid>("UserId")
@@ -146,6 +166,16 @@ namespace Gatekeeper.Infrastructure.Postgres.Migrations
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired()
                         .HasConstraintName("fk_roles_apps");
+                });
+
+            modelBuilder.Entity("Gatekeeper.Infrastructure.Postgres.UserCredentialRow", b =>
+                {
+                    b.HasOne("Gatekeeper.Domain.User", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_user_credentials_users");
                 });
 
             modelBuilder.Entity("Gatekeeper.Infrastructure.Postgres.UserRoleRow", b =>

@@ -12,6 +12,7 @@ public sealed class InMemoryStore
     public Dictionary<Guid, Role> Roles { get; } = [];
     public Dictionary<Guid, User> Users { get; } = [];
     public HashSet<(Guid UserId, Guid RoleId)> Assignments { get; } = [];
+    public Dictionary<Guid, string> Credentials { get; } = [];
 
     internal static IReadOnlyList<T> Paged<T>(IEnumerable<T> ordered, Slice? slice) =>
         (slice is null ? ordered : ordered.Skip(slice.Offset).Take(slice.Take)).ToList();
@@ -172,6 +173,7 @@ public sealed class InMemoryUserRepository(InMemoryStore s) : IUserRepository
         {
             if (!s.Users.Remove(id)) return Task.FromResult(false);
             s.Assignments.RemoveWhere(a => a.UserId == id);
+            s.Credentials.Remove(id);
             return Task.FromResult(true);
         }
     }
@@ -216,6 +218,24 @@ public sealed class InMemoryUserRepository(InMemoryStore s) : IUserRepository
     }
 }
 
+public sealed class InMemoryCredentialRepository(InMemoryStore s) : ICredentialRepository
+{
+    public Task SetAsync(Guid userId, string hash, DateTimeOffset at, CancellationToken ct = default)
+    {
+        lock (s.Gate)
+        {
+            if (!s.Users.ContainsKey(userId)) throw new NotFoundException($"User {userId} not found.");
+            s.Credentials[userId] = hash;
+        }
+        return Task.CompletedTask;
+    }
+
+    public Task<string?> GetHashAsync(Guid userId, CancellationToken ct = default)
+    {
+        lock (s.Gate) return Task.FromResult(s.Credentials.GetValueOrDefault(userId));
+    }
+}
+
 public static class InMemoryServiceCollectionExtensions
 {
     public static IServiceCollection AddInMemoryStore(this IServiceCollection services) => services
@@ -223,6 +243,7 @@ public static class InMemoryServiceCollectionExtensions
         .AddSingleton<IAppRepository, InMemoryAppRepository>()
         .AddSingleton<IRoleRepository, InMemoryRoleRepository>()
         .AddSingleton<IUserRepository, InMemoryUserRepository>()
+        .AddSingleton<ICredentialRepository, InMemoryCredentialRepository>()
         .AddSingleton<IReadinessProbe, AlwaysReady>();
 }
 
