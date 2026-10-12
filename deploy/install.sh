@@ -32,6 +32,8 @@ if ! podman secret exists gatekeeper-signing-key; then
   openssl ecparam -genkey -name prime256v1 -noout | openssl pkcs8 -topk8 -nocrypt | podman secret create gatekeeper-signing-key - >/dev/null
 fi
 
+secret gatekeeper-retired-keys "# no retired keys"
+
 systemctl --user daemon-reload
 echo "Installed. Start with: systemctl --user start gatekeeper-api.service"
 echo "Then create the first administrator once: deploy/bootstrap-admin.sh <username> <email>"

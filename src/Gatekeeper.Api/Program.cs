@@ -106,6 +106,20 @@ if (!migrateOnly && !bootstrap)
         return Fail($"Invalid signing key configuration: {ex.Message}");
     }
 
+    // Retired keys stay published (and accepted) until the tokens they signed have expired; see README "Key rotation".
+    var retired = new List<ECDsa>();
+    var retiredFile = builder.Configuration["Auth:RetiredKeysPemFile"];
+    var retiredPem = builder.Configuration["Auth:RetiredKeysPem"];
+    try
+    {
+        if (!string.IsNullOrWhiteSpace(retiredFile)) retiredPem = File.ReadAllText(retiredFile);
+        if (!string.IsNullOrWhiteSpace(retiredPem)) retired = TokenService.LoadRetiredKeys(retiredPem);
+    }
+    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or CryptographicException or ArgumentException)
+    {
+        return Fail($"Invalid retired keys configuration: {ex.Message}");
+    }
+
     var minutes = builder.Configuration.GetValue("Auth:AccessTokenMinutes", 15);
     if (minutes is < 1 or > 60) return Fail("Auth:AccessTokenMinutes must be between 1 and 60.");
     TokenService tokenService;
@@ -115,7 +129,7 @@ if (!migrateOnly && !bootstrap)
         {
             Issuer = builder.Configuration["Auth:Issuer"] ?? "gatekeeper",
             AccessTokenLifetime = TimeSpan.FromMinutes(minutes),
-        });
+        }, retired);
     }
     catch (ArgumentException ex)
     {
@@ -158,7 +172,7 @@ if (!migrateOnly && !bootstrap)
             RequireExpirationTime = true,
             RequireSignedTokens = true,
             ValidateIssuerSigningKey = true,
-            IssuerSigningKey = tokens.PublicKey,
+            IssuerSigningKeys = tokens.VerificationKeys,
             ValidAlgorithms = [SecurityAlgorithms.EcdsaSha256],
             ValidTypes = [TokenService.TokenType],
             ClockSkew = TimeSpan.FromSeconds(30),

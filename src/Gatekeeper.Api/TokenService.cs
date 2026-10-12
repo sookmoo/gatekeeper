@@ -27,22 +27,72 @@ public sealed class TokenService
     private readonly AuthOptions _options;
     private readonly JsonWebTokenHandler _handler = new() { SetDefaultTimesOnTokenCreation = false };
 
-    public TokenService(ECDsa key, AuthOptions options)
+    public const int MaxRetiredKeys = 5;
+
+    private readonly List<ECDsaSecurityKey> _verificationKeys = [];
+
+    /// <param name="key">The current key: signs new tokens.</param>
+    /// <param name="retired">Earlier keys (public halves are enough): published and accepted until the tokens they signed have expired.</param>
+    public TokenService(ECDsa key, AuthOptions options, IEnumerable<ECDsa>? retired = null)
     {
-        var p = key.ExportParameters(false);
-        if (p.Curve.Oid.Value != ECCurve.NamedCurves.nistP256.Oid.Value)
-            throw new ArgumentException("The signing key must be an ECDSA P-256 key.");
         _options = options;
-        // kid = RFC 7638 thumbprint of the public key, so it is stable and rotation-friendly.
-        var jwk = JsonWebKeyConverter.ConvertFromSecurityKey(new ECDsaSecurityKey(ECDsa.Create(p)));
-        Kid = Base64UrlEncoder.Encode(jwk.ComputeJwkThumbprint());
+        var p = key.ExportParameters(false);
+        Kid = Thumbprint(p);
         _key = new ECDsaSecurityKey(key) { KeyId = Kid };
         PublicKey = new ECDsaSecurityKey(ECDsa.Create(p)) { KeyId = Kid };
+        _verificationKeys.Add((ECDsaSecurityKey)PublicKey);
+        foreach (var old in retired ?? [])
+        {
+            var op = old.ExportParameters(false);
+            var oldKid = Thumbprint(op);
+            if (_verificationKeys.Any(k => k.KeyId == oldKid)) continue; // the current key listed again, or a duplicate
+            _verificationKeys.Add(new ECDsaSecurityKey(ECDsa.Create(op)) { KeyId = oldKid });
+        }
+        if (_verificationKeys.Count - 1 > MaxRetiredKeys)
+            throw new ArgumentException($"At most {MaxRetiredKeys} retired keys are supported.");
     }
 
     public string Kid { get; }
     public string Issuer => _options.Issuer;
+    /// <summary>The current key's public half.</summary>
     public SecurityKey PublicKey { get; }
+    /// <summary>Every key tokens may be verified with: the current one first, then the retired ones.</summary>
+    public IReadOnlyList<SecurityKey> VerificationKeys => _verificationKeys;
+
+    // kid = RFC 7638 thumbprint of the public key, so it is stable and rotation-friendly.
+    private static string Thumbprint(ECParameters p)
+    {
+        if (p.Curve.Oid.Value != ECCurve.NamedCurves.nistP256.Oid.Value)
+            throw new ArgumentException("Signing keys must be ECDSA P-256 keys.");
+        var jwk = JsonWebKeyConverter.ConvertFromSecurityKey(new ECDsaSecurityKey(ECDsa.Create(p)));
+        return Base64UrlEncoder.Encode(jwk.ComputeJwkThumbprint());
+    }
+
+    /// <summary>
+    /// Reads retired keys from text holding any number of PEM blocks (PUBLIC KEY, PRIVATE KEY or EC PRIVATE KEY); text outside
+    /// the blocks (comments) is ignored. Public keys are all that is needed, so a retired private key can be destroyed.
+    /// </summary>
+    public static List<ECDsa> LoadRetiredKeys(string text)
+    {
+        var keys = new List<ECDsa>();
+        var rest = text.AsSpan();
+        while (PemEncoding.TryFind(rest, out var fields))
+        {
+            var block = rest[fields.Location];
+            var ec = ECDsa.Create();
+            var label = rest[fields.Label].ToString();
+            switch (label)
+            {
+                case "PUBLIC KEY": ec.ImportFromPem(block); break;
+                case "PRIVATE KEY": ec.ImportFromPem(block); break;
+                case "EC PRIVATE KEY": ec.ImportFromPem(block); break;
+                default: throw new ArgumentException($"Unsupported PEM block '{label}' in the retired keys.");
+            }
+            keys.Add(ec);
+            rest = rest[fields.Location.End..];
+        }
+        return keys;
+    }
 
     /// <summary>Loads a PEM (PKCS#8 or SEC1) private key.</summary>
     public static ECDsa LoadKey(string pem)
@@ -103,22 +153,22 @@ public sealed class TokenService
         return (_handler.CreateToken(descriptor), expires);
     }
 
-    /// <summary>The public key set as JSON (RFC 7517). Contains no private parameters.</summary>
-    public JsonObject Jwks()
+    /// <summary>The public key set as JSON (RFC 7517), current key first. Contains no private parameters.</summary>
+    public JsonObject Jwks() => new()
     {
-        var p = ((ECDsaSecurityKey)PublicKey).ECDsa.ExportParameters(false);
-        return new JsonObject
+        ["keys"] = new JsonArray(_verificationKeys.Select(k =>
         {
-            ["keys"] = new JsonArray(new JsonObject
+            var p = k.ECDsa.ExportParameters(false);
+            return (JsonNode)new JsonObject
             {
                 ["kty"] = "EC",
                 ["crv"] = "P-256",
                 ["use"] = "sig",
                 ["alg"] = SecurityAlgorithms.EcdsaSha256,
-                ["kid"] = Kid,
+                ["kid"] = k.KeyId,
                 ["x"] = Base64UrlEncoder.Encode(p.Q.X!),
                 ["y"] = Base64UrlEncoder.Encode(p.Q.Y!),
-            }),
-        };
-    }
+            };
+        }).ToArray()),
+    };
 }
