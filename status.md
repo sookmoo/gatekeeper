@@ -67,6 +67,7 @@ In-memory store, REST API under /v1, `gk` CLI, OpenAPI contract, QA + security r
 ## Slice 4c: sessions, revocation, introspection, key rotation (branch `feat/slice-4c`)
 - Decisions (user, 2026-10-12): refresh sessions + introspection for revocation; refresh tokens for users only; key rotation with current + retired key files.
 - Done: `sessions` table (migration `AddSessions`; token hash current + previous, absolute expiry, revoked-at; cascades with user/app; expired rows purged after 7 days); refresh tokens `gkr_<session id>.<secret>` with rotation and reuse detection (the just-replaced token coming back ends the session); `POST /v1/auth/refresh|logout|introspect`; login `refresh:true`; `sid` claim; password change, deactivation, role removal and app deletion end sessions; the management API (`AdminAccessCheck`) rejects tokens whose session ended; admin session list/revoke (`/v1/users/{id}/sessions`, `/v1/sessions/{id}`, `gk user sessions|revoke-sessions`); CLI keeps the session alive (auto-refresh under a file lock, logout ends the session server-side); introspection with live roles, client Basic auth, own-application scope; JWKS with retired keys (`Auth__RetiredKeysPemFile`), `deploy/rotate-signing-key.sh` (+ `--compromised`, `--prune`), Quadlet mount for the retired-keys secret.
+- Verified on Quadlet (2026-10-12): refresh rotation and reuse detection, ended admin session rejected, key rotate/--compromised/--prune with old-key tokens accepted or rejected as designed, introspection, CLI auto-refresh and logout. Tests: 453 with Postgres (Api 248, Contract 105 + 1 skipped, Cli 66, Application 38, Domain 34).
 - Known limits: access tokens without a session (plain login, client tokens) live until `exp` unless the consumer introspects; only the immediately replaced refresh token triggers reuse detection (older ones are just invalid); a client that loses a refresh response (network failure after rotation) must log in again; refresh/PATCH/throttle state is per process; introspection has no caching or rate limit beyond the failure throttle; no per-session device names/IP.
 
 ## Deferred hardening (from slice 1 reviews)
@@ -78,4 +79,4 @@ Escape control characters in CLI output; request body size limit; pagination and
 3. ~~PATCH~~ done in slice 4b.
 
 ## Next action
-Slice 4c: implementation done, tests running; then ask whether to run independent QA/security reviews and before pushing.
+Slice 4c: implemented and verified on Quadlet (rotation, refresh, introspection, CLI); run independent QA and security reviews, fix, then ask before pushing.
