@@ -39,9 +39,9 @@ public class AuditApiTests : IClassFixture<WebApplicationFactory<Program>>
         var mine = (await Events($"actor={admin.Id}&limit=200")).Where(e => e.GetProperty("target").GetString()!.Contains(id) || e.GetProperty("action").GetString() == "POST /v1/applications").ToArray();
         Assert.All(mine, e => Assert.Equal(admin.Id.ToString(), e.GetProperty("actor").GetString()));
         var actions = mine.Select(e => e.GetProperty("action").GetString()).ToList();
-        Assert.Contains("PATCH /v1/applications/{id:guid}", actions);
-        Assert.Contains("DELETE /v1/applications/{id:guid}", actions);
-        Assert.DoesNotContain("GET /v1/applications/{id:guid}", actions);
+        Assert.Contains("PATCH /v1/applications/{id}", actions);
+        Assert.Contains("DELETE /v1/applications/{id}", actions);
+        Assert.DoesNotContain("GET /v1/applications/{id}", actions);
         var failed = mine.Where(e => e.GetProperty("outcome").GetString() == "failure").ToArray();
         Assert.Contains(failed, e => e.GetProperty("detail").GetString() == "ConflictException");
     }
@@ -66,8 +66,10 @@ public class AuditApiTests : IClassFixture<WebApplicationFactory<Program>>
         Assert.Equal(HttpStatusCode.Unauthorized,
             (await anon.PostAsJsonAsync("/v1/auth/login", new { username = evil, password = "wrong password here", application = "gatekeeper" })).StatusCode);
         var failures = await Events("actor=anonymous&action=auth.login&limit=200");
-        var mine = failures.First(e => e.GetProperty("detail").GetString()!.StartsWith("username=ghost"));
+        // An unknown name is recorded by its length only: it may be a mistyped password or secret.
+        var mine = failures.First(e => e.GetProperty("detail").GetString()!.StartsWith("username=<unknown, 524 chars>"));
         var detail = mine.GetProperty("detail").GetString()!;
+        Assert.DoesNotContain("ghost", detail);
         Assert.DoesNotContain('\n', detail);
         Assert.True(detail.Length <= 200);
         Assert.Equal("failure", mine.GetProperty("outcome").GetString());

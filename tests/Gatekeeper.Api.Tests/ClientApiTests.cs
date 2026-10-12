@@ -138,7 +138,7 @@ public class ClientApiTests : IClassFixture<WebApplicationFactory<Program>>
 
         Assert.Equal(HttpStatusCode.BadRequest, (await _admin.PostAsJsonAsync("/v1/clients", new { name = "Bad Name", application = app })).StatusCode);
         Assert.Equal(HttpStatusCode.NotFound, (await _admin.PostAsJsonAsync("/v1/clients", new { name = Unique("ok"), application = Guid.NewGuid() })).StatusCode);
-        Assert.Equal(HttpStatusCode.NotFound, (await _admin.PostAsJsonAsync("/v1/clients", new { name = Unique("ok") })).StatusCode); // no application
+        Assert.Equal(HttpStatusCode.BadRequest, (await _admin.PostAsJsonAsync("/v1/clients", new { name = Unique("ok") })).StatusCode); // no application
         var name = Unique("dup");
         Assert.Equal(HttpStatusCode.Created, (await _admin.PostAsJsonAsync("/v1/clients", new { name, application = app })).StatusCode);
         Assert.Equal(HttpStatusCode.Conflict, (await _admin.PostAsJsonAsync("/v1/clients", new { name, application = app })).StatusCode);
@@ -162,8 +162,20 @@ public class ClientApiTests : IClassFixture<WebApplicationFactory<Program>>
         Assert.DoesNotContain(secret, audit);
         Assert.DoesNotContain(rotated, audit);
         Assert.Contains("auth.client-token", audit);
-        Assert.Contains("/v1/clients/{id:guid}/secret", audit);
+        Assert.Contains("/v1/clients/{id}/secret", audit);
         Assert.Equal("no-store", (await _admin.PostAsJsonAsync("/v1/clients", new { name = Unique("ns"), application = (await Setup()).App })).Headers.CacheControl?.ToString());
+    }
+
+    [Fact]
+    public async Task A_secret_typed_into_the_client_id_field_never_reaches_the_audit_trail()
+    {
+        var (_, _, _, _, name, secret) = await Setup();
+        Assert.Equal(HttpStatusCode.Unauthorized, (await Token(secret, name)).StatusCode); // fields swapped
+        Assert.Equal(HttpStatusCode.Unauthorized, (await Token(name, "wrong secret value")).StatusCode);
+        var audit = await _admin.GetStringAsync("/v1/audit?action=auth.client-token&limit=200");
+        Assert.DoesNotContain(secret, audit);
+        Assert.Contains($"client=<unknown, {secret.Length} chars>", audit);
+        Assert.Contains($"client={name}", audit); // a real client name is recorded, so the trail still shows who was targeted
     }
 
     [Fact]

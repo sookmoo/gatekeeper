@@ -134,7 +134,8 @@ if (!migrateOnly && !bootstrap)
             // Only the management API and the readiness probe use tokens: a stray Authorization header must not make /health or the JWKS touch the store.
             OnMessageReceived = ctx =>
             {
-                if (!ctx.Request.Path.StartsWithSegments("/v1") && !ctx.Request.Path.StartsWithSegments("/health/ready")) ctx.NoResult();
+                var path = ctx.Request.Path;
+                if ((!path.StartsWithSegments("/v1") && !path.StartsWithSegments("/health/ready")) || path.StartsWithSegments("/v1/auth")) ctx.NoResult();
                 return Task.CompletedTask;
             },
             OnTokenValidated = async ctx =>
@@ -226,6 +227,7 @@ app.UseStatusCodePages();
 app.UseMiddleware<ErrorMappingMiddleware>();
 app.UseAuthentication();
 app.UseAuthorization();
+app.UseMiddleware<AuditMiddleware>();
 app.MapOpenApi("/openapi/{documentName}.json");
 app.MapGet("/health", () => Results.Ok(new { status = "ok" })).ExcludeFromDescription();
 // It queries the store and reveals its state, so it needs an admin token; the answer is still cached briefly.

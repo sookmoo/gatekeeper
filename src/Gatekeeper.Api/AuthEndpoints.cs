@@ -20,7 +20,7 @@ public static class AuthEndpoints
             .AllowAnonymous().WithTags("Auth");
 
         routes.MapPost("/v1/auth/login", async (LoginRequest r, AuthService auth, TokenService tokens, LoginThrottle throttle,
-                HttpContext http, AuditRecorder audit, CancellationToken ct) =>
+                HttpContext http, AuditRecorder audit, IUserRepository users, CancellationToken ct) =>
             {
                 var address = (http.Connection.RemoteIpAddress ?? IPAddress.None).ToString();
                 if (throttle.IsBlocked(address, r.Username, out var retryAfter))
@@ -33,7 +33,9 @@ public static class AuthEndpoints
                 if (result is null)
                 {
                     throttle.RecordFailure(address, r.Username);
-                    await audit.RecordAsync(http, "anonymous", "auth.login", r.Application, false, $"username={r.Username}");
+                    var known = Validation.LooksLikeUsername(r.Username)
+                                && (await users.ListAsync(username: r.Username, slice: new Slice(0, 1), ct: ct)).Count > 0;
+                    await audit.RecordAsync(http, "anonymous", "auth.login", known ? r.Application : null, false, AuditRecorder.Attempted("username", r.Username, known));
                     // Many failures against one account from many addresses: do not lock the owner out, just slow the guessing.
                     if (throttle.UserFailures(r.Username) >= SlowDownAfterFailures)
                         await Task.Delay(TimeSpan.FromSeconds(2), ct);
@@ -52,7 +54,7 @@ public static class AuthEndpoints
 
         // Client credentials for service identities. Same uniform 401 and throttling as user logins, in a separate counter set.
         routes.MapPost("/v1/auth/client-token", async (ClientTokenRequest r, ClientAuthService auth, TokenService tokens,
-                [FromKeyedServices("client")] LoginThrottle throttle, HttpContext http, AuditRecorder audit, CancellationToken ct) =>
+                [FromKeyedServices("client")] LoginThrottle throttle, HttpContext http, AuditRecorder audit, IClientRepository clientRepo, CancellationToken ct) =>
             {
                 var address = (http.Connection.RemoteIpAddress ?? IPAddress.None).ToString();
                 if (throttle.IsBlocked(address, r.ClientId, out var retryAfter))
@@ -65,7 +67,8 @@ public static class AuthEndpoints
                 if (result is null)
                 {
                     throttle.RecordFailure(address, r.ClientId);
-                    await audit.RecordAsync(http, "anonymous", "auth.client-token", null, false, $"client={r.ClientId}");
+                    var known = Validation.LooksLikeUsername(r.ClientId) && await clientRepo.GetByNameAsync(r.ClientId!, ct) is not null;
+                    await audit.RecordAsync(http, "anonymous", "auth.client-token", null, false, AuditRecorder.Attempted("client", r.ClientId, known));
                     http.Response.Headers.WWWAuthenticate = "Bearer";
                     return Results.Problem("Invalid credentials.", statusCode: StatusCodes.Status401Unauthorized);
                 }

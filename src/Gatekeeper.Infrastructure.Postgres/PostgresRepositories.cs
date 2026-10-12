@@ -60,8 +60,12 @@ public abstract class PostgresRepository(Factory factory)
         {
             switch (ex)
             {
-                case PostgresException pg: return pg.IsTransient; // connection class, shutdown, too many connections, ...
+                // Transient (connection class, shutdown, too many connections, ...) or a schema that is not there yet
+                // (undefined table/column: not migrated, so every request would fail the same way until `migrate` runs).
+                case PostgresException pg: return pg.IsTransient || pg.SqlState is "42P01" or "42703";
                 case NpgsqlException: return true;                // could not connect, I/O failure
+                // A parameter of a type from an extension (citext) that the database does not have yet: not migrated.
+                case NotSupportedException when ex.Message.Contains("could not be found in the types that were loaded"): return true;
                 case TimeoutException: return true;
             }
         }
@@ -257,6 +261,8 @@ public sealed class PostgresAuditRepository(Factory factory) : PostgresRepositor
 
     public Task<IReadOnlyList<AuditEvent>> ListAsync(string? actor = null, string? action = null, Slice? slice = null, CancellationToken ct = default) => Run<IReadOnlyList<AuditEvent>>(async db =>
     {
+        // Stored text never contains NUL or malformed Unicode (Postgres cannot even compare against it): nothing matches.
+        if ((actor is not null && !Validation.IsCleanText(actor)) || (action is not null && !Validation.IsCleanText(action))) return [];
         var q = db.AuditEvents.AsNoTracking();
         if (actor is not null) q = q.Where(e => e.Actor == actor);
         if (action is not null) q = q.Where(e => e.Action == action);

@@ -373,7 +373,11 @@ public sealed class InMemoryAuditRepository(InMemoryStore s) : IAuditRepository
 {
     public Task AppendAsync(AuditEvent entry, CancellationToken ct = default)
     {
-        lock (s.Gate) s.Audit.Add(entry);
+        lock (s.Gate)
+        {
+            if (s.Audit.Any(e => e.Id == entry.Id)) throw new ConflictException($"Audit event {entry.Id} already exists.");
+            s.Audit.Add(entry);
+        }
         return Task.CompletedTask;
     }
 

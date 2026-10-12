@@ -19,12 +19,7 @@
           "200": {
             "description": "OK"
           }
-        },
-        "security": [
-          {
-            "bearer": []
-          }
-        ]
+        }
       }
     },
     "/v1/auth/login": {
@@ -68,12 +63,7 @@
           "200": {
             "description": "OK"
           }
-        },
-        "security": [
-          {
-            "bearer": []
-          }
-        ]
+        }
       }
     },
     "/v1/applications": {

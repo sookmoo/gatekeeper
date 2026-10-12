@@ -44,7 +44,7 @@ public class AuthCliTests : IClassFixture<WebApplicationFactory<Program>>
         var all = await Gk(true, null, "audit", "list", "--limit", "20");
         Assert.Equal(0, all.Code);
         Assert.Contains("POST /v1/applications", all.Out);
-        Assert.Contains("PATCH /v1/applications/{id:guid}", all.Out);
+        Assert.Contains("PATCH /v1/applications/{id}", all.Out);
         var none = await Gk(true, null, "audit", "list", "--actor", "nobody-at-all");
         Assert.Equal(0, none.Code);
         Assert.Equal("", none.Out.Trim());

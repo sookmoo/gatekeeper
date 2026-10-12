@@ -2,6 +2,29 @@ using Gatekeeper.Domain;
 
 namespace Gatekeeper.Application;
 
+/// <summary>
+/// PATCH reads, merges and writes back, so two at once could overwrite each other's fields (a lost "disable" is a security
+/// problem). They run one at a time in this process, like <see cref="AdminGuard"/>; a multi-instance setup needs
+/// repository-level partial updates instead.
+/// </summary>
+internal static class PatchGate
+{
+    private static readonly SemaphoreSlim Gate = new(1, 1);
+
+    public static async Task<T> RunAsync<T>(Func<Task<T>> action, CancellationToken ct)
+    {
+        await Gate.WaitAsync(ct);
+        try
+        {
+            return await action();
+        }
+        finally
+        {
+            Gate.Release();
+        }
+    }
+}
+
 public sealed class AppService(IAppRepository apps)
 {
     public async Task<Page<App>> ListAsync(PageQuery? page = null, CancellationToken ct = default)
@@ -30,11 +53,11 @@ public sealed class AppService(IAppRepository apps)
     }
 
     /// <summary>Partial update: a null field is left unchanged.</summary>
-    public async Task<App> PatchAsync(Guid id, string? name, CancellationToken ct = default)
+    public Task<App> PatchAsync(Guid id, string? name, CancellationToken ct = default) => PatchGate.RunAsync(async () =>
     {
         var existing = await GetAsync(id, ct);
         return name is null || string.Equals(name, existing.Name, StringComparison.Ordinal) ? existing : await UpdateAsync(id, name, ct);
-    }
+    }, ct);
 
     public async Task DeleteAsync(Guid id, CancellationToken ct = default)
     {
@@ -85,11 +108,11 @@ public sealed class RoleService(IAppRepository apps, IRoleRepository roles)
     }
 
     /// <summary>Partial update: a null field is left unchanged (use an empty description to clear it).</summary>
-    public async Task<Role> PatchAsync(Guid id, string? name, string? description, CancellationToken ct = default)
+    public Task<Role> PatchAsync(Guid id, string? name, string? description, CancellationToken ct = default) => PatchGate.RunAsync(async () =>
     {
         var existing = await GetAsync(id, ct);
         return await UpdateAsync(id, name ?? existing.Name, description ?? existing.Description, ct);
-    }
+    }, ct);
 
     public async Task DeleteAsync(Guid id, CancellationToken ct = default)
     {
@@ -144,11 +167,11 @@ public sealed class UserService(IUserRepository users, AdminGuard? guard = null)
     }
 
     /// <summary>Partial update: a null field is left unchanged (use an empty display name to clear it).</summary>
-    public async Task<User> PatchAsync(Guid id, string? username, string? email, string? displayName, bool? isActive, CancellationToken ct = default)
+    public Task<User> PatchAsync(Guid id, string? username, string? email, string? displayName, bool? isActive, CancellationToken ct = default) => PatchGate.RunAsync(async () =>
     {
         var e = await GetAsync(id, ct);
         return await UpdateAsync(id, username ?? e.Username, email ?? e.Email, displayName ?? e.DisplayName, isActive, ct);
-    }
+    }, ct);
 
     private async Task<User> Save(User existing, string? username, string? email, string? displayName, bool? isActive, CancellationToken ct)
     {
@@ -338,6 +361,9 @@ public sealed class AuditService(IAuditRepository audit)
     public async Task<Page<AuditEvent>> ListAsync(string? actor = null, string? action = null, PageQuery? page = null, CancellationToken ct = default)
     {
         page ??= PageQuery.Default;
+        // Nothing recorded contains control characters or malformed Unicode (see Clean), so such a filter matches nothing.
+        if ((actor is not null && !Validation.IsCleanText(actor)) || (action is not null && !Validation.IsCleanText(action)))
+            return page.Build<AuditEvent>([]);
         return page.Build(await audit.ListAsync(actor, action, page.Slice, ct));
     }
 
@@ -399,8 +425,8 @@ public sealed class ClientService(IClientRepository clients, IAppRepository apps
             ?? throw new NotFoundException($"Client {id} not found.");
     }
 
-    public async Task<Client> PatchAsync(Guid id, string? name, bool? isActive, CancellationToken ct = default) =>
-        await UpdateAsync(id, name ?? (await GetAsync(id, ct)).Name, isActive, ct);
+    public Task<Client> PatchAsync(Guid id, string? name, bool? isActive, CancellationToken ct = default) => PatchGate.RunAsync(async () =>
+        await UpdateAsync(id, name ?? (await GetAsync(id, ct)).Name, isActive, ct), ct);
 
     public async Task DeleteAsync(Guid id, CancellationToken ct = default)
     {

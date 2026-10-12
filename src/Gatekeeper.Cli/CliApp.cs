@@ -262,7 +262,7 @@ public static class CliApp
         {
             var cmd = new Command("audit", "Read the audit trail");
             var actor = new Option<string?>("--actor") { Description = "Only events by this actor (user id, or 'anonymous'/'system')" };
-            var action = new Option<string?>("--action") { Description = "Only this action, e.g. auth.login or 'PUT /v1/users/{id}/password'" };
+            var action = new Option<string?>("--action") { Description = "Only this action, e.g. auth.login or 'PUT /v1/users/{id}/password' (the route as listed in docs/openapi.json)" };
             var limit = new Option<int>("--limit") { Description = "How many events, newest first (1-200)", DefaultValueFactory = _ => 50 };
             cmd.Subcommands.Add(Cmd("list", "List recent audit events", c => { c.Options.Add(actor); c.Options.Add(action); c.Options.Add(limit); }, async x =>
             {

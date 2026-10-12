@@ -19,7 +19,7 @@ public static class Safe
                 continue;
             }
             var v = rune.Value;
-            var bad = Rune.IsControl(rune) || v is 0x061C or 0x200E or 0x200F or (>= 0x202A and <= 0x202E) or (>= 0x2066 and <= 0x2069);
+            var bad = Rune.IsControl(rune) || v is 0x061C or 0x200E or 0x200F or 0x2028 or 0x2029 or (>= 0x202A and <= 0x202E) or (>= 0x2066 and <= 0x2069);
             sb.Append(bad ? "�" : value.Substring(i, used));
             i += used;
         }

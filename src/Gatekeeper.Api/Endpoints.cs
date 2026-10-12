@@ -23,7 +23,7 @@ public static class Endpoints
 
     public static void MapApi(this IEndpointRouteBuilder routes)
     {
-        var v1 = routes.MapGroup("/v1").RequireAuthorization(AdminPolicy).AddEndpointFilter<AuditFilter>();
+        var v1 = routes.MapGroup("/v1").RequireAuthorization(AdminPolicy);
 
         var apps = v1.MapGroup("/applications").WithTags("Applications");
         apps.MapGet("/", (AppService s, int? limit, string? cursor, CancellationToken ct) =>
@@ -100,7 +100,8 @@ public static class Endpoints
             s.ListAsync(application, PageQuery.Parse(limit, cursor), ct));
         clients.MapPost("/", async (ClientRequest r, ClientService s, HttpContext http, CancellationToken ct) =>
         {
-            var created = await s.CreateAsync(r.Name, r.Application ?? Guid.Empty, r.IsActive ?? true, ct);
+            if (r.Application is null) throw new ValidationException(new Dictionary<string, string> { ["application"] = "is required." });
+            var created = await s.CreateAsync(r.Name, r.Application.Value, r.IsActive ?? true, ct);
             http.Response.Headers.CacheControl = "no-store"; // the body carries the one-time secret
             var c = created.Client;
             return Results.Created($"/v1/clients/{c.Id}",

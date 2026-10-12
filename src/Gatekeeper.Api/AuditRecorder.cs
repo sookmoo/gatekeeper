@@ -25,29 +25,47 @@ public sealed class AuditRecorder(AuditService audit, ILogger<AuditRecorder> log
     public Task RecordAsync(string actor, string action, string? target, bool success, string? detail = null) =>
         audit.RecordAsync(actor, action, target, success, detail);
 
+    /// <summary>
+    /// How a failed attempt names who it tried to be. Only names that exist are recorded; anything else (a typo, a probe, or a
+    /// password or secret typed into the wrong field) is recorded as its length only, because the trail cannot be redacted.
+    /// </summary>
+    public static string Attempted(string kind, string? name, bool known) =>
+        known && name is not null ? $"{kind}={name}" : $"{kind}=<unknown, {name?.Length ?? 0} chars>";
+
     /// <summary>The acting identity of an authenticated request: the token's subject.</summary>
     public static string ActorOf(HttpContext http) => http.User.FindFirst("sub")?.Value ?? "anonymous";
 }
 
-/// <summary>Records every state-changing management call after it ran: who, what, on which ids, and whether it worked.</summary>
-public sealed class AuditFilter : IEndpointFilter
+/// <summary>
+/// Records every state-changing management call after it ran: who, what, on which ids, and whether it worked. It is
+/// middleware (not an endpoint filter) so requests that fail binding (malformed JSON, wrong content type, oversized body)
+/// are recorded too. It sits after authorization, so requests rejected with 401/403 are not recorded.
+/// </summary>
+public sealed partial class AuditMiddleware(RequestDelegate next)
 {
-    public async ValueTask<object?> InvokeAsync(EndpointFilterInvocationContext ctx, EndpointFilterDelegate next)
+    [System.Text.RegularExpressions.GeneratedRegex(@"\{([^{}:]+):[^{}]*\}")]
+    private static partial System.Text.RegularExpressions.Regex RouteConstraint();
+
+    public async Task InvokeAsync(HttpContext http)
     {
-        var http = ctx.HttpContext;
-        if (HttpMethods.IsGet(http.Request.Method) || HttpMethods.IsHead(http.Request.Method)) return await next(ctx);
+        var path = http.Request.Path;
+        if (!path.StartsWithSegments("/v1") || path.StartsWithSegments("/v1/auth") // logins audit themselves
+            || HttpMethods.IsGet(http.Request.Method) || HttpMethods.IsHead(http.Request.Method) || HttpMethods.IsOptions(http.Request.Method)
+            || http.User.Identity?.IsAuthenticated != true)
+        {
+            await next(http);
+            return;
+        }
 
         var recorder = http.RequestServices.GetRequiredService<AuditRecorder>();
-        var pattern = (http.GetEndpoint() as RouteEndpoint)?.RoutePattern.RawText ?? http.Request.Path.Value ?? "";
-        var action = $"{http.Request.Method} {pattern.TrimEnd('/')}";
+        var pattern = (http.GetEndpoint() as RouteEndpoint)?.RoutePattern.RawText ?? path.Value ?? "";
+        // Readable and stable: drop route constraints ({id:guid} -> {id}) so filters can be typed by hand.
+        var action = $"{http.Request.Method} {RouteConstraint().Replace(pattern.TrimEnd('/'), "{$1}")}";
         var target = string.Join(" ", http.Request.RouteValues.Select(kv => $"{kv.Key}={kv.Value}"));
         var actor = AuditRecorder.ActorOf(http);
         try
         {
-            var result = await next(ctx);
-            var status = (result as IStatusCodeHttpResult)?.StatusCode ?? StatusCodes.Status200OK;
-            await recorder.RecordAsync(http, actor, action, target, status is >= 200 and < 300, $"status {status}");
-            return result;
+            await next(http);
         }
         catch (OperationCanceledException)
         {
@@ -55,8 +73,11 @@ public sealed class AuditFilter : IEndpointFilter
         }
         catch (Exception ex)
         {
+            // Domain exceptions are turned into responses by the outer error middleware; record what went wrong.
             await recorder.RecordAsync(http, actor, action, target, false, ex.GetType().Name);
             throw;
         }
+        var status = http.Response.StatusCode;
+        await recorder.RecordAsync(http, actor, action, target, status is >= 200 and < 300, $"status {status}");
     }
 }

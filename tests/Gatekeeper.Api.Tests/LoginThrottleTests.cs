@@ -19,6 +19,30 @@ public class LoginThrottleTests
     }
 
     [Fact]
+    public void A_flood_of_distinct_keys_cannot_switch_the_address_limit_off_and_stays_cheap()
+    {
+        var t = new LoginThrottle(new FakeTimeProvider(), maxPerPair: 100, maxPerAddress: 5);
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        for (var i = 0; i < 20_000; i++) t.RecordFailure($"10.{i / 65536 % 256}.{i / 256 % 256}.{i % 256}", $"user{i}"); // fills the table
+        Assert.True(clock.Elapsed < TimeSpan.FromSeconds(10), $"flood took {clock.Elapsed}");
+        for (var i = 0; i < 5; i++) t.RecordFailure("203.0.113.9", "someone");
+        Assert.True(t.IsBlocked("203.0.113.9", "someone", out _));
+    }
+
+    [Fact]
+    public void An_IPv6_64_is_one_source_and_mapped_IPv4_is_the_same_as_IPv4()
+    {
+        var t = new LoginThrottle(new FakeTimeProvider(), maxPerPair: 100, maxPerAddress: 3);
+        t.RecordFailure("2001:db8:1:2:aaaa::1", "a");
+        t.RecordFailure("2001:db8:1:2:bbbb::2", "b");
+        t.RecordFailure("2001:db8:1:2:cccc::3", "c");
+        Assert.True(t.IsBlocked("2001:db8:1:2:dddd::4", "d", out _));
+        Assert.False(t.IsBlocked("2001:db8:1:3::1", "d", out _));
+        for (var i = 0; i < 3; i++) t.RecordFailure("::ffff:198.51.100.7", "x");
+        Assert.True(t.IsBlocked("198.51.100.7", "y", out _));
+    }
+
+    [Fact]
     public void Address_limit_applies_across_usernames()
     {
         var t = new LoginThrottle(new FakeTimeProvider(), maxPerPair: 100, maxPerAddress: 3);
