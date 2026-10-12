@@ -15,6 +15,8 @@ public static class PostgresStoreExtensions
         .AddSingleton<IRoleRepository, PostgresRoleRepository>()
         .AddSingleton<IUserRepository, PostgresUserRepository>()
         .AddSingleton<ICredentialRepository, PostgresCredentialRepository>()
+        .AddSingleton<IClientRepository, PostgresClientRepository>()
+        .AddSingleton<IAuditRepository, PostgresAuditRepository>()
         .AddSingleton<IReadinessProbe, PostgresReadinessProbe>();
 
     /// <summary>Applies pending EF migrations. Run as a one-off admin step, never from the serving process.</summary>

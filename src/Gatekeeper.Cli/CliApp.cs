@@ -16,6 +16,8 @@ public static class CliApp
 
     private static readonly string[] AppFields = ["id", "name"];
     private static readonly string[] RoleFields = ["id", "name", "description"];
+    private static readonly string[] ClientFields = ["id", "name", "appId", "isActive"];
+    private static readonly string[] AuditFields = ["at", "outcome", "actor", "action", "target", "detail"];
     private static readonly string[] UserFields = ["id", "username", "email", "isActive", "displayName"];
 
     /// <param name="tokens">Where the login token is kept (default: a private file in the user's state directory).</param>
@@ -33,6 +35,8 @@ public static class CliApp
         root.Subcommands.Add(AppCommands());
         root.Subcommands.Add(RoleCommands());
         root.Subcommands.Add(UserCommands());
+        root.Subcommands.Add(ClientCommands());
+        root.Subcommands.Add(AuditCommands());
         root.Subcommands.Add(LoginCommand());
         root.Subcommands.Add(LogoutCommand());
 
@@ -90,7 +94,7 @@ public static class CliApp
                     if (uri.Scheme == Uri.UriSchemeHttp && !uri.IsLoopback
                         && Environment.GetEnvironmentVariable("GATEKEEPER_ALLOW_INSECURE") != "1")
                         throw new CliException(1, $"Refusing plain http to {uri.Host}: use https:// (or set GATEKEEPER_ALLOW_INSECURE=1 for a trusted network).");
-                    await run(new Ctx(parse, new ApiClient(httpFactory(uri), TokenFor(uri)), parse.GetValue(json), stdout, uri.GetLeftPart(UriPartial.Authority)));
+                    await run(new Ctx(parse, new ApiClient(httpFactory(uri), TokenFor(uri)), parse.GetValue(json), stdout, stderr, uri.GetLeftPart(UriPartial.Authority)));
                     return 0;
                 }
                 catch (CliException ex)
@@ -127,7 +131,7 @@ public static class CliApp
             cmd.Subcommands.Add(Cmd("update", "Rename an application", c => { c.Arguments.Add(updApp); c.Options.Add(newName); }, async x =>
             {
                 var id = await x.ResolveApp(x.Get(updApp)!);
-                x.Print(await x.Api.PutAsync($"/v1/applications/{id}", new { name = x.Get(newName) }), AppFields, single: true);
+                x.Print(await x.Api.PatchAsync($"/v1/applications/{id}", new { name = x.Get(newName) }), AppFields, single: true);
             }));
             var delApp = app();
             cmd.Subcommands.Add(Cmd("delete", "Delete an application and its roles", c => c.Arguments.Add(delApp), async x =>
@@ -167,13 +171,8 @@ public static class CliApp
             cmd.Subcommands.Add(Cmd("update", "Update a role", c => { c.Arguments.Add(uRole); c.Options.Add(uApp); c.Options.Add(uName); c.Options.Add(uDesc); }, async x =>
             {
                 var id = await x.ResolveRole(x.Get(uRole)!, x.Get(uApp));
-                var current = await x.Api.GetAsync($"/v1/roles/{id}");
-                var body = new
-                {
-                    name = x.Get(uName) ?? current.GetProperty("name").GetString(),
-                    description = x.Get(uDesc) ?? current.GetProperty("description").GetString(),
-                };
-                x.Print(await x.Api.PutAsync($"/v1/roles/{id}", body), RoleFields, single: true);
+                var body = new { name = x.Get(uName), description = x.Get(uDesc) };
+                x.Print(await x.Api.PatchAsync($"/v1/roles/{id}", body), RoleFields, single: true);
             }));
 
             var dRole = RoleArg(); var dApp = AppOpt(false);
@@ -181,6 +180,97 @@ public static class CliApp
             {
                 await x.Api.DeleteAsync($"/v1/roles/{await x.ResolveRole(x.Get(dRole)!, x.Get(dApp))}");
                 x.Message("deleted");
+            }));
+            return cmd;
+        }
+
+        Command ClientCommands()
+        {
+            var cmd = new Command("client", "Manage service identities (machine clients of an application)");
+            Argument<string> ClientArg() => new("client") { Description = "Client name or id" };
+            Option<string> AppOpt(bool required) => new("--app") { Description = "Application name or id", Required = required };
+            Argument<string> RoleArg() => new("role") { Description = "Role id, or name (it is looked up in the client's application)" };
+
+            var cName = new Argument<string>("name") { Description = "Client name (lowercase slug)" };
+            var cApp = AppOpt(true);
+            var cInactive = new Option<bool>("--inactive") { Description = "Create it disabled" };
+            cmd.Subcommands.Add(Cmd("create", "Create a client; its secret is shown once", c => { c.Arguments.Add(cName); c.Options.Add(cApp); c.Options.Add(cInactive); }, async x =>
+            {
+                var app = await x.ResolveApp(x.Get(cApp)!);
+                var created = await x.Api.PostAsync("/v1/clients", new { name = x.Get(cName), application = app, isActive = !x.Get(cInactive) });
+                x.Print(created, [.. ClientFields, "secret"], single: true);
+                x.Warn("Store the secret now: it cannot be shown again (rotate to get a new one).");
+            }));
+
+            var lApp = new Option<string?>("--app") { Description = "Only clients of this application" };
+            cmd.Subcommands.Add(Cmd("list", "List clients", c => c.Options.Add(lApp), async x =>
+            {
+                var app = x.Get(lApp);
+                var query = app is null ? "" : $"?application={await x.ResolveApp(app)}";
+                x.Print(await x.Api.GetListAsync("/v1/clients" + query), ClientFields);
+            }));
+
+            var gClient = ClientArg();
+            cmd.Subcommands.Add(Cmd("get", "Show a client", c => c.Arguments.Add(gClient), async x =>
+                x.Print(await x.Api.GetAsync($"/v1/clients/{await x.ResolveClient(x.Get(gClient)!)}"), ClientFields, single: true)));
+
+            var uClient = ClientArg(); var uName = new Option<string?>("--name"); var uActive = new Option<bool?>("--active");
+            cmd.Subcommands.Add(Cmd("update", "Rename, enable or disable a client", c => { c.Arguments.Add(uClient); c.Options.Add(uName); c.Options.Add(uActive); }, async x =>
+            {
+                var id = await x.ResolveClient(x.Get(uClient)!);
+                x.Print(await x.Api.PatchAsync($"/v1/clients/{id}", new { name = x.Get(uName), isActive = x.Get(uActive) }), ClientFields, single: true);
+            }));
+
+            var rClient = ClientArg();
+            cmd.Subcommands.Add(Cmd("rotate-secret", "Issue a new secret; the old one stops working at once", c => c.Arguments.Add(rClient), async x =>
+            {
+                var id = await x.ResolveClient(x.Get(rClient)!);
+                x.Print(await x.Api.PostAsync($"/v1/clients/{id}/secret", new { }), ["secret"], single: true);
+                x.Warn("Store the secret now: it cannot be shown again.");
+            }));
+
+            var dClient = ClientArg();
+            cmd.Subcommands.Add(Cmd("delete", "Delete a client", c => c.Arguments.Add(dClient), async x =>
+            {
+                await x.Api.DeleteAsync($"/v1/clients/{await x.ResolveClient(x.Get(dClient)!)}");
+                x.Message("deleted");
+            }));
+
+            var sClient = ClientArg();
+            cmd.Subcommands.Add(Cmd("roles", "List a client's roles", c => c.Arguments.Add(sClient), async x =>
+                x.Print(await x.Api.GetListAsync($"/v1/clients/{await x.ResolveClient(x.Get(sClient)!)}/roles"), RoleFields)));
+
+            var aClient = ClientArg(); var aRole = RoleArg();
+            cmd.Subcommands.Add(Cmd("assign", "Give a client a role of its application", c => { c.Arguments.Add(aClient); c.Arguments.Add(aRole); }, async x =>
+            {
+                var (client, role) = await x.ResolveClientRole(x.Get(aClient)!, x.Get(aRole)!);
+                await x.Api.PutAsync($"/v1/clients/{client}/roles/{role}");
+                x.Message("assigned");
+            }));
+
+            var vClient = ClientArg(); var vRole = RoleArg();
+            cmd.Subcommands.Add(Cmd("revoke", "Take a role away from a client", c => { c.Arguments.Add(vClient); c.Arguments.Add(vRole); }, async x =>
+            {
+                var (client, role) = await x.ResolveClientRole(x.Get(vClient)!, x.Get(vRole)!);
+                await x.Api.DeleteAsync($"/v1/clients/{client}/roles/{role}");
+                x.Message("revoked");
+            }));
+            return cmd;
+        }
+
+        Command AuditCommands()
+        {
+            var cmd = new Command("audit", "Read the audit trail");
+            var actor = new Option<string?>("--actor") { Description = "Only events by this actor (user id, or 'anonymous'/'system')" };
+            var action = new Option<string?>("--action") { Description = "Only this action, e.g. auth.login or 'PUT /v1/users/{id}/password' (the route as listed in docs/openapi.json)" };
+            var limit = new Option<int>("--limit") { Description = "How many events, newest first (1-200)", DefaultValueFactory = _ => 50 };
+            cmd.Subcommands.Add(Cmd("list", "List recent audit events", c => { c.Options.Add(actor); c.Options.Add(action); c.Options.Add(limit); }, async x =>
+            {
+                var q = new List<string> { $"limit={x.Get(limit)}" };
+                if (x.Get(actor) is { } a) q.Add($"actor={Uri.EscapeDataString(a)}");
+                if (x.Get(action) is { } act) q.Add($"action={Uri.EscapeDataString(act)}");
+                var page = await x.Api.GetAsync("/v1/audit?" + string.Join('&', q));
+                x.Print(page.GetProperty("items"), AuditFields);
             }));
             return cmd;
         }
@@ -222,15 +312,8 @@ public static class CliApp
             cmd.Subcommands.Add(Cmd("update", "Update a user", c => { c.Arguments.Add(uUser); c.Options.Add(uName); c.Options.Add(uEmail); c.Options.Add(uDisplay); c.Options.Add(uActive); }, async x =>
             {
                 var id = await x.ResolveUser(x.Get(uUser)!);
-                var cur = await x.Api.GetAsync($"/v1/users/{id}");
-                var body = new
-                {
-                    username = x.Get(uName) ?? cur.GetProperty("username").GetString(),
-                    email = x.Get(uEmail) ?? cur.GetProperty("email").GetString(),
-                    displayName = x.Get(uDisplay) ?? cur.GetProperty("displayName").GetString(),
-                    isActive = x.Get(uActive) ?? cur.GetProperty("isActive").GetBoolean(),
-                };
-                x.Print(await x.Api.PutAsync($"/v1/users/{id}", body), UserFields, single: true);
+                var body = new { username = x.Get(uName), email = x.Get(uEmail), displayName = x.Get(uDisplay), isActive = x.Get(uActive) };
+                x.Print(await x.Api.PatchAsync($"/v1/users/{id}", body), UserFields, single: true);
             }));
 
             var pUser = UserArg();
@@ -279,7 +362,7 @@ public static class CliApp
         }
     }
 
-    private sealed class Ctx(ParseResult parse, ApiClient api, bool json, TextWriter stdout, string origin)
+    private sealed class Ctx(ParseResult parse, ApiClient api, bool json, TextWriter stdout, TextWriter stderr, string origin)
     {
         public string Origin { get; } = origin;
 
@@ -288,6 +371,9 @@ public static class CliApp
         public T? Get<T>(Argument<T> a) => parse.GetValue(a);
 
         public T? Get<T>(Option<T> o) => parse.GetValue(o);
+
+        /// <summary>A hint for the person at the terminal; stderr keeps stdout clean for scripts.</summary>
+        public void Warn(string text) { if (!json) stderr.WriteLine(text); }
 
         public void Message(string text)
         {
@@ -342,6 +428,31 @@ public static class CliApp
             return found.GetArrayLength() == 0
                 ? throw new CliException(2, $"User '{user}' not found.")
                 : found[0].GetProperty("id").GetGuid();
+        }
+
+        public async Task<Guid> ResolveClient(string client)
+        {
+            if (Guid.TryParse(client, out var id)) return id;
+            var all = await Api.GetListAsync("/v1/clients");
+            var match = all.EnumerateArray().FirstOrDefault(c =>
+                string.Equals(c.GetProperty("name").GetString(), client, StringComparison.OrdinalIgnoreCase));
+            return match.ValueKind == JsonValueKind.Undefined
+                ? throw new CliException(2, $"Client '{client}' not found.")
+                : match.GetProperty("id").GetGuid();
+        }
+
+        /// <summary>A role name is looked up in the client's own application (a client can only hold those roles).</summary>
+        public async Task<(Guid Client, Guid Role)> ResolveClientRole(string client, string role)
+        {
+            var clientId = await ResolveClient(client);
+            if (Guid.TryParse(role, out var roleId)) return (clientId, roleId);
+            var appId = (await Api.GetAsync($"/v1/clients/{clientId}")).GetProperty("appId").GetGuid();
+            var roles = await Api.GetListAsync($"/v1/applications/{appId}/roles");
+            var match = roles.EnumerateArray().FirstOrDefault(r =>
+                string.Equals(r.GetProperty("name").GetString(), role, StringComparison.OrdinalIgnoreCase));
+            return match.ValueKind == JsonValueKind.Undefined
+                ? throw new CliException(2, $"Role '{role}' not found in the client's application.")
+                : (clientId, match.GetProperty("id").GetGuid());
         }
 
         public async Task<Guid> ResolveRole(string role, string? app)

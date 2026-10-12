@@ -7,6 +7,10 @@ namespace Gatekeeper.Infrastructure.Postgres;
 /// <summary>Persistence-only join row; the domain models assignments as a repository operation.</summary>
 internal sealed record UserRoleRow(Guid UserId, Guid RoleId);
 
+internal sealed record ClientSecretRow(Guid ClientId, string Hash, DateTimeOffset UpdatedAt);
+
+internal sealed record ClientRoleRow(Guid ClientId, Guid RoleId);
+
 /// <summary>Password hash for a user; one row per user, removed with the user.</summary>
 internal sealed record UserCredentialRow(Guid UserId, string Hash, DateTimeOffset UpdatedAt);
 
@@ -17,6 +21,10 @@ public sealed class GatekeeperDbContext(DbContextOptions<GatekeeperDbContext> op
     public DbSet<User> Users => Set<User>();
     internal DbSet<UserRoleRow> UserRoles => Set<UserRoleRow>();
     internal DbSet<UserCredentialRow> Credentials => Set<UserCredentialRow>();
+    public DbSet<Client> Clients => Set<Client>();
+    internal DbSet<ClientSecretRow> ClientSecrets => Set<ClientSecretRow>();
+    internal DbSet<ClientRoleRow> ClientRoles => Set<ClientRoleRow>();
+    public DbSet<AuditEvent> AuditEvents => Set<AuditEvent>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {
@@ -72,6 +80,45 @@ public sealed class GatekeeperDbContext(DbContextOptions<GatekeeperDbContext> op
                 .OnDelete(DeleteBehavior.Cascade).HasConstraintName(Names.CredentialUserFk);
         });
 
+        b.Entity<Client>(e =>
+        {
+            e.ToTable("clients");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Name).HasColumnType("citext").IsRequired();
+            e.HasOne<App>().WithMany().HasForeignKey(x => x.AppId)
+                .OnDelete(DeleteBehavior.Cascade).HasConstraintName(Names.ClientAppFk);
+            e.HasIndex(x => x.Name).IsUnique().HasDatabaseName(Names.ClientNameIndex);
+        });
+
+        b.Entity<ClientSecretRow>(e =>
+        {
+            e.ToTable("client_secrets");
+            e.HasKey(x => x.ClientId);
+            e.Property(x => x.Hash).IsRequired();
+            e.HasOne<Client>().WithMany().HasForeignKey(x => x.ClientId)
+                .OnDelete(DeleteBehavior.Cascade).HasConstraintName(Names.ClientSecretFk);
+        });
+
+        b.Entity<ClientRoleRow>(e =>
+        {
+            e.ToTable("client_roles");
+            e.HasKey(x => new { x.ClientId, x.RoleId });
+            e.HasOne<Client>().WithMany().HasForeignKey(x => x.ClientId)
+                .OnDelete(DeleteBehavior.Cascade).HasConstraintName(Names.ClientRoleClientFk);
+            e.HasOne<Role>().WithMany().HasForeignKey(x => x.RoleId)
+                .OnDelete(DeleteBehavior.Cascade).HasConstraintName(Names.ClientRoleRoleFk);
+        });
+
+        b.Entity<AuditEvent>(e =>
+        {
+            e.ToTable("audit_events");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Actor).IsRequired();
+            e.Property(x => x.Action).IsRequired();
+            e.Property(x => x.Outcome).IsRequired();
+            e.HasIndex(x => new { x.At, x.Id }).HasDatabaseName("ix_audit_events_at_id");
+        });
+
         foreach (var property in b.Model.GetEntityTypes().SelectMany(t => t.GetProperties()))
             property.SetColumnName(SnakeCase(property.Name));
     }
@@ -91,4 +138,9 @@ internal static class Names
     public const string AssignmentUserFk = "fk_user_roles_users";
     public const string CredentialUserFk = "fk_user_credentials_users";
     public const string AssignmentRoleFk = "fk_user_roles_roles";
+    public const string ClientNameIndex = "ix_clients_name";
+    public const string ClientAppFk = "fk_clients_apps";
+    public const string ClientSecretFk = "fk_client_secrets_clients";
+    public const string ClientRoleClientFk = "fk_client_roles_clients";
+    public const string ClientRoleRoleFk = "fk_client_roles_roles";
 }

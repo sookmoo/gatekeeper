@@ -6,6 +6,8 @@ namespace Gatekeeper.Api;
 
 public sealed record LoginRequest(string? Username, string? Password, string? Application);
 
+public sealed record ClientTokenRequest(string? ClientId, string? ClientSecret);
+
 public sealed record LoginResponse(string AccessToken, string TokenType, int ExpiresIn);
 
 public static class AuthEndpoints
@@ -18,7 +20,7 @@ public static class AuthEndpoints
             .AllowAnonymous().WithTags("Auth");
 
         routes.MapPost("/v1/auth/login", async (LoginRequest r, AuthService auth, TokenService tokens, LoginThrottle throttle,
-                HttpContext http, CancellationToken ct) =>
+                HttpContext http, AuditRecorder audit, IUserRepository users, CancellationToken ct) =>
             {
                 var address = (http.Connection.RemoteIpAddress ?? IPAddress.None).ToString();
                 if (throttle.IsBlocked(address, r.Username, out var retryAfter))
@@ -31,6 +33,9 @@ public static class AuthEndpoints
                 if (result is null)
                 {
                     throttle.RecordFailure(address, r.Username);
+                    var known = Validation.LooksLikeUsername(r.Username)
+                                && (await users.ListAsync(username: r.Username, slice: new Slice(0, 1), ct: ct)).Count > 0;
+                    await audit.RecordAsync(http, "anonymous", "auth.login", known ? r.Application : null, false, AuditRecorder.Attempted("username", r.Username, known));
                     // Many failures against one account from many addresses: do not lock the owner out, just slow the guessing.
                     if (throttle.UserFailures(r.Username) >= SlowDownAfterFailures)
                         await Task.Delay(TimeSpan.FromSeconds(2), ct);
@@ -40,7 +45,37 @@ public static class AuthEndpoints
                 }
 
                 throttle.RecordSuccess(address, r.Username);
+                await audit.RecordAsync(http, result.User.Id.ToString(), "auth.login", result.App.Name, true);
                 var (token, expires) = tokens.Issue(result);
+                http.Response.Headers.CacheControl = "no-store";
+                return Results.Ok(new LoginResponse(token, "Bearer", (int)(expires - DateTimeOffset.UtcNow).TotalSeconds));
+            })
+            .AllowAnonymous().WithTags("Auth");
+
+        // Client credentials for service identities. Same uniform 401 and throttling as user logins, in a separate counter set.
+        routes.MapPost("/v1/auth/client-token", async (ClientTokenRequest r, ClientAuthService auth, TokenService tokens,
+                [FromKeyedServices("client")] LoginThrottle throttle, HttpContext http, AuditRecorder audit, IClientRepository clientRepo, CancellationToken ct) =>
+            {
+                var address = (http.Connection.RemoteIpAddress ?? IPAddress.None).ToString();
+                if (throttle.IsBlocked(address, r.ClientId, out var retryAfter))
+                {
+                    http.Response.Headers.RetryAfter = ((int)Math.Ceiling(retryAfter.TotalSeconds)).ToString();
+                    return Results.Problem("Too many failed attempts. Try again later.", statusCode: StatusCodes.Status429TooManyRequests);
+                }
+
+                var result = await auth.LoginAsync(r.ClientId, r.ClientSecret, ct);
+                if (result is null)
+                {
+                    throttle.RecordFailure(address, r.ClientId);
+                    var known = Validation.LooksLikeUsername(r.ClientId) && await clientRepo.GetByNameAsync(r.ClientId!, ct) is not null;
+                    await audit.RecordAsync(http, "anonymous", "auth.client-token", null, false, AuditRecorder.Attempted("client", r.ClientId, known));
+                    http.Response.Headers.WWWAuthenticate = "Bearer";
+                    return Results.Problem("Invalid credentials.", statusCode: StatusCodes.Status401Unauthorized);
+                }
+
+                throttle.RecordSuccess(address, r.ClientId);
+                await audit.RecordAsync(http, result.Client.Id.ToString(), "auth.client-token", result.App.Name, true, $"client={result.Client.Name}");
+                var (token, expires) = tokens.IssueForClient(result);
                 http.Response.Headers.CacheControl = "no-store";
                 return Results.Ok(new LoginResponse(token, "Bearer", (int)(expires - DateTimeOffset.UtcNow).TotalSeconds));
             })

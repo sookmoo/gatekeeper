@@ -21,9 +21,22 @@ public sealed class LoginThrottle(
     private readonly TimeProvider _time = time ?? TimeProvider.System;
     private readonly TimeSpan _window = window ?? TimeSpan.FromMinutes(15);
     private readonly ConcurrentDictionary<string, Queue<DateTimeOffset>> _failures = new();
+    private long _lastSweepTicks;
+
+    // One IPv6 /64 is a single subscriber's address space, so a client rotating through it must still count as one source.
+    private static string Bucket(string address)
+    {
+        if (!System.Net.IPAddress.TryParse(address, out var ip)) return address;
+        if (ip.IsIPv4MappedToIPv6) return ip.MapToIPv4().ToString();
+        if (ip.AddressFamily != System.Net.Sockets.AddressFamily.InterNetworkV6) return ip.ToString();
+        var bytes = ip.GetAddressBytes();
+        Array.Clear(bytes, 8, 8);
+        return new System.Net.IPAddress(bytes) + "/64";
+    }
 
     public bool IsBlocked(string address, string? username, out TimeSpan retryAfter)
     {
+        address = Bucket(address);
         var wait = TimeSpan.Zero;
         if (Over($"a:{address}", maxPerAddress, out var w1)) wait = w1;
         if (Key(username) is { } u && Over($"p:{address}|{u}", maxPerPair, out var w2) && w2 > wait) wait = w2;
@@ -33,9 +46,11 @@ public sealed class LoginThrottle(
 
     public void RecordFailure(string address, string? username)
     {
-        if (_failures.Count > MaxTracked) Sweep();
-        if (_failures.Count > MaxTracked) return; // under a flood of distinct keys stop growing; the address limit still applies
+        address = Bucket(address);
+        // The address counter is always kept (it is what stops a flood), so it may exceed the cap slightly.
         Add($"a:{address}");
+        if (_failures.Count > MaxTracked) SweepAtMostOncePerSecond();
+        if (_failures.Count > MaxTracked) return; // full of live keys: stop adding per-account keys, the address limit still applies
         if (Key(username) is { } u)
         {
             Add($"p:{address}|{u}");
@@ -45,6 +60,7 @@ public sealed class LoginThrottle(
 
     public void RecordSuccess(string address, string? username)
     {
+        address = Bucket(address);
         if (Key(username) is { } u) _failures.TryRemove($"p:{address}|{u}", out _);
     }
 
@@ -89,6 +105,15 @@ public sealed class LoginThrottle(
     {
         var cutoff = _time.GetUtcNow() - _window;
         while (q.Count > 0 && q.Peek() <= cutoff) q.Dequeue();
+    }
+
+    // A full table must not turn every failed request into an O(n) scan.
+    private void SweepAtMostOncePerSecond()
+    {
+        var now = _time.GetUtcNow().UtcTicks;
+        var last = Interlocked.Read(ref _lastSweepTicks);
+        if (now - last < TimeSpan.TicksPerSecond || Interlocked.CompareExchange(ref _lastSweepTicks, now, last) != last) return;
+        Sweep();
     }
 
     private void Sweep()

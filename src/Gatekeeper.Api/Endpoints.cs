@@ -9,6 +9,12 @@ public sealed record RoleRequest(string? Name, string? Description);
 
 public sealed record UserRequest(string? Username, string? Email, string? DisplayName, bool? IsActive);
 
+public sealed record ClientRequest(string? Name, Guid? Application, bool? IsActive);
+
+public sealed record ClientCreatedResponse(Guid Id, string Name, Guid AppId, bool IsActive, DateTimeOffset CreatedAt, DateTimeOffset UpdatedAt, string Secret);
+
+public sealed record SecretResponse(string Secret);
+
 public sealed record PasswordRequest(string? Password);
 
 public static class Endpoints
@@ -29,6 +35,7 @@ public static class Endpoints
         });
         apps.MapGet("/{id:guid}", (Guid id, AppService s, CancellationToken ct) => s.GetAsync(id, ct));
         apps.MapPut("/{id:guid}", (Guid id, AppRequest r, AppService s, CancellationToken ct) => s.UpdateAsync(id, r.Name, ct));
+        apps.MapMethods("/{id:guid}", ["PATCH"], (Guid id, AppRequest r, AppService s, CancellationToken ct) => s.PatchAsync(id, r.Name, ct));
         apps.MapDelete("/{id:guid}", async (Guid id, AppService s, CancellationToken ct) =>
         {
             await s.DeleteAsync(id, ct);
@@ -45,6 +52,7 @@ public static class Endpoints
         var roles = v1.MapGroup("/roles").WithTags("Roles");
         roles.MapGet("/{id:guid}", (Guid id, RoleService s, CancellationToken ct) => s.GetAsync(id, ct));
         roles.MapPut("/{id:guid}", (Guid id, RoleRequest r, RoleService s, CancellationToken ct) => s.UpdateAsync(id, r.Name, r.Description, ct));
+        roles.MapMethods("/{id:guid}", ["PATCH"], (Guid id, RoleRequest r, RoleService s, CancellationToken ct) => s.PatchAsync(id, r.Name, r.Description, ct));
         roles.MapDelete("/{id:guid}", async (Guid id, RoleService s, CancellationToken ct) =>
         {
             await s.DeleteAsync(id, ct);
@@ -62,6 +70,8 @@ public static class Endpoints
         users.MapGet("/{id:guid}", (Guid id, UserService s, CancellationToken ct) => s.GetAsync(id, ct));
         users.MapPut("/{id:guid}", (Guid id, UserRequest r, UserService s, CancellationToken ct) =>
             s.UpdateAsync(id, r.Username, r.Email, r.DisplayName, r.IsActive, ct));
+        users.MapMethods("/{id:guid}", ["PATCH"], (Guid id, UserRequest r, UserService s, CancellationToken ct) =>
+            s.PatchAsync(id, r.Username, r.Email, r.DisplayName, r.IsActive, ct));
         users.MapDelete("/{id:guid}", async (Guid id, UserService s, CancellationToken ct) =>
         {
             await s.DeleteAsync(id, ct);
@@ -84,5 +94,47 @@ public static class Endpoints
             await s.RevokeRoleAsync(id, roleId, ct);
             return Results.NoContent();
         });
+
+        var clients = v1.MapGroup("/clients").WithTags("Clients");
+        clients.MapGet("/", (ClientService s, Guid? application, int? limit, string? cursor, CancellationToken ct) =>
+            s.ListAsync(application, PageQuery.Parse(limit, cursor), ct));
+        clients.MapPost("/", async (ClientRequest r, ClientService s, HttpContext http, CancellationToken ct) =>
+        {
+            if (r.Application is null) throw new ValidationException(new Dictionary<string, string> { ["application"] = "is required." });
+            var created = await s.CreateAsync(r.Name, r.Application.Value, r.IsActive ?? true, ct);
+            http.Response.Headers.CacheControl = "no-store"; // the body carries the one-time secret
+            var c = created.Client;
+            return Results.Created($"/v1/clients/{c.Id}",
+                new ClientCreatedResponse(c.Id, c.Name, c.AppId, c.IsActive, c.CreatedAt, c.UpdatedAt, created.Secret));
+        });
+        clients.MapGet("/{id:guid}", (Guid id, ClientService s, CancellationToken ct) => s.GetAsync(id, ct));
+        clients.MapPut("/{id:guid}", (Guid id, ClientRequest r, ClientService s, CancellationToken ct) => s.UpdateAsync(id, r.Name, r.IsActive, ct));
+        clients.MapMethods("/{id:guid}", ["PATCH"], (Guid id, ClientRequest r, ClientService s, CancellationToken ct) => s.PatchAsync(id, r.Name, r.IsActive, ct));
+        clients.MapDelete("/{id:guid}", async (Guid id, ClientService s, CancellationToken ct) =>
+        {
+            await s.DeleteAsync(id, ct);
+            return Results.NoContent();
+        });
+        clients.MapPost("/{id:guid}/secret", async (Guid id, ClientService s, HttpContext http, CancellationToken ct) =>
+        {
+            var secret = await s.RotateSecretAsync(id, ct);
+            http.Response.Headers.CacheControl = "no-store";
+            return Results.Ok(new SecretResponse(secret));
+        });
+        clients.MapGet("/{id:guid}/roles", (Guid id, ClientService s, int? limit, string? cursor, CancellationToken ct) =>
+            s.ListRolesAsync(id, PageQuery.Parse(limit, cursor), ct));
+        clients.MapPut("/{id:guid}/roles/{roleId:guid}", async (Guid id, Guid roleId, ClientService s, CancellationToken ct) =>
+        {
+            await s.AssignRoleAsync(id, roleId, ct);
+            return Results.NoContent();
+        });
+        clients.MapDelete("/{id:guid}/roles/{roleId:guid}", async (Guid id, Guid roleId, ClientService s, CancellationToken ct) =>
+        {
+            await s.RevokeRoleAsync(id, roleId, ct);
+            return Results.NoContent();
+        });
+
+        v1.MapGet("/audit", (AuditService s, string? actor, string? action, int? limit, string? cursor, CancellationToken ct) =>
+            s.ListAsync(actor, action, PageQuery.Parse(limit, cursor), ct)).WithTags("Audit");
     }
 }

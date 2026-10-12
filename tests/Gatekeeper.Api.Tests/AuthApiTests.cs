@@ -47,7 +47,7 @@ public class AuthApiTests
         c.PostAsJsonAsync("/v1/auth/login", new { username = user, password, application = app });
 
     [Fact]
-    public async Task Management_api_requires_a_token_but_health_and_jwks_are_public()
+    public async Task Management_api_and_readiness_require_a_token_but_health_and_jwks_are_public()
     {
         using var f = NewFactory();
         var anon = f.CreateClient();
@@ -55,7 +55,8 @@ public class AuthApiTests
         Assert.Equal(HttpStatusCode.Unauthorized, r.StatusCode);
         Assert.Equal(HttpStatusCode.Unauthorized, (await anon.PostAsJsonAsync("/v1/users", new { username = "x" })).StatusCode);
         Assert.Equal(HttpStatusCode.OK, (await anon.GetAsync("/health")).StatusCode);
-        Assert.Equal(HttpStatusCode.OK, (await anon.GetAsync("/health/ready")).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await anon.GetAsync("/health/ready")).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await f.CreateAdminClient().GetAsync("/health/ready")).StatusCode);
         Assert.Equal(HttpStatusCode.OK, (await anon.GetAsync("/.well-known/jwks.json")).StatusCode);
     }
 

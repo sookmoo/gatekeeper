@@ -13,6 +13,10 @@ public abstract class StoreContract : IDisposable
 
     /// <summary>Set by <see cref="CreateStore"/>.</summary>
     protected ICredentialRepository Credentials { get; set; } = null!;
+    protected IAuditRepository Audit { get; set; } = null!;
+    protected IClientRepository Clients { get; set; } = null!;
+    /// <summary>Postgres only: a connection as the data-only app role, to prove the audit table is append-only.</summary>
+    protected string? AppConnection { get; set; }
 
     private static User NewUser(string name, string? email = null) =>
         new(Guid.NewGuid(), name, email ?? $"{name}@example.com", name, true, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
@@ -41,6 +45,95 @@ public abstract class StoreContract : IDisposable
         var u1 = (await users.ListAsync(username: "u1")).Single();
         foreach (var r in await roles.ListByAppAsync(app.Id)) await users.AssignRoleAsync(u1.Id, r.Id);
         Assert.Equal(["r1", "r2"], (await users.ListRolesAsync(u1.Id, slice: new Slice(0, 2))).Select(r => r.Name));
+    }
+
+    private static Client NewClient(App app, string name, bool active = true) =>
+        new(Guid.NewGuid(), name, app.Id, active, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
+
+    [SkippableFact]
+    public async Task Clients_crud_secret_roles_and_cascades()
+    {
+        var (apps, roles, _) = CreateStore();
+        var app = await apps.AddAsync(NewApp("shop"));
+        var other = await apps.AddAsync(NewApp("blog"));
+        var r1 = await roles.AddAsync(NewRole(app, "reader"));
+        var r2 = await roles.AddAsync(NewRole(app, "writer"));
+
+        var c = await Clients.AddAsync(NewClient(app, "checkout"), "hash-1");
+        Assert.Equal("hash-1", await Clients.GetSecretHashAsync(c.Id));
+        Assert.Equal(c.Id, (await Clients.GetByNameAsync("CHECKOUT"))!.Id);
+        await Assert.ThrowsAsync<ConflictException>(() => Clients.AddAsync(NewClient(other, "Checkout"), "h"));
+        await Assert.ThrowsAsync<NotFoundException>(() => Clients.AddAsync(new Client(Guid.NewGuid(), "ghost", Guid.NewGuid(), true, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow), "h"));
+        Assert.Null(await Clients.GetByNameAsync("ghost"));
+
+        var second = await Clients.AddAsync(NewClient(other, "feed"), "hash-2");
+        Assert.Equal(["checkout", "feed"], (await Clients.ListAsync()).Select(x => x.Name));
+        Assert.Equal(["feed"], (await Clients.ListAsync(other.Id)).Select(x => x.Name));
+        Assert.Equal(["feed"], (await Clients.ListAsync(slice: new Slice(1, 5))).Select(x => x.Name));
+
+        // Update changes name/active only; the application stays.
+        var updated = await Clients.UpdateAsync(c with { Name = "checkout2", IsActive = false, AppId = other.Id });
+        Assert.Equal((app.Id, "checkout2", false), (updated!.AppId, updated.Name, updated.IsActive));
+        await Assert.ThrowsAsync<ConflictException>(() => Clients.UpdateAsync(c with { Name = "FEED" }));
+        Assert.Null(await Clients.UpdateAsync(c with { Id = Guid.NewGuid() }));
+
+        Assert.True(await Clients.SetSecretHashAsync(c.Id, "hash-3", DateTimeOffset.UtcNow));
+        Assert.Equal("hash-3", await Clients.GetSecretHashAsync(c.Id));
+        Assert.False(await Clients.SetSecretHashAsync(Guid.NewGuid(), "x", DateTimeOffset.UtcNow));
+
+        await Clients.AssignRoleAsync(c.Id, r2.Id);
+        await Clients.AssignRoleAsync(c.Id, r1.Id);
+        await Clients.AssignRoleAsync(c.Id, r1.Id); // idempotent
+        Assert.Equal(["reader", "writer"], (await Clients.ListRolesAsync(c.Id)).Select(r => r.Name));
+        Assert.Equal(["writer"], (await Clients.ListRolesAsync(c.Id, new Slice(1, 5))).Select(r => r.Name));
+        await Assert.ThrowsAsync<NotFoundException>(() => Clients.AssignRoleAsync(Guid.NewGuid(), r1.Id));
+        await Assert.ThrowsAsync<NotFoundException>(() => Clients.AssignRoleAsync(c.Id, Guid.NewGuid()));
+
+        // Deleting a role drops the assignment; deleting the app drops its clients, their secrets and assignments.
+        Assert.True(await roles.DeleteAsync(r1.Id));
+        Assert.Equal(["writer"], (await Clients.ListRolesAsync(c.Id)).Select(r => r.Name));
+        Assert.True(await Clients.RevokeRoleAsync(c.Id, r2.Id));
+        Assert.False(await Clients.RevokeRoleAsync(c.Id, r2.Id));
+        await Clients.AssignRoleAsync(c.Id, r2.Id);
+        Assert.True(await apps.DeleteAsync(app.Id));
+        Assert.Null(await Clients.GetAsync(c.Id));
+        Assert.Null(await Clients.GetSecretHashAsync(c.Id));
+        Assert.NotNull(await Clients.GetAsync(second.Id));
+        Assert.True(await Clients.DeleteAsync(second.Id));
+        Assert.False(await Clients.DeleteAsync(second.Id));
+    }
+
+    [SkippableFact]
+    public async Task Audit_is_listed_newest_first_filtered_and_sliced()
+    {
+        CreateStore();
+        var t0 = DateTimeOffset.UtcNow;
+        AuditEvent E(int n, string actor, string action) => new(Guid.NewGuid(), t0.AddSeconds(n), actor, action, $"t{n}", n % 2 == 0 ? "success" : "failure", $"d{n}", "127.0.0.1");
+        foreach (var e in new[] { E(1, "alice", "x"), E(3, "bob", "y"), E(2, "alice", "y"), E(4, "alice", "x") }) await Audit.AppendAsync(e);
+
+        Assert.Equal(["t4", "t3", "t2", "t1"], (await Audit.ListAsync()).Select(e => e.Target));
+        Assert.Equal(["t4", "t1"], (await Audit.ListAsync(actor: "alice", action: "x")).Select(e => e.Target));
+        Assert.Equal(["t3", "t2"], (await Audit.ListAsync(slice: new Slice(1, 2))).Select(e => e.Target));
+        Assert.Empty(await Audit.ListAsync(actor: "nobody"));
+        var first = (await Audit.ListAsync(slice: new Slice(0, 1))).Single();
+        Assert.Equal(("alice", "x", "d4", "127.0.0.1", "success"), (first.Actor, first.Action, first.Detail, first.Address, first.Outcome));
+    }
+
+    [SkippableFact]
+    public async Task Audit_rows_cannot_be_changed_or_removed_by_the_app_role()
+    {
+        CreateStore();
+        Skip.If(AppConnection is null, "Postgres only.");
+        await Audit.AppendAsync(new AuditEvent(Guid.NewGuid(), DateTimeOffset.UtcNow, "a", "act", null, "success", null, null));
+        await using var conn = new Npgsql.NpgsqlConnection(AppConnection);
+        await conn.OpenAsync();
+        foreach (var sql in new[] { "UPDATE audit_events SET actor = 'x'", "DELETE FROM audit_events", "TRUNCATE audit_events" })
+        {
+            await using var cmd = new Npgsql.NpgsqlCommand(sql, conn);
+            var ex = await Assert.ThrowsAsync<Npgsql.PostgresException>(() => cmd.ExecuteNonQueryAsync());
+            Assert.Equal("42501", ex.SqlState); // insufficient_privilege, from the missing grant or the trigger
+        }
+        Assert.Single(await Audit.ListAsync());
     }
 
     [SkippableFact]
@@ -290,6 +383,8 @@ public class InMemoryStoreContract : StoreContract
     {
         var s = new InMemoryStore();
         Credentials = new InMemoryCredentialRepository(s);
+        Audit = new InMemoryAuditRepository(s);
+        Clients = new InMemoryClientRepository(s);
         return (new InMemoryAppRepository(s), new InMemoryRoleRepository(s), new InMemoryUserRepository(s));
     }
 }

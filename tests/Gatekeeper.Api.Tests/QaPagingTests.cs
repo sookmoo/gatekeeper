@@ -214,7 +214,7 @@ public class QaPagingTests
         }
         var r = await e.Admin.GetAsync("/v1/applications?limit=5");
         Assert.Equal(HttpStatusCode.OK, r.StatusCode);
-        Assert.Equal(HttpStatusCode.OK, (await e.Anon.GetAsync("/health/ready")).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await e.Admin.GetAsync("/health/ready")).StatusCode);
     }
 
     [SkippableTheory, MemberData(nameof(Stores))]

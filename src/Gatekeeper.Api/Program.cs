@@ -69,9 +69,14 @@ builder.Services
     .AddSingleton<AdminAccessCheck>()
     .AddMemoryCache()
     .AddSingleton<AuthService>()
+    .AddSingleton<ClientService>()
+    .AddSingleton<ClientAuthService>()
+    .AddKeyedSingleton<LoginThrottle>("client", (_, _) => new LoginThrottle())
+    .AddSingleton<AuditService>()
+    .AddSingleton<AuditRecorder>()
     .AddSingleton<LoginThrottle>()
     .AddProblemDetails()
-    .AddOpenApi();
+    .AddOpenApi(o => o.AddDocumentTransformer<BearerSecurityTransformer>());
 
 if (!migrateOnly && !bootstrap)
 {
@@ -126,14 +131,18 @@ if (!migrateOnly && !bootstrap)
         // A valid signature is not enough: the user must still be an active administrator right now.
         o.Events = new JwtBearerEvents
         {
-            // Only the management API uses tokens: a stray Authorization header must not make /health or the JWKS touch the store.
+            // Only the management API and the readiness probe use tokens: a stray Authorization header must not make /health or the JWKS touch the store.
             OnMessageReceived = ctx =>
             {
-                if (!ctx.Request.Path.StartsWithSegments("/v1")) ctx.NoResult();
+                var path = ctx.Request.Path;
+                if ((!path.StartsWithSegments("/v1") && !path.StartsWithSegments("/health/ready")) || path.StartsWithSegments("/v1/auth")) ctx.NoResult();
                 return Task.CompletedTask;
             },
             OnTokenValidated = async ctx =>
             {
+                // The readiness probe must keep answering when the store is down or unmigrated, so it relies on the
+                // signed admin token alone; it only reveals whether the service is ready.
+                if (ctx.Request.Path.StartsWithSegments("/health/ready")) return;
                 if (!Guid.TryParse(ctx.Principal?.FindFirst("sub")?.Value, out var userId)
                     || !await access.IsAdminAsync(userId, ctx.HttpContext.RequestAborted))
                     ctx.Fail("The user is no longer an active administrator.");
@@ -218,9 +227,10 @@ app.UseStatusCodePages();
 app.UseMiddleware<ErrorMappingMiddleware>();
 app.UseAuthentication();
 app.UseAuthorization();
+app.UseMiddleware<AuditMiddleware>();
 app.MapOpenApi("/openapi/{documentName}.json");
 app.MapGet("/health", () => Results.Ok(new { status = "ok" })).ExcludeFromDescription();
-// Unauthenticated and it queries the store, so remember the answer briefly instead of letting callers amplify load.
+// It queries the store and reveals its state, so it needs an admin token; the answer is still cached briefly.
 var readyLock = new object();
 var readyAt = DateTimeOffset.MinValue;
 var readyResult = false;
@@ -232,6 +242,7 @@ app.MapGet("/health/ready", async (IReadinessProbe probe, CancellationToken ct) 
         if (!cached) lock (readyLock) (readyAt, readyResult) = (DateTimeOffset.UtcNow, ready);
         return ready ? Results.Ok(new { status = "ready" }) : Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
     })
+    .RequireAuthorization(Endpoints.AdminPolicy)
     .ExcludeFromDescription();
 app.MapApi();
 app.MapAuth();

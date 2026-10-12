@@ -13,14 +13,26 @@ public sealed class InMemoryStore
     public Dictionary<Guid, User> Users { get; } = [];
     public HashSet<(Guid UserId, Guid RoleId)> Assignments { get; } = [];
     public Dictionary<Guid, string> Credentials { get; } = [];
+    public List<AuditEvent> Audit { get; } = [];
+    public Dictionary<Guid, Client> Clients { get; } = [];
+    public Dictionary<Guid, string> ClientSecrets { get; } = [];
+    public HashSet<(Guid ClientId, Guid RoleId)> ClientAssignments { get; } = [];
 
     internal static IReadOnlyList<T> Paged<T>(IEnumerable<T> ordered, Slice? slice) =>
         (slice is null ? ordered : ordered.Skip(slice.Offset).Take(slice.Take)).ToList();
+
+    public void RemoveClient(Guid clientId)
+    {
+        Clients.Remove(clientId);
+        ClientSecrets.Remove(clientId);
+        ClientAssignments.RemoveWhere(a => a.ClientId == clientId);
+    }
 
     public void RemoveRole(Guid roleId)
     {
         Roles.Remove(roleId);
         Assignments.RemoveWhere(a => a.RoleId == roleId);
+        ClientAssignments.RemoveWhere(a => a.RoleId == roleId);
     }
 }
 
@@ -68,6 +80,7 @@ public sealed class InMemoryAppRepository(InMemoryStore s) : IAppRepository
         {
             if (!s.Apps.Remove(id)) return Task.FromResult(false);
             foreach (var role in s.Roles.Values.Where(r => r.AppId == id).ToList()) s.RemoveRole(role.Id);
+            foreach (var client in s.Clients.Values.Where(c => c.AppId == id).ToList()) s.RemoveClient(client.Id);
             return Task.FromResult(true);
         }
     }
@@ -258,6 +271,128 @@ public sealed class InMemoryCredentialRepository(InMemoryStore s) : ICredentialR
     }
 }
 
+public sealed class InMemoryClientRepository(InMemoryStore s) : IClientRepository
+{
+    public Task<Client> AddAsync(Client client, string secretHash, CancellationToken ct = default)
+    {
+        lock (s.Gate)
+        {
+            if (!s.Apps.ContainsKey(client.AppId)) throw new NotFoundException($"Application {client.AppId} not found.");
+            EnsureNameFree(client);
+            s.Clients[client.Id] = client;
+            s.ClientSecrets[client.Id] = secretHash;
+            return Task.FromResult(client);
+        }
+    }
+
+    public Task<Client?> GetAsync(Guid id, CancellationToken ct = default)
+    {
+        lock (s.Gate) return Task.FromResult(s.Clients.GetValueOrDefault(id));
+    }
+
+    public Task<Client?> GetByNameAsync(string name, CancellationToken ct = default)
+    {
+        lock (s.Gate) return Task.FromResult(s.Clients.Values.FirstOrDefault(c => InMemoryAppRepository.Same(c.Name, name)));
+    }
+
+    public Task<IReadOnlyList<Client>> ListAsync(Guid? appId = null, Slice? slice = null, CancellationToken ct = default)
+    {
+        lock (s.Gate)
+            return Task.FromResult(InMemoryStore.Paged(
+                s.Clients.Values.Where(c => appId is null || c.AppId == appId).OrderBy(c => c.Name), slice));
+    }
+
+    public Task<Client?> UpdateAsync(Client client, CancellationToken ct = default)
+    {
+        lock (s.Gate)
+        {
+            if (!s.Clients.TryGetValue(client.Id, out var current)) return Task.FromResult<Client?>(null);
+            EnsureNameFree(client);
+            var updated = current with { Name = client.Name, IsActive = client.IsActive, UpdatedAt = client.UpdatedAt };
+            s.Clients[client.Id] = updated;
+            return Task.FromResult<Client?>(updated);
+        }
+    }
+
+    public Task<bool> DeleteAsync(Guid id, CancellationToken ct = default)
+    {
+        lock (s.Gate)
+        {
+            var existed = s.Clients.ContainsKey(id);
+            s.RemoveClient(id);
+            return Task.FromResult(existed);
+        }
+    }
+
+    public Task<bool> SetSecretHashAsync(Guid id, string secretHash, DateTimeOffset at, CancellationToken ct = default)
+    {
+        lock (s.Gate)
+        {
+            if (!s.Clients.ContainsKey(id)) return Task.FromResult(false);
+            s.ClientSecrets[id] = secretHash;
+            return Task.FromResult(true);
+        }
+    }
+
+    public Task<string?> GetSecretHashAsync(Guid id, CancellationToken ct = default)
+    {
+        lock (s.Gate) return Task.FromResult(s.ClientSecrets.GetValueOrDefault(id));
+    }
+
+    public Task AssignRoleAsync(Guid clientId, Guid roleId, CancellationToken ct = default)
+    {
+        lock (s.Gate)
+        {
+            if (!s.Clients.ContainsKey(clientId)) throw new NotFoundException($"Client {clientId} not found.");
+            if (!s.Roles.ContainsKey(roleId)) throw new NotFoundException($"Role {roleId} not found.");
+            s.ClientAssignments.Add((clientId, roleId));
+        }
+        return Task.CompletedTask;
+    }
+
+    public Task<bool> RevokeRoleAsync(Guid clientId, Guid roleId, CancellationToken ct = default)
+    {
+        lock (s.Gate) return Task.FromResult(s.ClientAssignments.Remove((clientId, roleId)));
+    }
+
+    public Task<IReadOnlyList<Role>> ListRolesAsync(Guid clientId, Slice? slice = null, CancellationToken ct = default)
+    {
+        lock (s.Gate)
+            return Task.FromResult(InMemoryStore.Paged(
+                s.ClientAssignments.Where(a => a.ClientId == clientId).Select(a => s.Roles[a.RoleId]).OrderBy(r => r.Name).ThenBy(r => r.Id), slice));
+    }
+
+    private void EnsureNameFree(Client client)
+    {
+        if (s.Clients.Values.Any(c => c.Id != client.Id && InMemoryAppRepository.Same(c.Name, client.Name)))
+            throw new ConflictException($"Client '{client.Name}' already exists.");
+    }
+}
+
+public sealed class InMemoryAuditRepository(InMemoryStore s) : IAuditRepository
+{
+    public Task AppendAsync(AuditEvent entry, CancellationToken ct = default)
+    {
+        lock (s.Gate)
+        {
+            if (s.Audit.Any(e => e.Id == entry.Id)) throw new ConflictException($"Audit event {entry.Id} already exists.");
+            s.Audit.Add(entry);
+        }
+        return Task.CompletedTask;
+    }
+
+    public Task<IReadOnlyList<AuditEvent>> ListAsync(string? actor = null, string? action = null, Slice? slice = null, CancellationToken ct = default)
+    {
+        lock (s.Gate)
+        {
+            var q = s.Audit.AsEnumerable();
+            if (actor is not null) q = q.Where(e => e.Actor == actor);
+            if (action is not null) q = q.Where(e => e.Action == action);
+            return Task.FromResult(InMemoryStore.Paged(q.OrderByDescending(e => e.At).ThenByDescending(e => e.Id), slice));
+        }
+    }
+}
+
 public static class InMemoryServiceCollectionExtensions
 {
     public static IServiceCollection AddInMemoryStore(this IServiceCollection services) => services
@@ -266,6 +401,8 @@ public static class InMemoryServiceCollectionExtensions
         .AddSingleton<IRoleRepository, InMemoryRoleRepository>()
         .AddSingleton<IUserRepository, InMemoryUserRepository>()
         .AddSingleton<ICredentialRepository, InMemoryCredentialRepository>()
+        .AddSingleton<IClientRepository, InMemoryClientRepository>()
+        .AddSingleton<IAuditRepository, InMemoryAuditRepository>()
         .AddSingleton<IReadinessProbe, AlwaysReady>();
 }
 

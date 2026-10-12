@@ -157,6 +157,47 @@ public class ApiTests : IClassFixture<WebApplicationFactory<Program>>
     }
 
     [Fact]
+    public async Task Patch_changes_only_the_given_fields()
+    {
+        var name = Unique("user");
+        var user = await Create("/v1/users", new { username = name, email = $"{name}@example.com", displayName = "Keep" });
+        var id = user.GetProperty("id").GetGuid();
+        var r = await _http.PatchAsJsonAsync($"/v1/users/{id}", new { isActive = false });
+        Assert.Equal(HttpStatusCode.OK, r.StatusCode);
+        var got = await r.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.False(got.GetProperty("isActive").GetBoolean());
+        Assert.Equal("Keep", got.GetProperty("displayName").GetString());
+        Assert.Equal(name, got.GetProperty("username").GetString());
+        var cleared = await (await _http.PatchAsJsonAsync($"/v1/users/{id}", new { displayName = "" })).Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("", cleared.GetProperty("displayName").GetString());
+        Assert.Equal(HttpStatusCode.BadRequest, (await _http.PatchAsJsonAsync($"/v1/users/{id}", new { email = "bad" })).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await _http.PatchAsJsonAsync($"/v1/users/{Guid.NewGuid()}", new { isActive = true })).StatusCode);
+    }
+
+    [Fact]
+    public async Task Patch_application_and_role()
+    {
+        var app = await Create("/v1/applications", new { name = Unique("app") });
+        var appId = app.GetProperty("id").GetGuid();
+        var role = await Create($"/v1/applications/{appId}/roles", new { name = "r1", description = "keep me" });
+        var roleId = role.GetProperty("id").GetGuid();
+        var patched = await (await _http.PatchAsJsonAsync($"/v1/roles/{roleId}", new { name = "r2" })).Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("r2", patched.GetProperty("name").GetString());
+        Assert.Equal("keep me", patched.GetProperty("description").GetString());
+        var newName = Unique("app");
+        var renamed = await (await _http.PatchAsJsonAsync($"/v1/applications/{appId}", new { name = newName })).Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(newName, renamed.GetProperty("name").GetString());
+    }
+
+    [Fact]
+    public async Task Openapi_declares_the_bearer_scheme()
+    {
+        var doc = await _http.GetFromJsonAsync<JsonElement>("/openapi/v1.json");
+        Assert.Equal("bearer", doc.GetProperty("components").GetProperty("securitySchemes").GetProperty("bearer").GetProperty("scheme").GetString());
+        Assert.True(doc.GetProperty("paths").GetProperty("/v1/users/{id}").TryGetProperty("patch", out _));
+    }
+
+    [Fact]
     public async Task Openapi_document_is_served()
     {
         var doc = await _http.GetFromJsonAsync<JsonElement>("/openapi/v1.json");

@@ -39,7 +39,9 @@ internal sealed class PgTestDatabase : IDisposable
     public void GrantAppAccess() => Exec(MigratorConnection,
         $"GRANT USAGE ON SCHEMA public TO {AppRole}; " +
         $"GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO {AppRole}; " +
-        $"REVOKE ALL ON DATABASE {_name} FROM PUBLIC; GRANT CONNECT ON DATABASE {_name} TO {AppRole}");
+        $"REVOKE ALL ON DATABASE {_name} FROM PUBLIC; GRANT CONNECT ON DATABASE {_name} TO {AppRole}; " +
+        // Mirrors production: the audit trail is append-only for the app role.
+        $"DO $$ BEGIN IF to_regclass('public.audit_events') IS NOT NULL THEN REVOKE UPDATE, DELETE, TRUNCATE ON audit_events FROM {AppRole}; END IF; END $$;");
 
     public void Dispose()
     {
