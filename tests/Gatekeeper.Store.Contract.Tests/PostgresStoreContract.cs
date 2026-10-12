@@ -23,6 +23,8 @@ public class PostgresStoreContract : StoreContract
         var provider = PgStores.OpenAsAppRole(db!);
         _providers.Add(provider);
         Credentials = provider.GetRequiredService<ICredentialRepository>();
+        Audit = provider.GetRequiredService<IAuditRepository>();
+        AppConnection = db!.AppConnection;
         return (provider.GetRequiredService<IAppRepository>(),
                 provider.GetRequiredService<IRoleRepository>(),
                 provider.GetRequiredService<IUserRepository>());

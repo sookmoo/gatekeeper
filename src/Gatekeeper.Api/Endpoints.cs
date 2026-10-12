@@ -17,7 +17,7 @@ public static class Endpoints
 
     public static void MapApi(this IEndpointRouteBuilder routes)
     {
-        var v1 = routes.MapGroup("/v1").RequireAuthorization(AdminPolicy);
+        var v1 = routes.MapGroup("/v1").RequireAuthorization(AdminPolicy).AddEndpointFilter<AuditFilter>();
 
         var apps = v1.MapGroup("/applications").WithTags("Applications");
         apps.MapGet("/", (AppService s, int? limit, string? cursor, CancellationToken ct) =>
@@ -88,5 +88,8 @@ public static class Endpoints
             await s.RevokeRoleAsync(id, roleId, ct);
             return Results.NoContent();
         });
+
+        v1.MapGet("/audit", (AuditService s, string? actor, string? action, int? limit, string? cursor, CancellationToken ct) =>
+            s.ListAsync(actor, action, PageQuery.Parse(limit, cursor), ct)).WithTags("Audit");
     }
 }

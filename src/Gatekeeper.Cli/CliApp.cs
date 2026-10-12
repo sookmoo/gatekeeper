@@ -16,6 +16,7 @@ public static class CliApp
 
     private static readonly string[] AppFields = ["id", "name"];
     private static readonly string[] RoleFields = ["id", "name", "description"];
+    private static readonly string[] AuditFields = ["at", "outcome", "actor", "action", "target", "detail"];
     private static readonly string[] UserFields = ["id", "username", "email", "isActive", "displayName"];
 
     /// <param name="tokens">Where the login token is kept (default: a private file in the user's state directory).</param>
@@ -33,6 +34,7 @@ public static class CliApp
         root.Subcommands.Add(AppCommands());
         root.Subcommands.Add(RoleCommands());
         root.Subcommands.Add(UserCommands());
+        root.Subcommands.Add(AuditCommands());
         root.Subcommands.Add(LoginCommand());
         root.Subcommands.Add(LogoutCommand());
 
@@ -176,6 +178,23 @@ public static class CliApp
             {
                 await x.Api.DeleteAsync($"/v1/roles/{await x.ResolveRole(x.Get(dRole)!, x.Get(dApp))}");
                 x.Message("deleted");
+            }));
+            return cmd;
+        }
+
+        Command AuditCommands()
+        {
+            var cmd = new Command("audit", "Read the audit trail");
+            var actor = new Option<string?>("--actor") { Description = "Only events by this actor (user id, or 'anonymous'/'system')" };
+            var action = new Option<string?>("--action") { Description = "Only this action, e.g. auth.login or 'PUT /v1/users/{id}/password'" };
+            var limit = new Option<int>("--limit") { Description = "How many events, newest first (1-200)", DefaultValueFactory = _ => 50 };
+            cmd.Subcommands.Add(Cmd("list", "List recent audit events", c => { c.Options.Add(actor); c.Options.Add(action); c.Options.Add(limit); }, async x =>
+            {
+                var q = new List<string> { $"limit={x.Get(limit)}" };
+                if (x.Get(actor) is { } a) q.Add($"actor={Uri.EscapeDataString(a)}");
+                if (x.Get(action) is { } act) q.Add($"action={Uri.EscapeDataString(act)}");
+                var page = await x.Api.GetAsync("/v1/audit?" + string.Join('&', q));
+                x.Print(page.GetProperty("items"), AuditFields);
             }));
             return cmd;
         }

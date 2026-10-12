@@ -18,7 +18,7 @@ public static class AuthEndpoints
             .AllowAnonymous().WithTags("Auth");
 
         routes.MapPost("/v1/auth/login", async (LoginRequest r, AuthService auth, TokenService tokens, LoginThrottle throttle,
-                HttpContext http, CancellationToken ct) =>
+                HttpContext http, AuditRecorder audit, CancellationToken ct) =>
             {
                 var address = (http.Connection.RemoteIpAddress ?? IPAddress.None).ToString();
                 if (throttle.IsBlocked(address, r.Username, out var retryAfter))
@@ -31,6 +31,7 @@ public static class AuthEndpoints
                 if (result is null)
                 {
                     throttle.RecordFailure(address, r.Username);
+                    await audit.RecordAsync(http, "anonymous", "auth.login", r.Application, false, $"username={r.Username}");
                     // Many failures against one account from many addresses: do not lock the owner out, just slow the guessing.
                     if (throttle.UserFailures(r.Username) >= SlowDownAfterFailures)
                         await Task.Delay(TimeSpan.FromSeconds(2), ct);
@@ -40,6 +41,7 @@ public static class AuthEndpoints
                 }
 
                 throttle.RecordSuccess(address, r.Username);
+                await audit.RecordAsync(http, result.User.Id.ToString(), "auth.login", result.App.Name, true);
                 var (token, expires) = tokens.Issue(result);
                 http.Response.Headers.CacheControl = "no-store";
                 return Results.Ok(new LoginResponse(token, "Bearer", (int)(expires - DateTimeOffset.UtcNow).TotalSeconds));

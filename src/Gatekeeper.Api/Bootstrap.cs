@@ -45,6 +45,14 @@ public static class Bootstrap
             Validation.UserFields(username, email, null);
 
             var created = await CreateAdminAsync(services, username, email, password!);
+            try
+            {
+                await services.GetRequiredService<AuditRecorder>().RecordAsync("system", "bootstrap-admin", username, true, created ? "created" : "repaired");
+            }
+            catch (Exception ex) when (ex is GatekeeperException or InvalidOperationException)
+            {
+                Console.Error.WriteLine($"warning: could not write the audit event: {ex.GetType().Name}");
+            }
             Console.WriteLine(created
                 ? $"Administrator '{username}' created."
                 : $"Administrator '{username}' already existed: reactivated, password reset, admin role ensured.");

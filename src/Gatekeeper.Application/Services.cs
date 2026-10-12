@@ -321,3 +321,37 @@ public sealed class AuthService(
         return new AuthResult(user, app, names);
     }
 }
+
+/// <summary>
+/// Writes and reads the audit trail. Text is cut to a fixed length and stripped of control, format and unpaired
+/// surrogate characters so an attacker-chosen value (for example a login name) cannot forge lines or flood a row.
+/// </summary>
+public sealed class AuditService(IAuditRepository audit)
+{
+    public Task RecordAsync(string actor, string action, string? target, bool success, string? detail = null, string? address = null, CancellationToken ct = default) =>
+        audit.AppendAsync(new AuditEvent(Guid.NewGuid(), Clock.UtcNowMicros(), Clean(actor)!, Clean(action)!, Clean(target),
+            success ? AuditEvent.Success : AuditEvent.Failure, Clean(detail), Clean(address)), ct);
+
+    public async Task<Page<AuditEvent>> ListAsync(string? actor = null, string? action = null, PageQuery? page = null, CancellationToken ct = default)
+    {
+        page ??= PageQuery.Default;
+        return page.Build(await audit.ListAsync(actor, action, page.Slice, ct));
+    }
+
+    public static string? Clean(string? text)
+    {
+        if (text is null) return null;
+        var chars = new System.Text.StringBuilder(Math.Min(text.Length, AuditEvent.MaxField));
+        foreach (var rune in text.EnumerateRunes())
+        {
+            if (chars.Length >= AuditEvent.MaxField) break;
+            var category = System.Text.Rune.GetUnicodeCategory(rune);
+            var bad = rune.Value == 0xFFFD || category is System.Globalization.UnicodeCategory.Control
+                or System.Globalization.UnicodeCategory.Format or System.Globalization.UnicodeCategory.LineSeparator
+                or System.Globalization.UnicodeCategory.ParagraphSeparator or System.Globalization.UnicodeCategory.PrivateUse
+                or System.Globalization.UnicodeCategory.OtherNotAssigned;
+            chars.Append(bad ? "?" : rune.ToString());
+        }
+        return chars.ToString();
+    }
+}

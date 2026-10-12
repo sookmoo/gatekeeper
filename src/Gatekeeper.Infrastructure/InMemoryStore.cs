@@ -13,6 +13,7 @@ public sealed class InMemoryStore
     public Dictionary<Guid, User> Users { get; } = [];
     public HashSet<(Guid UserId, Guid RoleId)> Assignments { get; } = [];
     public Dictionary<Guid, string> Credentials { get; } = [];
+    public List<AuditEvent> Audit { get; } = [];
 
     internal static IReadOnlyList<T> Paged<T>(IEnumerable<T> ordered, Slice? slice) =>
         (slice is null ? ordered : ordered.Skip(slice.Offset).Take(slice.Take)).ToList();
@@ -258,6 +259,26 @@ public sealed class InMemoryCredentialRepository(InMemoryStore s) : ICredentialR
     }
 }
 
+public sealed class InMemoryAuditRepository(InMemoryStore s) : IAuditRepository
+{
+    public Task AppendAsync(AuditEvent entry, CancellationToken ct = default)
+    {
+        lock (s.Gate) s.Audit.Add(entry);
+        return Task.CompletedTask;
+    }
+
+    public Task<IReadOnlyList<AuditEvent>> ListAsync(string? actor = null, string? action = null, Slice? slice = null, CancellationToken ct = default)
+    {
+        lock (s.Gate)
+        {
+            var q = s.Audit.AsEnumerable();
+            if (actor is not null) q = q.Where(e => e.Actor == actor);
+            if (action is not null) q = q.Where(e => e.Action == action);
+            return Task.FromResult(InMemoryStore.Paged(q.OrderByDescending(e => e.At).ThenByDescending(e => e.Id), slice));
+        }
+    }
+}
+
 public static class InMemoryServiceCollectionExtensions
 {
     public static IServiceCollection AddInMemoryStore(this IServiceCollection services) => services
@@ -266,6 +287,7 @@ public static class InMemoryServiceCollectionExtensions
         .AddSingleton<IRoleRepository, InMemoryRoleRepository>()
         .AddSingleton<IUserRepository, InMemoryUserRepository>()
         .AddSingleton<ICredentialRepository, InMemoryCredentialRepository>()
+        .AddSingleton<IAuditRepository, InMemoryAuditRepository>()
         .AddSingleton<IReadinessProbe, AlwaysReady>();
 }
 

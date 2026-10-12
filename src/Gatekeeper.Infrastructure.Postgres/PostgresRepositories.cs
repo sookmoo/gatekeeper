@@ -244,3 +244,22 @@ public sealed class PostgresCredentialRepository(Factory factory) : PostgresRepo
     public Task<string?> GetHashAsync(Guid userId, CancellationToken ct = default) =>
         Run<string?>(db => db.Credentials.AsNoTracking().Where(c => c.UserId == userId).Select(c => c.Hash).FirstOrDefaultAsync(ct), ct: ct);
 }
+
+/// <summary>INSERT and SELECT only. The table also rejects UPDATE, DELETE and TRUNCATE with a trigger (see the migration).</summary>
+public sealed class PostgresAuditRepository(Factory factory) : PostgresRepository(factory), IAuditRepository
+{
+    public Task AppendAsync(AuditEvent entry, CancellationToken ct = default) => Run(async db =>
+    {
+        db.AuditEvents.Add(entry);
+        await db.SaveChangesAsync(ct);
+        return 0;
+    }, ct: ct);
+
+    public Task<IReadOnlyList<AuditEvent>> ListAsync(string? actor = null, string? action = null, Slice? slice = null, CancellationToken ct = default) => Run<IReadOnlyList<AuditEvent>>(async db =>
+    {
+        var q = db.AuditEvents.AsNoTracking();
+        if (actor is not null) q = q.Where(e => e.Actor == actor);
+        if (action is not null) q = q.Where(e => e.Action == action);
+        return await q.OrderByDescending(e => e.At).ThenByDescending(e => e.Id).Page(slice).ToListAsync(ct);
+    }, ct: ct);
+}

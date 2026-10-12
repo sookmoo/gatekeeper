@@ -17,6 +17,7 @@ public sealed class GatekeeperDbContext(DbContextOptions<GatekeeperDbContext> op
     public DbSet<User> Users => Set<User>();
     internal DbSet<UserRoleRow> UserRoles => Set<UserRoleRow>();
     internal DbSet<UserCredentialRow> Credentials => Set<UserCredentialRow>();
+    public DbSet<AuditEvent> AuditEvents => Set<AuditEvent>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {
@@ -70,6 +71,16 @@ public sealed class GatekeeperDbContext(DbContextOptions<GatekeeperDbContext> op
             e.Property(x => x.Hash).IsRequired();
             e.HasOne<User>().WithMany().HasForeignKey(x => x.UserId)
                 .OnDelete(DeleteBehavior.Cascade).HasConstraintName(Names.CredentialUserFk);
+        });
+
+        b.Entity<AuditEvent>(e =>
+        {
+            e.ToTable("audit_events");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Actor).IsRequired();
+            e.Property(x => x.Action).IsRequired();
+            e.Property(x => x.Outcome).IsRequired();
+            e.HasIndex(x => new { x.At, x.Id }).HasDatabaseName("ix_audit_events_at_id");
         });
 
         foreach (var property in b.Model.GetEntityTypes().SelectMany(t => t.GetProperties()))

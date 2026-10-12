@@ -59,6 +59,13 @@ public interface ICredentialRepository
     Task<bool> ReplaceHashAsync(Guid userId, string expectedHash, string newHash, DateTimeOffset at, CancellationToken ct = default);
 }
 
+/// <summary>Append-only: there is deliberately no update or delete. Lists are newest first.</summary>
+public interface IAuditRepository
+{
+    Task AppendAsync(AuditEvent entry, CancellationToken ct = default);
+    Task<IReadOnlyList<AuditEvent>> ListAsync(string? actor = null, string? action = null, Slice? slice = null, CancellationToken ct = default);
+}
+
 public interface IPasswordHasher
 {
     string Hash(string password);

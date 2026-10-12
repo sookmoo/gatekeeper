@@ -69,6 +69,8 @@ builder.Services
     .AddSingleton<AdminAccessCheck>()
     .AddMemoryCache()
     .AddSingleton<AuthService>()
+    .AddSingleton<AuditService>()
+    .AddSingleton<AuditRecorder>()
     .AddSingleton<LoginThrottle>()
     .AddProblemDetails()
     .AddOpenApi(o => o.AddDocumentTransformer<BearerSecurityTransformer>());
@@ -134,6 +136,9 @@ if (!migrateOnly && !bootstrap)
             },
             OnTokenValidated = async ctx =>
             {
+                // The readiness probe must keep answering when the store is down or unmigrated, so it relies on the
+                // signed admin token alone; it only reveals whether the service is ready.
+                if (ctx.Request.Path.StartsWithSegments("/health/ready")) return;
                 if (!Guid.TryParse(ctx.Principal?.FindFirst("sub")?.Value, out var userId)
                     || !await access.IsAdminAsync(userId, ctx.HttpContext.RequestAborted))
                     ctx.Fail("The user is no longer an active administrator.");

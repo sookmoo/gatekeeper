@@ -33,6 +33,26 @@ public class PostgresParityTests : IDisposable
         return (p.GetRequiredService<IAppRepository>(), p.GetRequiredService<IRoleRepository>(), p.GetRequiredService<IUserRepository>());
     }
 
+    [SkippableFact]
+    public async Task Audit_trigger_blocks_changes_even_for_the_owner()
+    {
+        var db = PgTestDatabase.TryCreate();
+        Skip.If(db is null, "GATEKEEPER_TEST_PG is not set.");
+        _databases.Add(db!);
+        _providers.Add(PgStores.OpenAsAppRole(db!));
+        await using var conn = new Npgsql.NpgsqlConnection(db!.MigratorConnection);
+        await conn.OpenAsync();
+        await using (var insert = new Npgsql.NpgsqlCommand(
+            "INSERT INTO audit_events (id, at, actor, action, outcome) VALUES (gen_random_uuid(), now(), 'a', 'b', 'success')", conn))
+            await insert.ExecuteNonQueryAsync();
+        foreach (var sql in new[] { "UPDATE audit_events SET actor = 'x'", "DELETE FROM audit_events", "TRUNCATE audit_events" })
+        {
+            await using var cmd = new Npgsql.NpgsqlCommand(sql, conn);
+            var ex = await Assert.ThrowsAsync<Npgsql.PostgresException>(() => cmd.ExecuteNonQueryAsync());
+            Assert.Contains("append-only", ex.MessageText);
+        }
+    }
+
     public void Dispose()
     {
         foreach (var p in _providers) p.Dispose();

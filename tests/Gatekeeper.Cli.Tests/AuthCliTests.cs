@@ -35,6 +35,23 @@ public class AuthCliTests : IClassFixture<WebApplicationFactory<Program>>
     }
 
     [Fact]
+    public async Task Audit_list_shows_recent_changes_and_filters()
+    {
+        var name = $"cli-aud-{Guid.NewGuid():N}"[..20];
+        Assert.Equal(0, (await Gk(true, null, "app", "create", name)).Code);
+        Assert.Equal(0, (await Gk(true, null, "app", "update", name, "--name", name + "x")).Code);
+        var all = await Gk(true, null, "audit", "list", "--limit", "20");
+        Assert.Equal(0, all.Code);
+        Assert.Contains("POST /v1/applications", all.Out);
+        Assert.Contains("PATCH /v1/applications/{id:guid}", all.Out);
+        var none = await Gk(true, null, "audit", "list", "--actor", "nobody-at-all");
+        Assert.Equal(0, none.Code);
+        Assert.Equal("", none.Out.Trim());
+        Assert.NotEqual(0, (await Gk(true, null, "audit", "list", "--limit", "0")).Code);
+        Assert.Equal(5, (await Gk(false, null, "audit", "list")).Code);
+    }
+
+    [Fact]
     public async Task Without_a_login_commands_exit_5()
     {
         var r = await GkAsLoggedIn("app", "list");
