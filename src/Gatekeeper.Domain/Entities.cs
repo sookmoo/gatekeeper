@@ -24,3 +24,19 @@ public sealed record Client(
     bool IsActive,
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt);
+
+/// <summary>
+/// A refresh-token session of a user in one application. The token hashes live in the store, never on this record.
+/// A session is usable while it is neither revoked nor past <see cref="ExpiresAt"/> (an absolute limit; rotation does not extend it).
+/// </summary>
+public sealed record Session(
+    Guid Id,
+    Guid UserId,
+    Guid AppId,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset LastUsedAt,
+    DateTimeOffset ExpiresAt,
+    DateTimeOffset? RevokedAt)
+{
+    public bool IsActive(DateTimeOffset now) => RevokedAt is null && ExpiresAt > now;
+}

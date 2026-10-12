@@ -4,11 +4,17 @@ using Gatekeeper.Domain;
 
 namespace Gatekeeper.Api;
 
-public sealed record LoginRequest(string? Username, string? Password, string? Application);
+/// <param name="Refresh">Ask for a refresh token (starts a revocable session).</param>
+public sealed record LoginRequest(string? Username, string? Password, string? Application, bool? Refresh = null);
 
 public sealed record ClientTokenRequest(string? ClientId, string? ClientSecret);
 
-public sealed record LoginResponse(string AccessToken, string TokenType, int ExpiresIn);
+public sealed record RefreshRequest(string? RefreshToken);
+
+public sealed record LoginResponse(
+    string AccessToken, string TokenType, int ExpiresIn,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] string? RefreshToken = null,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] int? RefreshExpiresIn = null);
 
 public static class AuthEndpoints
 {
@@ -20,7 +26,7 @@ public static class AuthEndpoints
             .AllowAnonymous().WithTags("Auth");
 
         routes.MapPost("/v1/auth/login", async (LoginRequest r, AuthService auth, TokenService tokens, LoginThrottle throttle,
-                HttpContext http, AuditRecorder audit, IUserRepository users, CancellationToken ct) =>
+                HttpContext http, AuditRecorder audit, IUserRepository users, SessionService sessions, CancellationToken ct) =>
             {
                 var address = (http.Connection.RemoteIpAddress ?? IPAddress.None).ToString();
                 if (throttle.IsBlocked(address, r.Username, out var retryAfter))
@@ -46,9 +52,50 @@ public static class AuthEndpoints
 
                 throttle.RecordSuccess(address, r.Username);
                 await audit.RecordAsync(http, result.User.Id.ToString(), "auth.login", result.App.Name, true);
-                var (token, expires) = tokens.Issue(result);
+                (Session Session, string Token)? started = r.Refresh == true ? await sessions.StartAsync(result, ct) : null;
+                var (token, expires) = tokens.Issue(result, sessionId: started?.Session.Id);
                 http.Response.Headers.CacheControl = "no-store";
-                return Results.Ok(new LoginResponse(token, "Bearer", (int)(expires - DateTimeOffset.UtcNow).TotalSeconds));
+                return Results.Ok(new LoginResponse(token, "Bearer", (int)(expires - DateTimeOffset.UtcNow).TotalSeconds,
+                    started?.Token, started is null ? null : (int)(started.Value.Session.ExpiresAt - DateTimeOffset.UtcNow).TotalSeconds));
+            })
+            .AllowAnonymous().WithTags("Auth");
+
+        // Trade a refresh token for a new access token and a new refresh token (the old one stops working).
+        routes.MapPost("/v1/auth/refresh", async (RefreshRequest r, SessionService sessions, TokenService tokens, LoginThrottle throttle,
+                HttpContext http, AuditRecorder audit, CancellationToken ct) =>
+            {
+                var address = (http.Connection.RemoteIpAddress ?? IPAddress.None).ToString();
+                if (throttle.IsBlocked(address, null, out var retryAfter))
+                {
+                    http.Response.Headers.RetryAfter = ((int)Math.Ceiling(retryAfter.TotalSeconds)).ToString();
+                    return Results.Problem("Too many failed attempts. Try again later.", statusCode: StatusCodes.Status429TooManyRequests);
+                }
+
+                var result = await sessions.RefreshAsync(r.RefreshToken, ct);
+                if (result.Failure is not null || result.Auth is null || result.Session is null || result.Token is null)
+                {
+                    throttle.RecordFailure(address, null);
+                    // The session id is not a secret; the token itself is never recorded.
+                    await audit.RecordAsync(http, result.Session?.UserId.ToString() ?? "anonymous", "auth.refresh",
+                        result.SessionId?.ToString(), false, result.Failure ?? "invalid");
+                    http.Response.Headers.WWWAuthenticate = "Bearer";
+                    return Results.Problem("Invalid refresh token.", statusCode: StatusCodes.Status401Unauthorized);
+                }
+
+                await audit.RecordAsync(http, result.Auth.User.Id.ToString(), "auth.refresh", result.Auth.App.Name, true, $"session={result.Session.Id}");
+                var (token, expires) = tokens.Issue(result.Auth, sessionId: result.Session.Id);
+                http.Response.Headers.CacheControl = "no-store";
+                return Results.Ok(new LoginResponse(token, "Bearer", (int)(expires - DateTimeOffset.UtcNow).TotalSeconds,
+                    result.Token, (int)(result.Session.ExpiresAt - DateTimeOffset.UtcNow).TotalSeconds));
+            })
+            .AllowAnonymous().WithTags("Auth");
+
+        // Ends the session of a refresh token. Always 204, so it does not reveal whether the token was valid.
+        routes.MapPost("/v1/auth/logout", async (RefreshRequest r, SessionService sessions, HttpContext http, AuditRecorder audit, CancellationToken ct) =>
+            {
+                if (await sessions.LogoutAsync(r.RefreshToken, ct) is { } ended)
+                    await audit.RecordAsync(http, ended.UserId.ToString(), "auth.logout", ended.Id.ToString(), true);
+                return Results.NoContent();
             })
             .AllowAnonymous().WithTags("Auth");
 

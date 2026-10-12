@@ -15,6 +15,7 @@ public abstract class StoreContract : IDisposable
     protected ICredentialRepository Credentials { get; set; } = null!;
     protected IAuditRepository Audit { get; set; } = null!;
     protected IClientRepository Clients { get; set; } = null!;
+    protected ISessionRepository Sessions { get; set; } = null!;
     /// <summary>Postgres only: a connection as the data-only app role, to prove the audit table is append-only.</summary>
     protected string? AppConnection { get; set; }
 
@@ -101,6 +102,76 @@ public abstract class StoreContract : IDisposable
         Assert.NotNull(await Clients.GetAsync(second.Id));
         Assert.True(await Clients.DeleteAsync(second.Id));
         Assert.False(await Clients.DeleteAsync(second.Id));
+    }
+
+    [SkippableFact]
+    public async Task Sessions_rotate_by_compare_and_set_revoke_expire_and_cascade()
+    {
+        var (apps, _, users) = CreateStore();
+        var app = await apps.AddAsync(NewApp("shop"));
+        var user = await users.AddAsync(NewUser("alice"));
+        var now = new DateTimeOffset(2026, 10, 12, 12, 0, 0, TimeSpan.Zero);
+        Session New(DateTimeOffset created, TimeSpan life) => new(Guid.NewGuid(), user.Id, app.Id, created, created, created + life, null);
+
+        var s1 = New(now, TimeSpan.FromDays(30));
+        await Sessions.AddAsync(s1, "h1");
+        await Assert.ThrowsAsync<NotFoundException>(() => Sessions.AddAsync(New(now, TimeSpan.FromDays(1)) with { UserId = Guid.NewGuid() }, "x"));
+        await Assert.ThrowsAsync<NotFoundException>(() => Sessions.AddAsync(New(now, TimeSpan.FromDays(1)) with { AppId = Guid.NewGuid() }, "x"));
+        Assert.Equal(s1, await Sessions.GetAsync(s1.Id));
+        Assert.Equal(new SessionHashes("h1", null), await Sessions.GetHashesAsync(s1.Id));
+        Assert.Null(await Sessions.GetAsync(Guid.NewGuid()));
+        Assert.Null(await Sessions.GetHashesAsync(Guid.NewGuid()));
+
+        // Rotation: only with the current hash; the old one is kept as the previous.
+        var later = now.AddMinutes(5);
+        Assert.False(await Sessions.RotateAsync(s1.Id, "wrong", "h2", later));
+        Assert.True(await Sessions.RotateAsync(s1.Id, "h1", "h2", later));
+        Assert.False(await Sessions.RotateAsync(s1.Id, "h1", "h3", later)); // already replaced
+        Assert.Equal(new SessionHashes("h2", "h1"), await Sessions.GetHashesAsync(s1.Id));
+        Assert.Equal(later, (await Sessions.GetAsync(s1.Id))!.LastUsedAt);
+        Assert.False(await Sessions.RotateAsync(Guid.NewGuid(), "h1", "h2", later));
+
+        // Expired sessions cannot rotate.
+        var shortLived = New(now, TimeSpan.FromMinutes(1));
+        await Sessions.AddAsync(shortLived, "e1");
+        Assert.False(await Sessions.RotateAsync(shortLived.Id, "e1", "e2", now.AddMinutes(2)));
+
+        // Listing: active only, newest first, sliced.
+        var s2 = New(now.AddHours(1), TimeSpan.FromDays(30));
+        var s3 = New(now.AddHours(2), TimeSpan.FromDays(30));
+        await Sessions.AddAsync(s2, "g1");
+        await Sessions.AddAsync(s3, "k1");
+        var check = now.AddHours(3);
+        Assert.Equal([s3.Id, s2.Id, s1.Id], (await Sessions.ListActiveByUserAsync(user.Id, check)).Select(x => x.Id));
+        Assert.Equal([s2.Id], (await Sessions.ListActiveByUserAsync(user.Id, check, new Slice(1, 1))).Select(x => x.Id));
+        Assert.Empty(await Sessions.ListActiveByUserAsync(Guid.NewGuid(), check));
+
+        // Revoke is idempotent and keeps the first revocation time; revoked sessions leave the list and cannot rotate.
+        Assert.True(await Sessions.RevokeAsync(s2.Id, check));
+        Assert.True(await Sessions.RevokeAsync(s2.Id, check.AddHours(1)));
+        Assert.Equal(check, (await Sessions.GetAsync(s2.Id))!.RevokedAt);
+        Assert.False(await Sessions.RevokeAsync(Guid.NewGuid(), check));
+        Assert.False(await Sessions.RotateAsync(s2.Id, "g1", "g2", check));
+        Assert.Equal([s3.Id, s1.Id], (await Sessions.ListActiveByUserAsync(user.Id, check)).Select(x => x.Id));
+        Assert.Equal(2, await Sessions.RevokeAllForUserAsync(user.Id, check));
+        Assert.Equal(0, await Sessions.RevokeAllForUserAsync(user.Id, check));
+        Assert.Empty(await Sessions.ListActiveByUserAsync(user.Id, check));
+
+        // Purge removes sessions that expired before the cut-off, nothing else.
+        Assert.Equal(1, await Sessions.PurgeAsync(now.AddMinutes(30)));
+        Assert.Null(await Sessions.GetAsync(shortLived.Id));
+        Assert.NotNull(await Sessions.GetAsync(s1.Id));
+
+        // Cascades: deleting the application, or the user, removes their sessions and hashes.
+        var other = await apps.AddAsync(NewApp("blog"));
+        var viaApp = New(now, TimeSpan.FromDays(1)) with { AppId = other.Id };
+        await Sessions.AddAsync(viaApp, "a1");
+        Assert.True(await apps.DeleteAsync(other.Id));
+        Assert.Null(await Sessions.GetAsync(viaApp.Id));
+        Assert.Null(await Sessions.GetHashesAsync(viaApp.Id));
+        Assert.True(await users.DeleteAsync(user.Id));
+        Assert.Null(await Sessions.GetAsync(s1.Id));
+        Assert.Null(await Sessions.GetHashesAsync(s1.Id));
     }
 
     [SkippableFact]
@@ -385,6 +456,7 @@ public class InMemoryStoreContract : StoreContract
         Credentials = new InMemoryCredentialRepository(s);
         Audit = new InMemoryAuditRepository(s);
         Clients = new InMemoryClientRepository(s);
+        Sessions = new InMemorySessionRepository(s);
         return (new InMemoryAppRepository(s), new InMemoryRoleRepository(s), new InMemoryUserRepository(s));
     }
 }

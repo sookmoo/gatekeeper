@@ -340,3 +340,53 @@ public sealed class PostgresClientRepository(Factory factory) : PostgresReposito
             .Join(db.Roles, x => x.RoleId, r => r.Id, (_, r) => r)
             .OrderBy(r => r.Name).ThenBy(r => r.Id).Page(slice).ToListAsync(ct), ct: ct);
 }
+
+public sealed class PostgresSessionRepository(Factory factory) : PostgresRepository(factory), ISessionRepository
+{
+    public Task AddAsync(Session x, string tokenHash, CancellationToken ct = default) => Run(async db =>
+    {
+        db.Sessions.Add(new SessionRow
+        {
+            Id = x.Id, UserId = x.UserId, AppId = x.AppId, CreatedAt = x.CreatedAt, LastUsedAt = x.LastUsedAt,
+            ExpiresAt = x.ExpiresAt, RevokedAt = x.RevokedAt, TokenHash = tokenHash,
+        });
+        await db.SaveChangesAsync(ct);
+        return 0;
+    }, async (lookup, pg) =>
+    {
+        if (pg.SqlState != "23503") return null;
+        if (!await lookup.Users.AnyAsync(u => u.Id == x.UserId)) return new NotFoundException($"User {x.UserId} not found.");
+        return new NotFoundException($"Application {x.AppId} not found.");
+    }, ct);
+
+    public Task<Session?> GetAsync(Guid id, CancellationToken ct = default) => Run<Session?>(async db =>
+        (await db.Sessions.AsNoTracking().FirstOrDefaultAsync(s => s.Id == id, ct))?.ToDomain(), ct: ct);
+
+    public Task<SessionHashes?> GetHashesAsync(Guid id, CancellationToken ct = default) => Run<SessionHashes?>(async db =>
+    {
+        var row = await db.Sessions.AsNoTracking().Where(s => s.Id == id)
+            .Select(s => new { s.TokenHash, s.PreviousTokenHash }).FirstOrDefaultAsync(ct);
+        return row is null ? null : new SessionHashes(row.TokenHash, row.PreviousTokenHash);
+    }, ct: ct);
+
+    public Task<IReadOnlyList<Session>> ListActiveByUserAsync(Guid userId, DateTimeOffset now, Slice? slice = null, CancellationToken ct = default) => Run<IReadOnlyList<Session>>(async db =>
+        (await db.Sessions.AsNoTracking()
+            .Where(s => s.UserId == userId && s.RevokedAt == null && s.ExpiresAt > now)
+            .OrderByDescending(s => s.CreatedAt).ThenByDescending(s => s.Id).Page(slice).ToListAsync(ct))
+        .Select(s => s.ToDomain()).ToList(), ct: ct);
+
+    public Task<bool> RotateAsync(Guid id, string expectedHash, string newHash, DateTimeOffset now, CancellationToken ct = default) => Run(async db =>
+        await db.Database.ExecuteSqlInterpolatedAsync(
+            $"UPDATE sessions SET previous_token_hash = token_hash, token_hash = {newHash}, last_used_at = {now} WHERE id = {id} AND token_hash = {expectedHash} AND revoked_at IS NULL AND expires_at > {now}", ct) > 0, ct: ct);
+
+    public Task<bool> RevokeAsync(Guid id, DateTimeOffset now, CancellationToken ct = default) => Run(async db =>
+        await db.Database.ExecuteSqlInterpolatedAsync(
+            $"UPDATE sessions SET revoked_at = COALESCE(revoked_at, {now}) WHERE id = {id}", ct) > 0, ct: ct);
+
+    public Task<int> RevokeAllForUserAsync(Guid userId, DateTimeOffset now, CancellationToken ct = default) => Run(db =>
+        db.Database.ExecuteSqlInterpolatedAsync(
+            $"UPDATE sessions SET revoked_at = {now} WHERE user_id = {userId} AND revoked_at IS NULL AND expires_at > {now}", ct), ct: ct);
+
+    public Task<int> PurgeAsync(DateTimeOffset expiredBefore, CancellationToken ct = default) => Run(db =>
+        db.Sessions.Where(s => s.ExpiresAt < expiredBefore).ExecuteDeleteAsync(ct), ct: ct);
+}

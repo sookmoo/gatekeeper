@@ -58,6 +58,8 @@ switch (provider)
         return Fail($"Unknown Store:Provider '{provider}'. Use InMemory or Postgres.");
 }
 
+var refreshDays = builder.Configuration.GetValue("Auth:RefreshTokenDays", 30);
+if (refreshDays is < 1 or > 90) return Fail("Auth:RefreshTokenDays must be between 1 and 90.");
 builder.Services
     .AddSingleton<AppService>()
     .AddSingleton<RoleService>()
@@ -69,6 +71,8 @@ builder.Services
     .AddSingleton<AdminAccessCheck>()
     .AddMemoryCache()
     .AddSingleton<AuthService>()
+    .AddSingleton(new RefreshOptions { RefreshLifetime = TimeSpan.FromDays(refreshDays) })
+    .AddSingleton<SessionService>()
     .AddSingleton<ClientService>()
     .AddSingleton<ClientAuthService>()
     .AddKeyedSingleton<LoginThrottle>("client", (_, _) => new LoginThrottle())
@@ -157,8 +161,14 @@ if (!migrateOnly && !bootstrap)
                 // The readiness probe must keep answering when the store is down or unmigrated, so it relies on the
                 // signed admin token alone; it only reveals whether the service is ready.
                 if (ctx.Request.Path.StartsWithSegments("/health/ready")) return;
+                Guid? sessionId = null;
+                if (ctx.Principal?.FindFirst(TokenService.SessionClaim)?.Value is { } sidText)
+                {
+                    if (!Guid.TryParse(sidText, out var sid)) { ctx.Fail("Invalid session."); return; }
+                    sessionId = sid;
+                }
                 if (!Guid.TryParse(ctx.Principal?.FindFirst("sub")?.Value, out var userId)
-                    || !await access.IsAdminAsync(userId, ctx.HttpContext.RequestAborted))
+                    || !await access.IsAdminAsync(userId, sessionId, ctx.HttpContext.RequestAborted))
                     ctx.Fail("The user is no longer an active administrator.");
             },
         };

@@ -14,12 +14,23 @@ public sealed class InMemoryStore
     public HashSet<(Guid UserId, Guid RoleId)> Assignments { get; } = [];
     public Dictionary<Guid, string> Credentials { get; } = [];
     public List<AuditEvent> Audit { get; } = [];
+    public Dictionary<Guid, Session> Sessions { get; } = [];
+    public Dictionary<Guid, SessionHashes> SessionHashes { get; } = [];
     public Dictionary<Guid, Client> Clients { get; } = [];
     public Dictionary<Guid, string> ClientSecrets { get; } = [];
     public HashSet<(Guid ClientId, Guid RoleId)> ClientAssignments { get; } = [];
 
     internal static IReadOnlyList<T> Paged<T>(IEnumerable<T> ordered, Slice? slice) =>
         (slice is null ? ordered : ordered.Skip(slice.Offset).Take(slice.Take)).ToList();
+
+    public void RemoveSessionsWhere(Func<Session, bool> match)
+    {
+        foreach (var x in Sessions.Values.Where(match).ToList())
+        {
+            Sessions.Remove(x.Id);
+            SessionHashes.Remove(x.Id);
+        }
+    }
 
     public void RemoveClient(Guid clientId)
     {
@@ -81,6 +92,7 @@ public sealed class InMemoryAppRepository(InMemoryStore s) : IAppRepository
             if (!s.Apps.Remove(id)) return Task.FromResult(false);
             foreach (var role in s.Roles.Values.Where(r => r.AppId == id).ToList()) s.RemoveRole(role.Id);
             foreach (var client in s.Clients.Values.Where(c => c.AppId == id).ToList()) s.RemoveClient(client.Id);
+            s.RemoveSessionsWhere(x => x.AppId == id);
             return Task.FromResult(true);
         }
     }
@@ -192,6 +204,7 @@ public sealed class InMemoryUserRepository(InMemoryStore s) : IUserRepository
             if (!s.Users.Remove(id)) return Task.FromResult(false);
             s.Assignments.RemoveWhere(a => a.UserId == id);
             s.Credentials.Remove(id);
+            s.RemoveSessionsWhere(x => x.UserId == id);
             return Task.FromResult(true);
         }
     }
@@ -369,6 +382,80 @@ public sealed class InMemoryClientRepository(InMemoryStore s) : IClientRepositor
     }
 }
 
+public sealed class InMemorySessionRepository(InMemoryStore s) : ISessionRepository
+{
+    public Task AddAsync(Session session, string tokenHash, CancellationToken ct = default)
+    {
+        lock (s.Gate)
+        {
+            if (!s.Users.ContainsKey(session.UserId)) throw new NotFoundException($"User {session.UserId} not found.");
+            if (!s.Apps.ContainsKey(session.AppId)) throw new NotFoundException($"Application {session.AppId} not found.");
+            s.Sessions[session.Id] = session;
+            s.SessionHashes[session.Id] = new SessionHashes(tokenHash, null);
+        }
+        return Task.CompletedTask;
+    }
+
+    public Task<Session?> GetAsync(Guid id, CancellationToken ct = default)
+    {
+        lock (s.Gate) return Task.FromResult(s.Sessions.GetValueOrDefault(id));
+    }
+
+    public Task<SessionHashes?> GetHashesAsync(Guid id, CancellationToken ct = default)
+    {
+        lock (s.Gate) return Task.FromResult(s.SessionHashes.TryGetValue(id, out var h) ? h : null);
+    }
+
+    public Task<IReadOnlyList<Session>> ListActiveByUserAsync(Guid userId, DateTimeOffset now, Slice? slice = null, CancellationToken ct = default)
+    {
+        lock (s.Gate)
+            return Task.FromResult(InMemoryStore.Paged(
+                s.Sessions.Values.Where(x => x.UserId == userId && x.IsActive(now)).OrderByDescending(x => x.CreatedAt).ThenByDescending(x => x.Id), slice));
+    }
+
+    public Task<bool> RotateAsync(Guid id, string expectedHash, string newHash, DateTimeOffset now, CancellationToken ct = default)
+    {
+        lock (s.Gate)
+        {
+            if (!s.Sessions.TryGetValue(id, out var session) || !session.IsActive(now)) return Task.FromResult(false);
+            if (!s.SessionHashes.TryGetValue(id, out var h) || h.Current != expectedHash) return Task.FromResult(false);
+            s.SessionHashes[id] = new SessionHashes(newHash, h.Current);
+            s.Sessions[id] = session with { LastUsedAt = now };
+            return Task.FromResult(true);
+        }
+    }
+
+    public Task<bool> RevokeAsync(Guid id, DateTimeOffset now, CancellationToken ct = default)
+    {
+        lock (s.Gate)
+        {
+            if (!s.Sessions.TryGetValue(id, out var session)) return Task.FromResult(false);
+            if (session.RevokedAt is null) s.Sessions[id] = session with { RevokedAt = now };
+            return Task.FromResult(true);
+        }
+    }
+
+    public Task<int> RevokeAllForUserAsync(Guid userId, DateTimeOffset now, CancellationToken ct = default)
+    {
+        lock (s.Gate)
+        {
+            var active = s.Sessions.Values.Where(x => x.UserId == userId && x.IsActive(now)).ToList();
+            foreach (var x in active) s.Sessions[x.Id] = x with { RevokedAt = now };
+            return Task.FromResult(active.Count);
+        }
+    }
+
+    public Task<int> PurgeAsync(DateTimeOffset expiredBefore, CancellationToken ct = default)
+    {
+        lock (s.Gate)
+        {
+            var old = s.Sessions.Values.Where(x => x.ExpiresAt < expiredBefore).Select(x => x.Id).ToList();
+            foreach (var id in old) { s.Sessions.Remove(id); s.SessionHashes.Remove(id); }
+            return Task.FromResult(old.Count);
+        }
+    }
+}
+
 public sealed class InMemoryAuditRepository(InMemoryStore s) : IAuditRepository
 {
     public Task AppendAsync(AuditEvent entry, CancellationToken ct = default)
@@ -402,6 +489,7 @@ public static class InMemoryServiceCollectionExtensions
         .AddSingleton<IUserRepository, InMemoryUserRepository>()
         .AddSingleton<ICredentialRepository, InMemoryCredentialRepository>()
         .AddSingleton<IClientRepository, InMemoryClientRepository>()
+        .AddSingleton<ISessionRepository, InMemorySessionRepository>()
         .AddSingleton<IAuditRepository, InMemoryAuditRepository>()
         .AddSingleton<IReadinessProbe, AlwaysReady>();
 }

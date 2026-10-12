@@ -7,7 +7,7 @@ namespace Gatekeeper.Api;
 public sealed class BearerSecurityTransformer : IOpenApiDocumentTransformer
 {
     // Routes that must work without a token (everything else needs an admin bearer token).
-    private static readonly HashSet<string> Anonymous = ["/v1/auth/login", "/v1/auth/client-token", "/.well-known/jwks.json"];
+    private static readonly HashSet<string> Anonymous = ["/v1/auth/login", "/v1/auth/client-token", "/v1/auth/refresh", "/v1/auth/logout", "/.well-known/jwks.json"];
 
     public Task TransformAsync(OpenApiDocument document, OpenApiDocumentTransformerContext context, CancellationToken ct)
     {

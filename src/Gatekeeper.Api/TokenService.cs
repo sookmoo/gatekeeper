@@ -22,6 +22,7 @@ public sealed class TokenService
     public const string TokenType = "at+jwt";
     public const string RolesClaim = "roles";
     public const string UsernameClaim = "preferred_username";
+    public const string SessionClaim = "sid";
 
     private readonly ECDsaSecurityKey _key;
     private readonly AuthOptions _options;
@@ -104,7 +105,8 @@ public sealed class TokenService
 
     public static ECDsa NewKey() => ECDsa.Create(ECCurve.NamedCurves.nistP256);
 
-    public (string Token, DateTimeOffset ExpiresAt) Issue(AuthResult auth, DateTimeOffset? now = null)
+    /// <param name="sessionId">Set for tokens that come from a refresh session: becomes the <c>sid</c> claim, so ending the session also ends these tokens where they are checked against the store.</param>
+    public (string Token, DateTimeOffset ExpiresAt) Issue(AuthResult auth, DateTimeOffset? now = null, Guid? sessionId = null)
     {
         var issued = now ?? DateTimeOffset.UtcNow;
         var expires = issued + _options.AccessTokenLifetime;
@@ -122,6 +124,7 @@ public sealed class TokenService
                 new Claim(JwtRegisteredClaimNames.Sub, auth.User.Id.ToString()),
                 new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString()),
                 new Claim(UsernameClaim, auth.User.Username),
+                .. sessionId is { } sid ? [new Claim(SessionClaim, sid.ToString())] : Array.Empty<Claim>(),
             ]),
             Claims = new Dictionary<string, object> { [RolesClaim] = auth.Roles.Order(StringComparer.Ordinal).ToArray() },
         };
