@@ -53,15 +53,15 @@ public class PostgresApiTests : IDisposable
         Assert.Equal(HttpStatusCode.Conflict, (await http.PostAsJsonAsync("/v1/applications", new { name = "billing" })).StatusCode);
         Assert.Equal(HttpStatusCode.NoContent, (await http.PutAsync($"/v1/users/{userId}/roles/{roleId}", null)).StatusCode);
         Assert.Equal(HttpStatusCode.NotFound, (await http.PutAsync($"/v1/users/{userId}/roles/{Guid.NewGuid()}", null)).StatusCode);
-        var roles = await http.GetFromJsonAsync<JsonElement>($"/v1/users/{userId}/roles?application={appId}");
+        var roles = (await http.GetFromJsonAsync<JsonElement>($"/v1/users/{userId}/roles?application={appId}")).GetProperty("items");
         Assert.Equal(1, roles.GetArrayLength());
-        var byName = await http.GetFromJsonAsync<JsonElement>("/v1/users?username=ALICE");
+        var byName = (await http.GetFromJsonAsync<JsonElement>("/v1/users?username=ALICE")).GetProperty("items");
         Assert.Equal(1, byName.GetArrayLength());
-        Assert.Equal(0, (await http.GetFromJsonAsync<JsonElement>("/v1/users?username=a%00")).GetArrayLength());
+        Assert.Equal(0, ((await http.GetFromJsonAsync<JsonElement>("/v1/users?username=a%00")).GetProperty("items")).GetArrayLength());
 
         Assert.Equal(HttpStatusCode.NoContent, (await http.DeleteAsync($"/v1/applications/{appId}")).StatusCode);
         Assert.Equal(HttpStatusCode.NotFound, (await http.GetAsync($"/v1/roles/{roleId}")).StatusCode);
-        Assert.Equal(0, (await http.GetFromJsonAsync<JsonElement>($"/v1/users/{userId}/roles")).GetArrayLength());
+        Assert.Equal(0, ((await http.GetFromJsonAsync<JsonElement>($"/v1/users/{userId}/roles")).GetProperty("items")).GetArrayLength());
     }
 
     [SkippableTheory]

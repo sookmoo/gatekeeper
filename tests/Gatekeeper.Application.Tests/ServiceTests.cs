@@ -25,7 +25,7 @@ public class ServiceTests
     public async Task Create_validates_before_storing()
     {
         await Assert.ThrowsAsync<ValidationException>(() => _apps.CreateAsync("Bad Name"));
-        Assert.Empty(await _apps.ListAsync());
+        Assert.Empty((await _apps.ListAsync()).Items);
     }
 
     [Fact]
@@ -49,7 +49,7 @@ public class ServiceTests
         await Assert.ThrowsAsync<NotFoundException>(() => _users.AssignRoleAsync(Guid.NewGuid(), role.Id));
         await Assert.ThrowsAsync<NotFoundException>(() => _users.AssignRoleAsync(user.Id, Guid.NewGuid()));
         await _users.AssignRoleAsync(user.Id, role.Id);
-        Assert.Single(await _users.ListRolesAsync(user.Id));
+        Assert.Single((await _users.ListRolesAsync(user.Id)).Items);
     }
 
     [Fact]

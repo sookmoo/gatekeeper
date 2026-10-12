@@ -14,6 +14,27 @@ public sealed class ApiClient(HttpClient http)
 {
     public Task<JsonElement> GetAsync(string path) => SendAsync(HttpMethod.Get, path, null);
 
+    /// <summary>GETs a paged list endpoint and follows <c>nextCursor</c> until the end; returns the items as one array.</summary>
+    public async Task<JsonElement> GetListAsync(string path)
+    {
+        var items = new List<JsonElement>();
+        string? cursor = null;
+        for (var pages = 0; pages < MaxPages; pages++)
+        {
+            var sep = path.Contains('?') ? '&' : '?';
+            var url = $"{path}{sep}limit=200" + (cursor is null ? "" : $"&cursor={Uri.EscapeDataString(cursor)}");
+            var page = await GetAsync(url);
+            if (page.ValueKind != JsonValueKind.Object || !page.TryGetProperty("items", out var arr) || arr.ValueKind != JsonValueKind.Array)
+                throw new CliException(1, "Unexpected response from server (not a page).");
+            items.AddRange(arr.EnumerateArray());
+            if (!page.TryGetProperty("nextCursor", out var next) || next.ValueKind != JsonValueKind.String) break;
+            cursor = next.GetString();
+        }
+        return JsonSerializer.SerializeToElement(items);
+    }
+
+    private const int MaxPages = 500;
+
     public Task<JsonElement> PostAsync(string path, object body) => SendAsync(HttpMethod.Post, path, body);
 
     public Task<JsonElement> PutAsync(string path, object? body = null) => SendAsync(HttpMethod.Put, path, body);

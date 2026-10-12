@@ -47,9 +47,9 @@ public class ApiTests : IClassFixture<WebApplicationFactory<Program>>
 
         Assert.Equal(HttpStatusCode.NoContent, (await _http.PutAsync($"/v1/users/{userId}/roles/{roleId}", null)).StatusCode);
         Assert.Equal(HttpStatusCode.NoContent, (await _http.PutAsync($"/v1/users/{userId}/roles/{roleId}", null)).StatusCode);
-        var roles = await _http.GetFromJsonAsync<JsonElement>($"/v1/users/{userId}/roles?application={appId}");
+        var roles = (await _http.GetFromJsonAsync<JsonElement>($"/v1/users/{userId}/roles?application={appId}")).GetProperty("items");
         Assert.Equal(1, roles.GetArrayLength());
-        var none = await _http.GetFromJsonAsync<JsonElement>($"/v1/users/{userId}/roles?application={Guid.NewGuid()}");
+        var none = (await _http.GetFromJsonAsync<JsonElement>($"/v1/users/{userId}/roles?application={Guid.NewGuid()}")).GetProperty("items");
         Assert.Equal(0, none.GetArrayLength());
 
         Assert.Equal(HttpStatusCode.NoContent, (await _http.DeleteAsync($"/v1/users/{userId}/roles/{roleId}")).StatusCode);
@@ -145,7 +145,7 @@ public class ApiTests : IClassFixture<WebApplicationFactory<Program>>
     [Fact]
     public async Task Username_filter_with_control_characters_matches_nothing()
     {
-        var list = await _http.GetFromJsonAsync<JsonElement>("/v1/users?username=a%00");
+        var list = (await _http.GetFromJsonAsync<JsonElement>("/v1/users?username=a%00")).GetProperty("items");
         Assert.Equal(0, list.GetArrayLength());
     }
 

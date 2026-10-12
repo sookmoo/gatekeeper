@@ -68,7 +68,7 @@ public static class CliApp
             cmd.Subcommands.Add(Cmd("create", "Create an application", c => c.Arguments.Add(nameArg), async x =>
                 x.Print(await x.Api.PostAsync("/v1/applications", new { name = x.Get(nameArg) }), AppFields, single: true)));
             cmd.Subcommands.Add(Cmd("list", "List applications", _ => { }, async x =>
-                x.Print(await x.Api.GetAsync("/v1/applications"), AppFields)));
+                x.Print(await x.Api.GetListAsync("/v1/applications"), AppFields)));
             var getApp = app();
             cmd.Subcommands.Add(Cmd("get", "Show an application", c => c.Arguments.Add(getApp), async x =>
                 x.Print(await x.Api.GetAsync($"/v1/applications/{await x.ResolveApp(x.Get(getApp)!)}"), AppFields, single: true)));
@@ -106,7 +106,7 @@ public static class CliApp
 
             var lApp = AppOpt(true);
             cmd.Subcommands.Add(Cmd("list", "List roles of an application", c => c.Options.Add(lApp), async x =>
-                x.Print(await x.Api.GetAsync($"/v1/applications/{await x.ResolveApp(x.Get(lApp)!)}/roles"), RoleFields)));
+                x.Print(await x.Api.GetListAsync($"/v1/applications/{await x.ResolveApp(x.Get(lApp)!)}/roles"), RoleFields)));
 
             var gRole = RoleArg(); var gApp = AppOpt(false);
             cmd.Subcommands.Add(Cmd("get", "Show a role", c => { c.Arguments.Add(gRole); c.Options.Add(gApp); }, async x =>
@@ -159,7 +159,7 @@ public static class CliApp
             cmd.Subcommands.Add(Cmd("list", "List users", c => c.Options.Add(lActive), async x =>
             {
                 var active = x.Get(lActive);
-                x.Print(await x.Api.GetAsync(active is null ? "/v1/users" : $"/v1/users?active={active.ToString()!.ToLowerInvariant()}"), UserFields);
+                x.Print(await x.Api.GetListAsync(active is null ? "/v1/users" : $"/v1/users?active={active.ToString()!.ToLowerInvariant()}"), UserFields);
             }));
 
             var gUser = UserArg();
@@ -196,7 +196,7 @@ public static class CliApp
                 var id = await x.ResolveUser(x.Get(rUser)!);
                 var app = x.Get(rApp);
                 var query = app is null ? "" : $"?application={await x.ResolveApp(app)}";
-                x.Print(await x.Api.GetAsync($"/v1/users/{id}/roles{query}"), RoleFields);
+                x.Print(await x.Api.GetListAsync($"/v1/users/{id}/roles{query}"), RoleFields);
             }));
 
             var aUser = UserArg(); var aRole = RoleArg(); var aApp = AppOpt();
@@ -266,7 +266,7 @@ public static class CliApp
         public async Task<Guid> ResolveApp(string app)
         {
             if (Guid.TryParse(app, out var id)) return id;
-            var all = await Api.GetAsync("/v1/applications");
+            var all = await Api.GetListAsync("/v1/applications");
             var match = all.EnumerateArray().FirstOrDefault(a =>
                 string.Equals(a.GetProperty("name").GetString(), app, StringComparison.OrdinalIgnoreCase));
             return match.ValueKind == JsonValueKind.Undefined
@@ -277,7 +277,7 @@ public static class CliApp
         public async Task<Guid> ResolveUser(string user)
         {
             if (Guid.TryParse(user, out var id)) return id;
-            var found = await Api.GetAsync($"/v1/users?username={Uri.EscapeDataString(user)}");
+            var found = await Api.GetListAsync($"/v1/users?username={Uri.EscapeDataString(user)}");
             return found.GetArrayLength() == 0
                 ? throw new CliException(2, $"User '{user}' not found.")
                 : found[0].GetProperty("id").GetGuid();
@@ -288,7 +288,7 @@ public static class CliApp
             if (Guid.TryParse(role, out var id)) return id;
             if (app is null) throw new CliException(1, $"Role '{role}' is a name; pass --app <application> or use the role id.");
             var appId = await ResolveApp(app);
-            var roles = await Api.GetAsync($"/v1/applications/{appId}/roles");
+            var roles = await Api.GetListAsync($"/v1/applications/{appId}/roles");
             var match = roles.EnumerateArray().FirstOrDefault(r =>
                 string.Equals(r.GetProperty("name").GetString(), role, StringComparison.OrdinalIgnoreCase));
             return match.ValueKind == JsonValueKind.Undefined
