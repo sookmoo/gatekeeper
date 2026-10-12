@@ -7,12 +7,20 @@ After=gatekeeper-migrate.service
 ContainerName=gatekeeper-api
 Image=ghcr.io/sookmoo/gatekeeper:latest
 Network=gatekeeper.network
-# Loopback only on the host. The API has no authentication yet; do not widen this until slice 4.
+# Loopback only on the host: the API speaks plain HTTP (passwords, tokens). Put a TLS proxy in front to expose it.
 PublishPort=127.0.0.1:5080:8080
 Environment=Store__Provider=Postgres
 Environment=Gatekeeper__AllowNonLoopback=true
 # Data-only role: the running service holds no DDL rights.
 Secret=gatekeeper-conn-app,type=env,target=ConnectionStrings__Gatekeeper
+# ES256 private key (PEM) that signs access tokens; the public half is served at /.well-known/jwks.json.
+# Mounted as a file (not an environment variable) so it does not show up in `podman inspect` or /proc/<pid>/environ.
+Secret=gatekeeper-signing-key,type=mount,uid=1654,mode=0400
+Environment=Auth__SigningKeyPemFile=/run/secrets/gatekeeper-signing-key
+# The root filesystem is read-only, so give the secret a writable place to be mounted into.
+Tmpfs=/run/secrets:size=1m,mode=0755
+# Argon2 uses 64 MiB per hash and the service caps concurrent hashes; this is a backstop against exhausting the host.
+PodmanArgs=--memory=768m
 ReadOnly=true
 DropCapability=ALL
 NoNewPrivileges=true

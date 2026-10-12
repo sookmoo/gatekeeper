@@ -12,9 +12,11 @@ namespace Gatekeeper.Api.Tests;
 
 public class QaSpecTests(WebApplicationFactory<Program> f) : IClassFixture<WebApplicationFactory<Program>>
 {
-    private HttpClient C => f.CreateClient();
+    private HttpClient C => f.CreateAdminClient();
     private static string N(string p) => $"{p}-{Guid.NewGuid():N}"[..20];
     private static StringContent J(string s) => new(s, Encoding.UTF8, "application/json");
+
+    private static async Task<JsonElement> Items(HttpResponseMessage r) => (await Body(r)).GetProperty("items");
 
     private static async Task<JsonElement> Body(HttpResponseMessage r) =>
         JsonDocument.Parse(await r.Content.ReadAsStringAsync()).RootElement.Clone();
@@ -152,7 +154,7 @@ public class QaSpecTests(WebApplicationFactory<Program> f) : IClassFixture<WebAp
         Assert.Equal(HttpStatusCode.NoContent, (await c.PutAsync($"/v1/users/{user}/roles/{role}", null)).StatusCode);
         Assert.Equal(HttpStatusCode.NoContent, (await c.DeleteAsync($"/v1/applications/{app}")).StatusCode);
         Assert.Equal(HttpStatusCode.NotFound, (await c.GetAsync($"/v1/roles/{role}")).StatusCode);
-        var roles = await Body(await c.GetAsync($"/v1/users/{user}/roles"));
+        var roles = await Items(await c.GetAsync($"/v1/users/{user}/roles"));
         Assert.Equal(0, roles.GetArrayLength());
         Assert.Equal(HttpStatusCode.NotFound, (await c.GetAsync($"/v1/applications/{app}/roles")).StatusCode);
     }
@@ -164,7 +166,7 @@ public class QaSpecTests(WebApplicationFactory<Program> f) : IClassFixture<WebAp
         var u = await MkUser(c);
         await c.PutAsync($"/v1/users/{u}/roles/{r1}", null); await c.PutAsync($"/v1/users/{u}/roles/{r2}", null);
         await c.DeleteAsync($"/v1/roles/{r1}");
-        Assert.Equal(1, (await Body(await c.GetAsync($"/v1/users/{u}/roles"))).GetArrayLength());
+        Assert.Equal(1, (await Items(await c.GetAsync($"/v1/users/{u}/roles"))).GetArrayLength());
         await c.DeleteAsync($"/v1/users/{u}");
         Assert.Equal(HttpStatusCode.NotFound, (await c.GetAsync($"/v1/users/{u}/roles")).StatusCode);
         // role survives user deletion; re-created user with same name has no roles
@@ -177,7 +179,7 @@ public class QaSpecTests(WebApplicationFactory<Program> f) : IClassFixture<WebAp
         var c = C; var app = await MkApp(c); var role = await MkRole(c, app); var u = await MkUser(c);
         Assert.Equal(HttpStatusCode.NoContent, (await c.PutAsync($"/v1/users/{u}/roles/{role}", null)).StatusCode);
         Assert.Equal(HttpStatusCode.NoContent, (await c.PutAsync($"/v1/users/{u}/roles/{role}", null)).StatusCode);
-        Assert.Equal(1, (await Body(await c.GetAsync($"/v1/users/{u}/roles"))).GetArrayLength());
+        Assert.Equal(1, (await Items(await c.GetAsync($"/v1/users/{u}/roles"))).GetArrayLength());
         Assert.Equal(HttpStatusCode.NotFound, (await c.PutAsync($"/v1/users/{u}/roles/{Guid.NewGuid()}", null)).StatusCode);
         Assert.Equal(HttpStatusCode.NotFound, (await c.PutAsync($"/v1/users/{Guid.NewGuid()}/roles/{role}", null)).StatusCode);
         Assert.Equal(HttpStatusCode.NoContent, (await c.DeleteAsync($"/v1/users/{u}/roles/{role}")).StatusCode);
@@ -190,16 +192,16 @@ public class QaSpecTests(WebApplicationFactory<Program> f) : IClassFixture<WebAp
         var c = C; var a1 = await MkApp(c); var a2 = await MkApp(c);
         var r1 = await MkRole(c, a1); var r2 = await MkRole(c, a2); var u = await MkUser(c);
         await c.PutAsync($"/v1/users/{u}/roles/{r1}", null); await c.PutAsync($"/v1/users/{u}/roles/{r2}", null);
-        var f = await Body(await c.GetAsync($"/v1/users/{u}/roles?application={a1}"));
+        var f = await Items(await c.GetAsync($"/v1/users/{u}/roles?application={a1}"));
         Assert.Equal(1, f.GetArrayLength()); Assert.Equal(r1, f[0].GetProperty("id").GetGuid());
-        Assert.Equal(0, (await Body(await c.GetAsync($"/v1/users/{u}/roles?application={Guid.NewGuid()}"))).GetArrayLength());
+        Assert.Equal(0, (await Items(await c.GetAsync($"/v1/users/{u}/roles?application={Guid.NewGuid()}"))).GetArrayLength());
 
         var inactive = N("user");
         await c.PostAsJsonAsync("/v1/users", new { username = inactive, email = $"{inactive}@example.com", isActive = false });
-        var act = await Body(await c.GetAsync("/v1/users?active=false"));
+        var act = await Items(await c.GetAsync("/v1/users?active=false"));
         Assert.Contains(act.EnumerateArray(), x => x.GetProperty("username").GetString() == inactive);
         Assert.All(act.EnumerateArray(), x => Assert.False(x.GetProperty("isActive").GetBoolean()));
-        var tr = await Body(await c.GetAsync("/v1/users?active=true"));
+        var tr = await Items(await c.GetAsync("/v1/users?active=true"));
         Assert.DoesNotContain(tr.EnumerateArray(), x => x.GetProperty("username").GetString() == inactive);
         Assert.Equal(HttpStatusCode.BadRequest, (await c.GetAsync("/v1/users?active=maybe")).StatusCode);
     }

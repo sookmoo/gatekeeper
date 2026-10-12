@@ -10,8 +10,8 @@ FROM mcr.microsoft.com/dotnet/aspnet:10.0-noble-chiseled@sha256:8c20ba8cb64c498f
 WORKDIR /app
 COPY --from=build /out .
 USER $APP_UID
-# The container must bind a non-loopback address. The API refuses that without authentication unless explicitly
-# allowed; set Gatekeeper__AllowNonLoopback=true at deploy time and publish the port on 127.0.0.1 only.
+# The container must bind a non-loopback address. The API speaks plain HTTP and refuses that unless explicitly
+# allowed; set Gatekeeper__AllowNonLoopback=true at deploy time and publish the port on 127.0.0.1 or behind TLS.
 # "Urls" (app configuration) must be used: it overrides appsettings.json, ASPNETCORE_URLS does not.
 ENV Urls=http://+:8080 \
     DOTNET_EnableDiagnostics=0

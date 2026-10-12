@@ -47,12 +47,12 @@ internal sealed class PgTestDatabase : IDisposable
         Exec(_admin, $"DROP DATABASE IF EXISTS {_name} WITH (FORCE)");
     }
 
-    // Roles are cluster-wide and tests run in parallel, so serialise creation with an advisory lock.
+    // Roles are cluster-wide and tests run in parallel, so serialise creation with a transaction-scoped advisory lock
+    // (a session lock would be released before the implicit transaction commits the new role).
     private static void EnsureAppRole(string admin) => Exec(admin,
-        "SELECT pg_advisory_lock(7301); " +
+        "SELECT pg_advisory_xact_lock(7301); " + // held until the batch commits, so the new role is visible to the next holder
         $"DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{AppRole}') THEN " +
-        $"CREATE ROLE {AppRole} LOGIN PASSWORD '{AppPassword}' NOSUPERUSER NOCREATEDB NOCREATEROLE; END IF; END $$; " +
-        "SELECT pg_advisory_unlock(7301);");
+        $"CREATE ROLE {AppRole} LOGIN PASSWORD '{AppPassword}' NOSUPERUSER NOCREATEDB NOCREATEROLE; END IF; END $$;");
 
     private static void Exec(string connectionString, string sql)
     {

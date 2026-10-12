@@ -1,0 +1,8 @@
+namespace Gatekeeper.Domain;
+
+/// <summary>Names Gatekeeper itself relies on. The management API is guarded by the admin role of the admin app.</summary>
+public static class Reserved
+{
+    public const string AdminApp = "gatekeeper";
+    public const string AdminRole = "admin";
+}

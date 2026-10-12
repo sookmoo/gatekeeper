@@ -27,5 +27,11 @@ if ! podman secret exists gatekeeper-conn-app; then
   secret gatekeeper-conn-app "Host=gatekeeper-db;Database=gatekeeper;Username=gatekeeper_app;Password=$app;SSL Mode=Disable"
 fi
 
+if ! podman secret exists gatekeeper-signing-key; then
+  command -v openssl >/dev/null || { echo "openssl is required to generate the token signing key" >&2; exit 1; }
+  openssl ecparam -genkey -name prime256v1 -noout | openssl pkcs8 -topk8 -nocrypt | podman secret create gatekeeper-signing-key - >/dev/null
+fi
+
 systemctl --user daemon-reload
 echo "Installed. Start with: systemctl --user start gatekeeper-api.service"
+echo "Then create the first administrator once: deploy/bootstrap-admin.sh <username> <email>"

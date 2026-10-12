@@ -17,6 +17,10 @@ public static partial class Validation
     [GeneratedRegex(@"\A[!-?A-~]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+\z")]
     private static partial Regex EmailShape();
 
+    /// <summary>True if the text has the shape of a username (lowercase slug, at most 64 characters). Case-folded input is accepted.</summary>
+    public static bool LooksLikeUsername(string? value) =>
+        value is { Length: > 0 and <= MaxNameLength } && Slug().IsMatch(value.ToLowerInvariant());
+
     public static void AppName(string? name) => Throw(Check(("name", SlugError(name))));
 
     public static void RoleFields(string? name, string? description) =>
@@ -29,6 +33,20 @@ public static partial class Validation
             ("username", SlugError(username)),
             ("email", EmailError(email)),
             ("displayName", Length(displayName, MaxTextLength, required: false))));
+
+    public const int MinPasswordLength = 12;
+    public const int MaxPasswordLength = 128;
+
+    /// <summary>Length rules only (no composition rules). Control characters and malformed Unicode are refused.</summary>
+    public static void Password(string? password) => Throw(Check(("password", PasswordError(password))));
+
+    private static string? PasswordError(string? value)
+    {
+        if (value is null) return "is required.";
+        if (value.Length < MinPasswordLength) return $"must be at least {MinPasswordLength} characters.";
+        if (value.Length > MaxPasswordLength) return $"must be at most {MaxPasswordLength} characters.";
+        return IsCleanText(value) ? null : "must not contain control characters or invalid Unicode.";
+    }
 
     private static string? SlugError(string? value)
     {

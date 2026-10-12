@@ -2,6 +2,8 @@ using Gatekeeper.Domain;
 
 namespace Gatekeeper.Application;
 
+// List methods return rows ordered deterministically; a Slice (offset, take) pages them. Cancellation
+// is honoured where the store supports it.
 // Contract for all stores (in-memory now, Postgres later). Uniqueness violations throw
 // ConflictException; missing rows yield null/false. Deletes cascade to dependents.
 // Writes that reference a parent (role -> app, assignment -> user/role) verify the parent
@@ -9,34 +11,59 @@ namespace Gatekeeper.Application;
 
 public interface IAppRepository
 {
-    Task<App> AddAsync(App app);
-    Task<App?> GetAsync(Guid id);
-    Task<IReadOnlyList<App>> ListAsync();
-    Task<App?> UpdateAsync(App app);
-    Task<bool> DeleteAsync(Guid id);
+    Task<App> AddAsync(App app, CancellationToken ct = default);
+    Task<App?> GetAsync(Guid id, CancellationToken ct = default);
+    /// <summary>Case-insensitive.</summary>
+    Task<App?> GetByNameAsync(string name, CancellationToken ct = default);
+    Task<IReadOnlyList<App>> ListAsync(Slice? slice = null, CancellationToken ct = default);
+    Task<App?> UpdateAsync(App app, CancellationToken ct = default);
+    Task<bool> DeleteAsync(Guid id, CancellationToken ct = default);
 }
 
 public interface IRoleRepository
 {
-    Task<Role> AddAsync(Role role);
-    Task<Role?> GetAsync(Guid id);
-    Task<IReadOnlyList<Role>> ListByAppAsync(Guid appId);
-    Task<Role?> UpdateAsync(Role role);
-    Task<bool> DeleteAsync(Guid id);
+    Task<Role> AddAsync(Role role, CancellationToken ct = default);
+    Task<Role?> GetAsync(Guid id, CancellationToken ct = default);
+    Task<IReadOnlyList<Role>> ListByAppAsync(Guid appId, Slice? slice = null, CancellationToken ct = default);
+    Task<Role?> UpdateAsync(Role role, CancellationToken ct = default);
+    Task<bool> DeleteAsync(Guid id, CancellationToken ct = default);
 }
 
 public interface IUserRepository
 {
-    Task<User> AddAsync(User user);
-    Task<User?> GetAsync(Guid id);
-    Task<IReadOnlyList<User>> ListAsync(bool? active = null, string? username = null);
-    Task<User?> UpdateAsync(User user);
-    Task<bool> DeleteAsync(Guid id);
+    Task<User> AddAsync(User user, CancellationToken ct = default);
+    Task<User?> GetAsync(Guid id, CancellationToken ct = default);
+    Task<IReadOnlyList<User>> ListAsync(bool? active = null, string? username = null, Slice? slice = null, CancellationToken ct = default);
+    Task<User?> UpdateAsync(User user, CancellationToken ct = default);
+    Task<bool> DeleteAsync(Guid id, CancellationToken ct = default);
 
     /// <summary>Idempotent. Throws NotFoundException if the user or role does not exist.</summary>
-    Task AssignRoleAsync(Guid userId, Guid roleId);
-    Task<bool> RevokeRoleAsync(Guid userId, Guid roleId);
-    Task<IReadOnlyList<Role>> ListRolesAsync(Guid userId, Guid? appId = null);
+    Task AssignRoleAsync(Guid userId, Guid roleId, CancellationToken ct = default);
+    Task<bool> RevokeRoleAsync(Guid userId, Guid roleId, CancellationToken ct = default);
+    Task<IReadOnlyList<Role>> ListRolesAsync(Guid userId, Guid? appId = null, Slice? slice = null, CancellationToken ct = default);
+
+    /// <summary>Number of active users holding the role, optionally not counting one user.</summary>
+    Task<int> CountActiveWithRoleAsync(Guid roleId, Guid? excludingUserId = null, CancellationToken ct = default);
+}
+
+/// <summary>
+/// Password hashes live apart from users so they never travel with user DTOs. Cascades with the user.
+/// SetAsync is an upsert and throws NotFoundException if the user does not exist.
+/// </summary>
+public interface ICredentialRepository
+{
+    Task SetAsync(Guid userId, string hash, DateTimeOffset at, CancellationToken ct = default);
+    Task<string?> GetHashAsync(Guid userId, CancellationToken ct = default);
+
+    /// <summary>Compare-and-set: replaces the hash only if it still equals <paramref name="expectedHash"/>. Returns whether it did.</summary>
+    Task<bool> ReplaceHashAsync(Guid userId, string expectedHash, string newHash, DateTimeOffset at, CancellationToken ct = default);
+}
+
+public interface IPasswordHasher
+{
+    string Hash(string password);
+    bool Verify(string hash, string password);
+    bool NeedsRehash(string hash);
 }
 
 /// <summary>Reports whether the backing store is reachable (used by /health/ready).</summary>

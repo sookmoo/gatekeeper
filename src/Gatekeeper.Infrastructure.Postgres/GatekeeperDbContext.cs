@@ -7,12 +7,16 @@ namespace Gatekeeper.Infrastructure.Postgres;
 /// <summary>Persistence-only join row; the domain models assignments as a repository operation.</summary>
 internal sealed record UserRoleRow(Guid UserId, Guid RoleId);
 
+/// <summary>Password hash for a user; one row per user, removed with the user.</summary>
+internal sealed record UserCredentialRow(Guid UserId, string Hash, DateTimeOffset UpdatedAt);
+
 public sealed class GatekeeperDbContext(DbContextOptions<GatekeeperDbContext> options) : DbContext(options)
 {
     public DbSet<App> Apps => Set<App>();
     public DbSet<Role> Roles => Set<Role>();
     public DbSet<User> Users => Set<User>();
     internal DbSet<UserRoleRow> UserRoles => Set<UserRoleRow>();
+    internal DbSet<UserCredentialRow> Credentials => Set<UserCredentialRow>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {
@@ -59,6 +63,15 @@ public sealed class GatekeeperDbContext(DbContextOptions<GatekeeperDbContext> op
                 .OnDelete(DeleteBehavior.Cascade).HasConstraintName(Names.AssignmentRoleFk);
         });
 
+        b.Entity<UserCredentialRow>(e =>
+        {
+            e.ToTable("user_credentials");
+            e.HasKey(x => x.UserId);
+            e.Property(x => x.Hash).IsRequired();
+            e.HasOne<User>().WithMany().HasForeignKey(x => x.UserId)
+                .OnDelete(DeleteBehavior.Cascade).HasConstraintName(Names.CredentialUserFk);
+        });
+
         foreach (var property in b.Model.GetEntityTypes().SelectMany(t => t.GetProperties()))
             property.SetColumnName(SnakeCase(property.Name));
     }
@@ -76,5 +89,6 @@ internal static class Names
     public const string EmailIndex = "ix_users_email";
     public const string RoleAppFk = "fk_roles_apps";
     public const string AssignmentUserFk = "fk_user_roles_users";
+    public const string CredentialUserFk = "fk_user_credentials_users";
     public const string AssignmentRoleFk = "fk_user_roles_roles";
 }

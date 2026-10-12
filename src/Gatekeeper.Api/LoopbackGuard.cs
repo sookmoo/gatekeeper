@@ -5,8 +5,8 @@ using Microsoft.AspNetCore.Hosting.Server.Features;
 namespace Gatekeeper.Api;
 
 /// <summary>
-/// The API has no authentication yet, so refuse to run if it is bound to anything but loopback
-/// (for example via ASPNETCORE_URLS=http://+:8080). Remove once callers are authenticated.
+/// The process speaks plain HTTP, and logins carry passwords and bearer tokens, so refuse to run if it is bound
+/// to anything but loopback (for example via Urls=http://+:8080) unless TLS is terminated in front of it.
 /// Inside a container the process must bind a non-loopback address; that is an explicit opt-in
 /// (<c>Gatekeeper:AllowNonLoopback=true</c>) which the deployment pairs with a loopback-only port publish.
 /// </summary>
@@ -16,7 +16,7 @@ public static class LoopbackGuard
     {
         if (app.Configuration.GetValue<bool>("Gatekeeper:AllowNonLoopback"))
         {
-            app.Logger.LogWarning("Gatekeeper:AllowNonLoopback is set: the API has no authentication, keep it off public interfaces.");
+            app.Logger.LogWarning("Gatekeeper:AllowNonLoopback is set: the API speaks plain HTTP. Publish it on loopback only or put TLS in front of it.");
             return;
         }
 
@@ -26,7 +26,7 @@ public static class LoopbackGuard
 
         app.StopAsync().GetAwaiter().GetResult();
         throw new InvalidOperationException(
-            $"Refusing to listen on non-loopback address(es) {string.Join(", ", exposed)}: the API has no authentication yet.");
+            $"Refusing to listen on non-loopback address(es) {string.Join(", ", exposed)}: the API speaks plain HTTP (set Gatekeeper:AllowNonLoopback=true only behind loopback publishing or a TLS proxy).");
     }
 
     private static bool IsLoopback(string address) =>

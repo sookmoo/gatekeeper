@@ -9,13 +9,23 @@ public static class CliApp
 
     private static readonly JsonSerializerOptions Pretty = new() { WriteIndented = true };
 
+    private static class Domain
+    {
+        public const string AdminApp = "gatekeeper";
+    }
+
     private static readonly string[] AppFields = ["id", "name"];
     private static readonly string[] RoleFields = ["id", "name", "description"];
     private static readonly string[] UserFields = ["id", "username", "email", "isActive", "displayName"];
 
+    /// <param name="tokens">Where the login token is kept (default: a private file in the user's state directory).</param>
+    /// <param name="readSecret">Reads a password without echo (prompt text, whether to ask twice; null at end of input).</param>
     public static async Task<int> RunAsync(
-        string[] args, Func<Uri, HttpClient> httpFactory, TextWriter stdout, TextWriter stderr)
+        string[] args, Func<Uri, HttpClient> httpFactory, TextWriter stdout, TextWriter stderr,
+        ITokenStore? tokens = null, Func<string, bool, string?>? readSecret = null)
     {
+        tokens ??= new FileTokenStore();
+        readSecret ??= Secrets.Read;
         var url = new Option<string?>("--url") { Description = $"Gatekeeper base URL (env GATEKEEPER_URL, default {DefaultUrl})", Recursive = true };
         var json = new Option<bool>("--json") { Description = "Print raw JSON", Recursive = true };
 
@@ -23,10 +33,46 @@ public static class CliApp
         root.Subcommands.Add(AppCommands());
         root.Subcommands.Add(RoleCommands());
         root.Subcommands.Add(UserCommands());
+        root.Subcommands.Add(LoginCommand());
+        root.Subcommands.Add(LogoutCommand());
 
         return await root.Parse(args).InvokeAsync(new InvocationConfiguration { Output = stdout, Error = stderr });
 
         // ---- helpers capture url/json/streams ----
+
+        // The saved token is sent only to the server it was issued by, never to whatever --url points at.
+        string? TokenFor(Uri uri)
+        {
+            var fromEnv = Environment.GetEnvironmentVariable("GATEKEEPER_TOKEN");
+            if (!string.IsNullOrWhiteSpace(fromEnv)) return fromEnv;
+            var saved = tokens.Load();
+            return saved is not null && saved.ExpiresAt > DateTimeOffset.UtcNow
+                   && string.Equals(saved.Origin, uri.GetLeftPart(UriPartial.Authority), StringComparison.OrdinalIgnoreCase)
+                ? saved.AccessToken
+                : null;
+        }
+
+        Command LoginCommand()
+        {
+            var user = new Option<string>("--user") { Description = "Username", Required = true };
+            var application = new Option<string>("--application") { Description = "Application to sign in to", DefaultValueFactory = _ => Domain.AdminApp };
+            return Cmd("login", "Sign in (password from stdin or a hidden prompt) and save the token", c => { c.Options.Add(user); c.Options.Add(application); }, async x =>
+            {
+                var password = readSecret("Password: ", false) ?? throw new CliException(1, "No password given.");
+                var body = await x.Api.PostAsync(ApiClient.LoginPath,
+                    new { username = x.Get(user), password, application = x.Get(application) });
+                var expires = DateTimeOffset.UtcNow.AddSeconds(body.GetProperty("expiresIn").GetInt32());
+                tokens.Save(new StoredToken(x.Origin, body.GetProperty("accessToken").GetString()!, expires, x.Get(user)!));
+                x.Message($"logged in as {x.Get(user)} until {expires.ToLocalTime():yyyy-MM-dd HH:mm}");
+            });
+        }
+
+        Command LogoutCommand() => Cmd("logout", "Forget the saved token", _ => { }, x =>
+        {
+            tokens.Clear();
+            x.Message("logged out");
+            return Task.CompletedTask;
+        });
 
         Command Cmd(string name, string description, Action<Command> configure, Func<Ctx, Task> run)
         {
@@ -40,7 +86,11 @@ public static class CliApp
                     if (!Uri.TryCreate(baseUrl, UriKind.Absolute, out var uri)
                         || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
                         throw new CliException(1, $"Invalid URL '{baseUrl}': expected http:// or https://.");
-                    await run(new Ctx(parse, new ApiClient(httpFactory(uri)), parse.GetValue(json), stdout));
+                    // Logins and tokens must not cross the network in clear text.
+                    if (uri.Scheme == Uri.UriSchemeHttp && !uri.IsLoopback
+                        && Environment.GetEnvironmentVariable("GATEKEEPER_ALLOW_INSECURE") != "1")
+                        throw new CliException(1, $"Refusing plain http to {uri.Host}: use https:// (or set GATEKEEPER_ALLOW_INSECURE=1 for a trusted network).");
+                    await run(new Ctx(parse, new ApiClient(httpFactory(uri), TokenFor(uri)), parse.GetValue(json), stdout, uri.GetLeftPart(UriPartial.Authority)));
                     return 0;
                 }
                 catch (CliException ex)
@@ -68,7 +118,7 @@ public static class CliApp
             cmd.Subcommands.Add(Cmd("create", "Create an application", c => c.Arguments.Add(nameArg), async x =>
                 x.Print(await x.Api.PostAsync("/v1/applications", new { name = x.Get(nameArg) }), AppFields, single: true)));
             cmd.Subcommands.Add(Cmd("list", "List applications", _ => { }, async x =>
-                x.Print(await x.Api.GetAsync("/v1/applications"), AppFields)));
+                x.Print(await x.Api.GetListAsync("/v1/applications"), AppFields)));
             var getApp = app();
             cmd.Subcommands.Add(Cmd("get", "Show an application", c => c.Arguments.Add(getApp), async x =>
                 x.Print(await x.Api.GetAsync($"/v1/applications/{await x.ResolveApp(x.Get(getApp)!)}"), AppFields, single: true)));
@@ -106,7 +156,7 @@ public static class CliApp
 
             var lApp = AppOpt(true);
             cmd.Subcommands.Add(Cmd("list", "List roles of an application", c => c.Options.Add(lApp), async x =>
-                x.Print(await x.Api.GetAsync($"/v1/applications/{await x.ResolveApp(x.Get(lApp)!)}/roles"), RoleFields)));
+                x.Print(await x.Api.GetListAsync($"/v1/applications/{await x.ResolveApp(x.Get(lApp)!)}/roles"), RoleFields)));
 
             var gRole = RoleArg(); var gApp = AppOpt(false);
             cmd.Subcommands.Add(Cmd("get", "Show a role", c => { c.Arguments.Add(gRole); c.Options.Add(gApp); }, async x =>
@@ -159,7 +209,7 @@ public static class CliApp
             cmd.Subcommands.Add(Cmd("list", "List users", c => c.Options.Add(lActive), async x =>
             {
                 var active = x.Get(lActive);
-                x.Print(await x.Api.GetAsync(active is null ? "/v1/users" : $"/v1/users?active={active.ToString()!.ToLowerInvariant()}"), UserFields);
+                x.Print(await x.Api.GetListAsync(active is null ? "/v1/users" : $"/v1/users?active={active.ToString()!.ToLowerInvariant()}"), UserFields);
             }));
 
             var gUser = UserArg();
@@ -183,6 +233,15 @@ public static class CliApp
                 x.Print(await x.Api.PutAsync($"/v1/users/{id}", body), UserFields, single: true);
             }));
 
+            var pUser = UserArg();
+            cmd.Subcommands.Add(Cmd("set-password", "Set a user's password (read from stdin or a hidden prompt)", c => c.Arguments.Add(pUser), async x =>
+            {
+                var id = await x.ResolveUser(x.Get(pUser)!);
+                var password = readSecret("New password: ", true) ?? throw new CliException(1, "No password given.");
+                await x.Api.PutAsync($"/v1/users/{id}/password", new { password });
+                x.Message("password set");
+            }));
+
             var dUser = UserArg();
             cmd.Subcommands.Add(Cmd("delete", "Delete a user", c => c.Arguments.Add(dUser), async x =>
             {
@@ -196,7 +255,7 @@ public static class CliApp
                 var id = await x.ResolveUser(x.Get(rUser)!);
                 var app = x.Get(rApp);
                 var query = app is null ? "" : $"?application={await x.ResolveApp(app)}";
-                x.Print(await x.Api.GetAsync($"/v1/users/{id}/roles{query}"), RoleFields);
+                x.Print(await x.Api.GetListAsync($"/v1/users/{id}/roles{query}"), RoleFields);
             }));
 
             var aUser = UserArg(); var aRole = RoleArg(); var aApp = AppOpt();
@@ -220,8 +279,10 @@ public static class CliApp
         }
     }
 
-    private sealed class Ctx(ParseResult parse, ApiClient api, bool json, TextWriter stdout)
+    private sealed class Ctx(ParseResult parse, ApiClient api, bool json, TextWriter stdout, string origin)
     {
+        public string Origin { get; } = origin;
+
         public ApiClient Api { get; } = api;
 
         public T? Get<T>(Argument<T> a) => parse.GetValue(a);
@@ -257,16 +318,16 @@ public static class CliApp
             item.TryGetProperty(field, out var v)
                 ? v.ValueKind switch
                 {
-                    JsonValueKind.String => v.GetString() ?? "",
+                    JsonValueKind.String => Safe.Text(v.GetString()),
                     JsonValueKind.Null => "",
-                    _ => v.ToString(),
+                    _ => Safe.Text(v.ToString()),
                 }
                 : "";
 
         public async Task<Guid> ResolveApp(string app)
         {
             if (Guid.TryParse(app, out var id)) return id;
-            var all = await Api.GetAsync("/v1/applications");
+            var all = await Api.GetListAsync("/v1/applications");
             var match = all.EnumerateArray().FirstOrDefault(a =>
                 string.Equals(a.GetProperty("name").GetString(), app, StringComparison.OrdinalIgnoreCase));
             return match.ValueKind == JsonValueKind.Undefined
@@ -277,7 +338,7 @@ public static class CliApp
         public async Task<Guid> ResolveUser(string user)
         {
             if (Guid.TryParse(user, out var id)) return id;
-            var found = await Api.GetAsync($"/v1/users?username={Uri.EscapeDataString(user)}");
+            var found = await Api.GetListAsync($"/v1/users?username={Uri.EscapeDataString(user)}");
             return found.GetArrayLength() == 0
                 ? throw new CliException(2, $"User '{user}' not found.")
                 : found[0].GetProperty("id").GetGuid();
@@ -288,7 +349,7 @@ public static class CliApp
             if (Guid.TryParse(role, out var id)) return id;
             if (app is null) throw new CliException(1, $"Role '{role}' is a name; pass --app <application> or use the role id.");
             var appId = await ResolveApp(app);
-            var roles = await Api.GetAsync($"/v1/applications/{appId}/roles");
+            var roles = await Api.GetListAsync($"/v1/applications/{appId}/roles");
             var match = roles.EnumerateArray().FirstOrDefault(r =>
                 string.Equals(r.GetProperty("name").GetString(), role, StringComparison.OrdinalIgnoreCase));
             return match.ValueKind == JsonValueKind.Undefined

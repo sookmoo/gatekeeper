@@ -18,12 +18,17 @@ public sealed class ErrorMappingMiddleware(RequestDelegate next)
         }
         catch (BadHttpRequestException ex)
         {
-            await Results.Problem(ex.Message, statusCode: StatusCodes.Status400BadRequest).ExecuteAsync(context);
+            await Results.Problem(ex.Message, statusCode: ex.StatusCode is >= 400 and < 500 ? ex.StatusCode : StatusCodes.Status400BadRequest).ExecuteAsync(context);
         }
         catch (StoreUnavailableException ex)
         {
             context.RequestServices.GetRequiredService<ILogger<ErrorMappingMiddleware>>()
                 .LogError(ex.Cause ?? ex, "Data store unavailable.");
+            await Results.Problem(ex.Message, statusCode: StatusCodes.Status503ServiceUnavailable).ExecuteAsync(context);
+        }
+        catch (BusyException ex)
+        {
+            context.Response.Headers.RetryAfter = "2";
             await Results.Problem(ex.Message, statusCode: StatusCodes.Status503ServiceUnavailable).ExecuteAsync(context);
         }
         catch (NotFoundException ex)
