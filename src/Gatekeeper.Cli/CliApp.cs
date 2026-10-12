@@ -16,6 +16,7 @@ public static class CliApp
 
     private static readonly string[] AppFields = ["id", "name"];
     private static readonly string[] RoleFields = ["id", "name", "description"];
+    private static readonly string[] SessionFields = ["id", "appId", "createdAt", "lastUsedAt", "expiresAt"];
     private static readonly string[] ClientFields = ["id", "name", "appId", "isActive"];
     private static readonly string[] AuditFields = ["at", "outcome", "actor", "action", "target", "detail"];
     private static readonly string[] UserFields = ["id", "username", "email", "isActive", "displayName"];
@@ -45,16 +46,44 @@ public static class CliApp
         // ---- helpers capture url/json/streams ----
 
         // The saved token is sent only to the server it was issued by, never to whatever --url points at.
-        string? TokenFor(Uri uri)
+        // An expired access token is renewed with the saved refresh token (under a lock, see ITokenStore.RefreshLock).
+        async Task<string?> TokenForAsync(Uri uri)
         {
             var fromEnv = Environment.GetEnvironmentVariable("GATEKEEPER_TOKEN");
             if (!string.IsNullOrWhiteSpace(fromEnv)) return fromEnv;
+            var origin = uri.GetLeftPart(UriPartial.Authority);
+            bool Usable(StoredToken? t) => t is not null && string.Equals(t.Origin, origin, StringComparison.OrdinalIgnoreCase);
             var saved = tokens.Load();
-            return saved is not null && saved.ExpiresAt > DateTimeOffset.UtcNow
-                   && string.Equals(saved.Origin, uri.GetLeftPart(UriPartial.Authority), StringComparison.OrdinalIgnoreCase)
-                ? saved.AccessToken
-                : null;
+            if (!Usable(saved)) return null;
+            if (saved!.ExpiresAt > DateTimeOffset.UtcNow.AddSeconds(30)) return saved.AccessToken;
+            if (saved.RefreshToken is null || saved.RefreshExpiresAt <= DateTimeOffset.UtcNow)
+                return saved.ExpiresAt > DateTimeOffset.UtcNow ? saved.AccessToken : null;
+
+            using (tokens.RefreshLock())
+            {
+                saved = tokens.Load(); // another command may have refreshed while we waited
+                if (!Usable(saved)) return null;
+                if (saved!.ExpiresAt > DateTimeOffset.UtcNow.AddSeconds(30) || saved.RefreshToken is null) return saved.ExpiresAt > DateTimeOffset.UtcNow ? saved.AccessToken : null;
+                try
+                {
+                    var body = await new ApiClient(httpFactory(uri)).PostAsync(ApiClient.RefreshPath, new { refreshToken = saved.RefreshToken });
+                    var renewed = SavedFrom(origin, saved.Username, body);
+                    tokens.Save(renewed);
+                    return renewed.AccessToken;
+                }
+                catch (CliException ex) when (ex.ExitCode == 5)
+                {
+                    tokens.Clear(); // the session ended (logout, password change, revoked): sign in again
+                    return null;
+                }
+            }
         }
+
+        StoredToken SavedFrom(string origin, string username, JsonElement body) => new(
+            origin, body.GetProperty("accessToken").GetString()!,
+            DateTimeOffset.UtcNow.AddSeconds(body.GetProperty("expiresIn").GetInt32()), username,
+            body.TryGetProperty("refreshToken", out var r) ? r.GetString() : null,
+            body.TryGetProperty("refreshExpiresIn", out var re) ? DateTimeOffset.UtcNow.AddSeconds(re.GetInt32()) : null);
 
         Command LoginCommand()
         {
@@ -64,18 +93,31 @@ public static class CliApp
             {
                 var password = readSecret("Password: ", false) ?? throw new CliException(1, "No password given.");
                 var body = await x.Api.PostAsync(ApiClient.LoginPath,
-                    new { username = x.Get(user), password, application = x.Get(application) });
-                var expires = DateTimeOffset.UtcNow.AddSeconds(body.GetProperty("expiresIn").GetInt32());
-                tokens.Save(new StoredToken(x.Origin, body.GetProperty("accessToken").GetString()!, expires, x.Get(user)!));
-                x.Message($"logged in as {x.Get(user)} until {expires.ToLocalTime():yyyy-MM-dd HH:mm}");
+                    new { username = x.Get(user), password, application = x.Get(application), refresh = true });
+                var saved = SavedFrom(x.Origin, x.Get(user)!, body);
+                using (tokens.RefreshLock()) tokens.Save(saved);
+                x.Message(saved.RefreshExpiresAt is { } until
+                    ? $"logged in as {x.Get(user)}; the session lasts until {until.ToLocalTime():yyyy-MM-dd HH:mm}"
+                    : $"logged in as {x.Get(user)} until {saved.ExpiresAt.ToLocalTime():yyyy-MM-dd HH:mm}");
             });
         }
 
-        Command LogoutCommand() => Cmd("logout", "Forget the saved token", _ => { }, x =>
+        Command LogoutCommand() => Cmd("logout", "End the session on the server and forget the saved token", _ => { }, async x =>
         {
+            var saved = tokens.Load();
+            if (saved?.RefreshToken is { } refresh && string.Equals(saved.Origin, x.Origin, StringComparison.OrdinalIgnoreCase))
+            {
+                try
+                {
+                    await x.Api.PostAsync(ApiClient.LogoutPath, new { refreshToken = refresh });
+                }
+                catch (CliException ex)
+                {
+                    x.Warn($"Could not end the session on the server ({ex.Message}); it expires on its own.");
+                }
+            }
             tokens.Clear();
             x.Message("logged out");
-            return Task.CompletedTask;
         });
 
         Command Cmd(string name, string description, Action<Command> configure, Func<Ctx, Task> run)
@@ -94,7 +136,7 @@ public static class CliApp
                     if (uri.Scheme == Uri.UriSchemeHttp && !uri.IsLoopback
                         && Environment.GetEnvironmentVariable("GATEKEEPER_ALLOW_INSECURE") != "1")
                         throw new CliException(1, $"Refusing plain http to {uri.Host}: use https:// (or set GATEKEEPER_ALLOW_INSECURE=1 for a trusted network).");
-                    await run(new Ctx(parse, new ApiClient(httpFactory(uri), TokenFor(uri)), parse.GetValue(json), stdout, stderr, uri.GetLeftPart(UriPartial.Authority)));
+                    await run(new Ctx(parse, new ApiClient(httpFactory(uri), await TokenForAsync(uri)), parse.GetValue(json), stdout, stderr, uri.GetLeftPart(UriPartial.Authority)));
                     return 0;
                 }
                 catch (CliException ex)
@@ -314,6 +356,17 @@ public static class CliApp
                 var id = await x.ResolveUser(x.Get(uUser)!);
                 var body = new { username = x.Get(uName), email = x.Get(uEmail), displayName = x.Get(uDisplay), isActive = x.Get(uActive) };
                 x.Print(await x.Api.PatchAsync($"/v1/users/{id}", body), UserFields, single: true);
+            }));
+
+            var sUser = UserArg();
+            cmd.Subcommands.Add(Cmd("sessions", "List a user's active sessions (refresh tokens)", c => c.Arguments.Add(sUser), async x =>
+                x.Print(await x.Api.GetListAsync($"/v1/users/{await x.ResolveUser(x.Get(sUser)!)}/sessions"), SessionFields)));
+
+            var kUser = UserArg();
+            cmd.Subcommands.Add(Cmd("revoke-sessions", "End all of a user's sessions", c => c.Arguments.Add(kUser), async x =>
+            {
+                var result = await x.Api.DeleteAsync($"/v1/users/{await x.ResolveUser(x.Get(kUser)!)}/sessions");
+                x.Message($"revoked {result.GetProperty("revoked").GetInt32()} session(s)");
             }));
 
             var pUser = UserArg();

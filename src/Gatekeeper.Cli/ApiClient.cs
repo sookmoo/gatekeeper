@@ -35,6 +35,8 @@ public sealed class ApiClient(HttpClient http, string? bearerToken = null)
     }
 
     public const string LoginPath = "/v1/auth/login";
+    public const string RefreshPath = "/v1/auth/refresh";
+    public const string LogoutPath = "/v1/auth/logout";
 
     private const int MaxPages = 500;
 
