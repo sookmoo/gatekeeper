@@ -12,3 +12,15 @@ public sealed record User(
     bool IsActive,
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt);
+
+/// <summary>
+/// A service identity: an external system that authenticates with a secret (no password, no person) and receives a token
+/// for exactly one application, carrying the roles assigned to it. It can never belong to the reserved admin application.
+/// </summary>
+public sealed record Client(
+    Guid Id,
+    string Name,
+    Guid AppId,
+    bool IsActive,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset UpdatedAt);

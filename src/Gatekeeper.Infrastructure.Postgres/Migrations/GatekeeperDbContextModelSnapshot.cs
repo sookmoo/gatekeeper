@@ -90,6 +90,45 @@ namespace Gatekeeper.Infrastructure.Postgres.Migrations
                     b.ToTable("audit_events", (string)null);
                 });
 
+            modelBuilder.Entity("Gatekeeper.Domain.Client", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("AppId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("app_id");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("boolean")
+                        .HasColumnName("is_active");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasColumnType("citext")
+                        .HasColumnName("name");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("AppId");
+
+                    b.HasIndex("Name")
+                        .IsUnique()
+                        .HasDatabaseName("ix_clients_name");
+
+                    b.ToTable("clients", (string)null);
+                });
+
             modelBuilder.Entity("Gatekeeper.Domain.Role", b =>
                 {
                     b.Property<Guid>("Id")
@@ -167,6 +206,43 @@ namespace Gatekeeper.Infrastructure.Postgres.Migrations
                     b.ToTable("users", (string)null);
                 });
 
+            modelBuilder.Entity("Gatekeeper.Infrastructure.Postgres.ClientRoleRow", b =>
+                {
+                    b.Property<Guid>("ClientId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("client_id");
+
+                    b.Property<Guid>("RoleId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("role_id");
+
+                    b.HasKey("ClientId", "RoleId");
+
+                    b.HasIndex("RoleId");
+
+                    b.ToTable("client_roles", (string)null);
+                });
+
+            modelBuilder.Entity("Gatekeeper.Infrastructure.Postgres.ClientSecretRow", b =>
+                {
+                    b.Property<Guid>("ClientId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("client_id");
+
+                    b.Property<string>("Hash")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("hash");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("ClientId");
+
+                    b.ToTable("client_secrets", (string)null);
+                });
+
             modelBuilder.Entity("Gatekeeper.Infrastructure.Postgres.UserCredentialRow", b =>
                 {
                     b.Property<Guid>("UserId")
@@ -204,6 +280,16 @@ namespace Gatekeeper.Infrastructure.Postgres.Migrations
                     b.ToTable("user_roles", (string)null);
                 });
 
+            modelBuilder.Entity("Gatekeeper.Domain.Client", b =>
+                {
+                    b.HasOne("Gatekeeper.Domain.App", null)
+                        .WithMany()
+                        .HasForeignKey("AppId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_clients_apps");
+                });
+
             modelBuilder.Entity("Gatekeeper.Domain.Role", b =>
                 {
                     b.HasOne("Gatekeeper.Domain.App", null)
@@ -212,6 +298,33 @@ namespace Gatekeeper.Infrastructure.Postgres.Migrations
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired()
                         .HasConstraintName("fk_roles_apps");
+                });
+
+            modelBuilder.Entity("Gatekeeper.Infrastructure.Postgres.ClientRoleRow", b =>
+                {
+                    b.HasOne("Gatekeeper.Domain.Client", null)
+                        .WithMany()
+                        .HasForeignKey("ClientId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_client_roles_clients");
+
+                    b.HasOne("Gatekeeper.Domain.Role", null)
+                        .WithMany()
+                        .HasForeignKey("RoleId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_client_roles_roles");
+                });
+
+            modelBuilder.Entity("Gatekeeper.Infrastructure.Postgres.ClientSecretRow", b =>
+                {
+                    b.HasOne("Gatekeeper.Domain.Client", null)
+                        .WithMany()
+                        .HasForeignKey("ClientId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_client_secrets_clients");
                 });
 
             modelBuilder.Entity("Gatekeeper.Infrastructure.Postgres.UserCredentialRow", b =>

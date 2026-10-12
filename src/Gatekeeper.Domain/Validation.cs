@@ -23,6 +23,8 @@ public static partial class Validation
 
     public static void AppName(string? name) => Throw(Check(("name", SlugError(name))));
 
+    public static void ClientName(string? name) => Throw(Check(("name", SlugError(name))));
+
     public static void RoleFields(string? name, string? description) =>
         Throw(Check(
             ("name", SlugError(name)),

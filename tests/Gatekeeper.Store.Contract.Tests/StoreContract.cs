@@ -14,6 +14,7 @@ public abstract class StoreContract : IDisposable
     /// <summary>Set by <see cref="CreateStore"/>.</summary>
     protected ICredentialRepository Credentials { get; set; } = null!;
     protected IAuditRepository Audit { get; set; } = null!;
+    protected IClientRepository Clients { get; set; } = null!;
     /// <summary>Postgres only: a connection as the data-only app role, to prove the audit table is append-only.</summary>
     protected string? AppConnection { get; set; }
 
@@ -44,6 +45,62 @@ public abstract class StoreContract : IDisposable
         var u1 = (await users.ListAsync(username: "u1")).Single();
         foreach (var r in await roles.ListByAppAsync(app.Id)) await users.AssignRoleAsync(u1.Id, r.Id);
         Assert.Equal(["r1", "r2"], (await users.ListRolesAsync(u1.Id, slice: new Slice(0, 2))).Select(r => r.Name));
+    }
+
+    private static Client NewClient(App app, string name, bool active = true) =>
+        new(Guid.NewGuid(), name, app.Id, active, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
+
+    [SkippableFact]
+    public async Task Clients_crud_secret_roles_and_cascades()
+    {
+        var (apps, roles, _) = CreateStore();
+        var app = await apps.AddAsync(NewApp("shop"));
+        var other = await apps.AddAsync(NewApp("blog"));
+        var r1 = await roles.AddAsync(NewRole(app, "reader"));
+        var r2 = await roles.AddAsync(NewRole(app, "writer"));
+
+        var c = await Clients.AddAsync(NewClient(app, "checkout"), "hash-1");
+        Assert.Equal("hash-1", await Clients.GetSecretHashAsync(c.Id));
+        Assert.Equal(c.Id, (await Clients.GetByNameAsync("CHECKOUT"))!.Id);
+        await Assert.ThrowsAsync<ConflictException>(() => Clients.AddAsync(NewClient(other, "Checkout"), "h"));
+        await Assert.ThrowsAsync<NotFoundException>(() => Clients.AddAsync(new Client(Guid.NewGuid(), "ghost", Guid.NewGuid(), true, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow), "h"));
+        Assert.Null(await Clients.GetByNameAsync("ghost"));
+
+        var second = await Clients.AddAsync(NewClient(other, "feed"), "hash-2");
+        Assert.Equal(["checkout", "feed"], (await Clients.ListAsync()).Select(x => x.Name));
+        Assert.Equal(["feed"], (await Clients.ListAsync(other.Id)).Select(x => x.Name));
+        Assert.Equal(["feed"], (await Clients.ListAsync(slice: new Slice(1, 5))).Select(x => x.Name));
+
+        // Update changes name/active only; the application stays.
+        var updated = await Clients.UpdateAsync(c with { Name = "checkout2", IsActive = false, AppId = other.Id });
+        Assert.Equal((app.Id, "checkout2", false), (updated!.AppId, updated.Name, updated.IsActive));
+        await Assert.ThrowsAsync<ConflictException>(() => Clients.UpdateAsync(c with { Name = "FEED" }));
+        Assert.Null(await Clients.UpdateAsync(c with { Id = Guid.NewGuid() }));
+
+        Assert.True(await Clients.SetSecretHashAsync(c.Id, "hash-3", DateTimeOffset.UtcNow));
+        Assert.Equal("hash-3", await Clients.GetSecretHashAsync(c.Id));
+        Assert.False(await Clients.SetSecretHashAsync(Guid.NewGuid(), "x", DateTimeOffset.UtcNow));
+
+        await Clients.AssignRoleAsync(c.Id, r2.Id);
+        await Clients.AssignRoleAsync(c.Id, r1.Id);
+        await Clients.AssignRoleAsync(c.Id, r1.Id); // idempotent
+        Assert.Equal(["reader", "writer"], (await Clients.ListRolesAsync(c.Id)).Select(r => r.Name));
+        Assert.Equal(["writer"], (await Clients.ListRolesAsync(c.Id, new Slice(1, 5))).Select(r => r.Name));
+        await Assert.ThrowsAsync<NotFoundException>(() => Clients.AssignRoleAsync(Guid.NewGuid(), r1.Id));
+        await Assert.ThrowsAsync<NotFoundException>(() => Clients.AssignRoleAsync(c.Id, Guid.NewGuid()));
+
+        // Deleting a role drops the assignment; deleting the app drops its clients, their secrets and assignments.
+        Assert.True(await roles.DeleteAsync(r1.Id));
+        Assert.Equal(["writer"], (await Clients.ListRolesAsync(c.Id)).Select(r => r.Name));
+        Assert.True(await Clients.RevokeRoleAsync(c.Id, r2.Id));
+        Assert.False(await Clients.RevokeRoleAsync(c.Id, r2.Id));
+        await Clients.AssignRoleAsync(c.Id, r2.Id);
+        Assert.True(await apps.DeleteAsync(app.Id));
+        Assert.Null(await Clients.GetAsync(c.Id));
+        Assert.Null(await Clients.GetSecretHashAsync(c.Id));
+        Assert.NotNull(await Clients.GetAsync(second.Id));
+        Assert.True(await Clients.DeleteAsync(second.Id));
+        Assert.False(await Clients.DeleteAsync(second.Id));
     }
 
     [SkippableFact]
@@ -327,6 +384,7 @@ public class InMemoryStoreContract : StoreContract
         var s = new InMemoryStore();
         Credentials = new InMemoryCredentialRepository(s);
         Audit = new InMemoryAuditRepository(s);
+        Clients = new InMemoryClientRepository(s);
         return (new InMemoryAppRepository(s), new InMemoryRoleRepository(s), new InMemoryUserRepository(s));
     }
 }

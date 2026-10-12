@@ -30,8 +30,11 @@ public sealed class AppService(IAppRepository apps)
     }
 
     /// <summary>Partial update: a null field is left unchanged.</summary>
-    public async Task<App> PatchAsync(Guid id, string? name, CancellationToken ct = default) =>
-        await UpdateAsync(id, name ?? (await GetAsync(id, ct)).Name, ct);
+    public async Task<App> PatchAsync(Guid id, string? name, CancellationToken ct = default)
+    {
+        var existing = await GetAsync(id, ct);
+        return name is null || string.Equals(name, existing.Name, StringComparison.Ordinal) ? existing : await UpdateAsync(id, name, ct);
+    }
 
     public async Task DeleteAsync(Guid id, CancellationToken ct = default)
     {
@@ -353,5 +356,132 @@ public sealed class AuditService(IAuditRepository audit)
             chars.Append(bad ? "?" : rune.ToString());
         }
         return chars.ToString();
+    }
+}
+
+public sealed record ClientCreated(Client Client, string Secret);
+
+/// <summary>
+/// Service identities. Secrets are 256 random bits, so a plain SHA-256 is enough to store them (there is nothing to
+/// brute-force) and verification is cheap; the secret is shown once, at creation or rotation, and cannot be read back.
+/// </summary>
+public sealed class ClientService(IClientRepository clients, IAppRepository apps, IRoleRepository roles)
+{
+    public const string SecretPrefix = "gks_";
+
+    public async Task<Page<Client>> ListAsync(Guid? appId = null, PageQuery? page = null, CancellationToken ct = default)
+    {
+        page ??= PageQuery.Default;
+        return page.Build(await clients.ListAsync(appId, page.Slice, ct));
+    }
+
+    public async Task<Client> GetAsync(Guid id, CancellationToken ct = default) =>
+        await clients.GetAsync(id, ct) ?? throw new NotFoundException($"Client {id} not found.");
+
+    public async Task<ClientCreated> CreateAsync(string? name, Guid appId, bool isActive = true, CancellationToken ct = default)
+    {
+        Validation.ClientName(name);
+        var app = await apps.GetAsync(appId, ct) ?? throw new NotFoundException($"Application {appId} not found.");
+        // Management stays with people; a machine identity must never hold the admin audience.
+        if (string.Equals(app.Name, Reserved.AdminApp, StringComparison.OrdinalIgnoreCase))
+            throw new ConflictException($"Application '{app.Name}' is reserved and cannot have service identities.");
+        var secret = NewSecret();
+        var now = Clock.UtcNowMicros();
+        var created = await clients.AddAsync(new Client(Guid.NewGuid(), name!, appId, isActive, now, now), HashSecret(secret), ct);
+        return new ClientCreated(created, secret);
+    }
+
+    public async Task<Client> UpdateAsync(Guid id, string? name, bool? isActive, CancellationToken ct = default)
+    {
+        Validation.ClientName(name);
+        var existing = await GetAsync(id, ct);
+        return await clients.UpdateAsync(existing with { Name = name!, IsActive = isActive ?? existing.IsActive, UpdatedAt = Clock.UtcNowMicros() }, ct)
+            ?? throw new NotFoundException($"Client {id} not found.");
+    }
+
+    public async Task<Client> PatchAsync(Guid id, string? name, bool? isActive, CancellationToken ct = default) =>
+        await UpdateAsync(id, name ?? (await GetAsync(id, ct)).Name, isActive, ct);
+
+    public async Task DeleteAsync(Guid id, CancellationToken ct = default)
+    {
+        if (!await clients.DeleteAsync(id, ct)) throw new NotFoundException($"Client {id} not found.");
+    }
+
+    /// <summary>Replaces the secret; the old one stops working at once. Returns the new secret.</summary>
+    public async Task<string> RotateSecretAsync(Guid id, CancellationToken ct = default)
+    {
+        var secret = NewSecret();
+        if (!await clients.SetSecretHashAsync(id, HashSecret(secret), Clock.UtcNowMicros(), ct))
+            throw new NotFoundException($"Client {id} not found.");
+        return secret;
+    }
+
+    public async Task<Page<Role>> ListRolesAsync(Guid clientId, PageQuery? page = null, CancellationToken ct = default)
+    {
+        page ??= PageQuery.Default;
+        await GetAsync(clientId, ct);
+        return page.Build(await clients.ListRolesAsync(clientId, page.Slice, ct));
+    }
+
+    public async Task AssignRoleAsync(Guid clientId, Guid roleId, CancellationToken ct = default)
+    {
+        var client = await GetAsync(clientId, ct);
+        var role = await roles.GetAsync(roleId, ct) ?? throw new NotFoundException($"Role {roleId} not found.");
+        // The token's audience is the client's application, so it can only carry that application's roles.
+        if (role.AppId != client.AppId) throw new ConflictException("The role belongs to a different application than the client.");
+        await clients.AssignRoleAsync(clientId, roleId, ct);
+    }
+
+    public async Task RevokeRoleAsync(Guid clientId, Guid roleId, CancellationToken ct = default)
+    {
+        await GetAsync(clientId, ct);
+        if (!await clients.RevokeRoleAsync(clientId, roleId, ct))
+            throw new NotFoundException($"Client {clientId} does not have role {roleId}.");
+    }
+
+    public static string NewSecret() =>
+        SecretPrefix + Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32)).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+
+    public static string HashSecret(string secret) =>
+        Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(secret))).ToLowerInvariant();
+
+    public static bool SecretMatches(string storedHash, string secret) =>
+        System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(
+            System.Text.Encoding.ASCII.GetBytes(storedHash), System.Text.Encoding.ASCII.GetBytes(HashSecret(secret)));
+}
+
+public sealed record ClientAuthResult(Client Client, App App, IReadOnlyList<string> Roles);
+
+/// <summary>Client-credentials login. Like users, every failure is the same null so nothing about the client leaks.</summary>
+public sealed class ClientAuthService(IClientRepository clients, IAppRepository apps)
+{
+    private static readonly string DummyHash = ClientService.HashSecret("dummy secret for unknown clients");
+
+    public async Task<ClientAuthResult?> LoginAsync(string? clientId, string? secret, CancellationToken ct = default)
+    {
+        var wellFormed = Validation.LooksLikeUsername(clientId) && Validation.IsCleanText(clientId!)
+                         && secret is { Length: >= 8 and <= 200 } && Validation.IsCleanText(secret);
+        Client? client = null;
+        string? stored = null;
+        if (wellFormed)
+        {
+            client = await clients.GetByNameAsync(clientId!, ct);
+            if (client is not null) stored = await clients.GetSecretHashAsync(client.Id, ct);
+        }
+        var matches = ClientService.SecretMatches(stored ?? DummyHash, wellFormed ? secret! : "malformed input placeholder");
+        if (!wellFormed || client is null || stored is null || !matches || !client.IsActive) return null;
+
+        var app = await apps.GetAsync(client.AppId, ct);
+        if (app is null || string.Equals(app.Name, Reserved.AdminApp, StringComparison.OrdinalIgnoreCase)) return null;
+
+        var names = new List<string>();
+        const int pageSize = PageQuery.MaxLimit;
+        while (true)
+        {
+            var batch = await clients.ListRolesAsync(client.Id, new Slice(names.Count, pageSize), ct);
+            names.AddRange(batch.Select(r => r.Name));
+            if (batch.Count < pageSize) break;
+        }
+        return names.Count == 0 ? null : new ClientAuthResult(client, app, names);
     }
 }

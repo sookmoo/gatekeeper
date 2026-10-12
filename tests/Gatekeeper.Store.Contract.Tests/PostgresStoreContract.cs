@@ -24,6 +24,7 @@ public class PostgresStoreContract : StoreContract
         _providers.Add(provider);
         Credentials = provider.GetRequiredService<ICredentialRepository>();
         Audit = provider.GetRequiredService<IAuditRepository>();
+        Clients = provider.GetRequiredService<IClientRepository>();
         AppConnection = db!.AppConnection;
         return (provider.GetRequiredService<IAppRepository>(),
                 provider.GetRequiredService<IRoleRepository>(),

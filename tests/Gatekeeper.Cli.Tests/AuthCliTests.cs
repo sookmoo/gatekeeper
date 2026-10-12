@@ -1,3 +1,4 @@
+using System.Net.Http.Json;
 using Gatekeeper.Cli;
 using Microsoft.AspNetCore.Mvc.Testing;
 
@@ -49,6 +50,39 @@ public class AuthCliTests : IClassFixture<WebApplicationFactory<Program>>
         Assert.Equal("", none.Out.Trim());
         Assert.NotEqual(0, (await Gk(true, null, "audit", "list", "--limit", "0")).Code);
         Assert.Equal(5, (await Gk(false, null, "audit", "list")).Code);
+    }
+
+    [Fact]
+    public async Task Client_commands_create_rotate_and_assign_roles()
+    {
+        var app = $"cli-app-{Guid.NewGuid():N}"[..20];
+        var client = $"cli-svc-{Guid.NewGuid():N}"[..20];
+        Assert.Equal(0, (await Gk(true, null, "app", "create", app)).Code);
+        Assert.Equal(0, (await Gk(true, null, "role", "create", "reader", "--app", app)).Code);
+
+        var created = await Gk(true, null, "client", "create", client, "--app", app);
+        Assert.Equal(0, created.Code);
+        var secret = created.Out.Split('\n').Single(l => l.StartsWith("secret: ")).Substring(8).Trim();
+        Assert.StartsWith("gks_", secret);
+        Assert.Contains("cannot be shown again", created.Err);
+
+        Assert.Equal(0, (await Gk(true, null, "client", "assign", client, "reader")).Code);
+        Assert.Contains("reader", (await Gk(true, null, "client", "roles", client)).Out);
+        Assert.Contains(client, (await Gk(true, null, "client", "list", "--app", app)).Out);
+        Assert.DoesNotContain("secret", (await Gk(true, null, "client", "get", client)).Out);
+
+        var http = _factory.CreateClient();
+        Assert.Equal(System.Net.HttpStatusCode.OK, (await http.PostAsJsonAsync("/v1/auth/client-token", new { clientId = client, clientSecret = secret })).StatusCode);
+        var rotated = await Gk(true, null, "client", "rotate-secret", client);
+        Assert.Equal(0, rotated.Code);
+        Assert.Equal(System.Net.HttpStatusCode.Unauthorized, (await http.PostAsJsonAsync("/v1/auth/client-token", new { clientId = client, clientSecret = secret })).StatusCode);
+
+        Assert.Equal(0, (await Gk(true, null, "client", "update", client, "--active", "false")).Code);
+        Assert.Contains("isActive: False", (await Gk(true, null, "client", "get", client)).Out);
+        Assert.Equal(0, (await Gk(true, null, "client", "revoke", client, "reader")).Code);
+        Assert.Equal(0, (await Gk(true, null, "client", "delete", client)).Code);
+        Assert.Equal(2, (await Gk(true, null, "client", "get", client)).Code);
+        Assert.Equal(5, (await Gk(false, null, "client", "list")).Code);
     }
 
     [Fact]

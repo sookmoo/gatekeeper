@@ -59,6 +59,30 @@ public interface ICredentialRepository
     Task<bool> ReplaceHashAsync(Guid userId, string expectedHash, string newHash, DateTimeOffset at, CancellationToken ct = default);
 }
 
+/// <summary>
+/// Service identities. The secret hash is stored apart from the client and never travels with it. A client's
+/// application is fixed at creation. Deleting an application, a role or the client removes the dependent rows.
+/// </summary>
+public interface IClientRepository
+{
+    /// <summary>Throws ConflictException for a taken name and NotFoundException for an unknown application.</summary>
+    Task<Client> AddAsync(Client client, string secretHash, CancellationToken ct = default);
+    Task<Client?> GetAsync(Guid id, CancellationToken ct = default);
+    /// <summary>Case-insensitive.</summary>
+    Task<Client?> GetByNameAsync(string name, CancellationToken ct = default);
+    Task<IReadOnlyList<Client>> ListAsync(Guid? appId = null, Slice? slice = null, CancellationToken ct = default);
+    /// <summary>Updates name, active flag and timestamp only.</summary>
+    Task<Client?> UpdateAsync(Client client, CancellationToken ct = default);
+    Task<bool> DeleteAsync(Guid id, CancellationToken ct = default);
+    Task<bool> SetSecretHashAsync(Guid id, string secretHash, DateTimeOffset at, CancellationToken ct = default);
+    Task<string?> GetSecretHashAsync(Guid id, CancellationToken ct = default);
+
+    /// <summary>Idempotent. Throws NotFoundException if the client or role does not exist.</summary>
+    Task AssignRoleAsync(Guid clientId, Guid roleId, CancellationToken ct = default);
+    Task<bool> RevokeRoleAsync(Guid clientId, Guid roleId, CancellationToken ct = default);
+    Task<IReadOnlyList<Role>> ListRolesAsync(Guid clientId, Slice? slice = null, CancellationToken ct = default);
+}
+
 /// <summary>Append-only: there is deliberately no update or delete. Lists are newest first.</summary>
 public interface IAuditRepository
 {

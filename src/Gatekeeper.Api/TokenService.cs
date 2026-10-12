@@ -78,6 +78,31 @@ public sealed class TokenService
         return (_handler.CreateToken(descriptor), expires);
     }
 
+    /// <summary>A token for a service identity: sub is the client id, plus the client_id claim (RFC 9068) and the app's roles.</summary>
+    public (string Token, DateTimeOffset ExpiresAt) IssueForClient(ClientAuthResult auth, DateTimeOffset? now = null)
+    {
+        var issued = now ?? DateTimeOffset.UtcNow;
+        var expires = issued + _options.AccessTokenLifetime;
+        var descriptor = new SecurityTokenDescriptor
+        {
+            Issuer = _options.Issuer,
+            Audience = auth.App.Name,
+            IssuedAt = issued.UtcDateTime,
+            NotBefore = issued.UtcDateTime,
+            Expires = expires.UtcDateTime,
+            TokenType = TokenType,
+            SigningCredentials = new SigningCredentials(_key, SecurityAlgorithms.EcdsaSha256),
+            Subject = new ClaimsIdentity(
+            [
+                new Claim(JwtRegisteredClaimNames.Sub, auth.Client.Id.ToString()),
+                new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString()),
+                new Claim("client_id", auth.Client.Name),
+            ]),
+            Claims = new Dictionary<string, object> { [RolesClaim] = auth.Roles.Order(StringComparer.Ordinal).ToArray() },
+        };
+        return (_handler.CreateToken(descriptor), expires);
+    }
+
     /// <summary>The public key set as JSON (RFC 7517). Contains no private parameters.</summary>
     public JsonObject Jwks()
     {
