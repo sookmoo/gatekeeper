@@ -73,6 +73,7 @@ builder.Services
     .AddSingleton<AuthService>()
     .AddSingleton(new RefreshOptions { RefreshLifetime = TimeSpan.FromDays(refreshDays) })
     .AddSingleton<SessionService>()
+    .AddSingleton<Introspector>()
     .AddSingleton<ClientService>()
     .AddSingleton<ClientAuthService>()
     .AddKeyedSingleton<LoginThrottle>("client", (_, _) => new LoginThrottle())

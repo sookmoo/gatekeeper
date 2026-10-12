@@ -500,7 +500,8 @@ public sealed class ClientAuthService(IClientRepository clients, IAppRepository 
 {
     private static readonly string DummyHash = ClientService.HashSecret("dummy secret for unknown clients");
 
-    public async Task<ClientAuthResult?> LoginAsync(string? clientId, string? secret, CancellationToken ct = default)
+    /// <summary>Checks the client's secret and that it is active. Does not require roles (a verifier-only client has none).</summary>
+    public async Task<(Client Client, App App)?> AuthenticateAsync(string? clientId, string? secret, CancellationToken ct = default)
     {
         var wellFormed = Validation.LooksLikeUsername(clientId) && Validation.IsCleanText(clientId!)
                          && secret is { Length: >= 8 and <= 200 } && Validation.IsCleanText(secret);
@@ -516,16 +517,37 @@ public sealed class ClientAuthService(IClientRepository clients, IAppRepository 
 
         var app = await apps.GetAsync(client.AppId, ct);
         if (app is null || string.Equals(app.Name, Reserved.AdminApp, StringComparison.OrdinalIgnoreCase)) return null;
+        return (client, app);
+    }
 
+    public async Task<ClientAuthResult?> LoginAsync(string? clientId, string? secret, CancellationToken ct = default)
+    {
+        if (await AuthenticateAsync(clientId, secret, ct) is not var (client, app)) return null;
+        var names = await RoleNamesAsync(client.Id, ct);
+        return names.Count == 0 ? null : new ClientAuthResult(client, app, names);
+    }
+
+    /// <summary>Who a client is right now (for introspection): null if it is gone, disabled, in the admin app or has no roles.</summary>
+    public async Task<ClientAuthResult?> ResolveAsync(Guid clientId, CancellationToken ct = default)
+    {
+        if (await clients.GetAsync(clientId, ct) is not { IsActive: true } client) return null;
+        var app = await apps.GetAsync(client.AppId, ct);
+        if (app is null || string.Equals(app.Name, Reserved.AdminApp, StringComparison.OrdinalIgnoreCase)) return null;
+        var names = await RoleNamesAsync(client.Id, ct);
+        return names.Count == 0 ? null : new ClientAuthResult(client, app, names);
+    }
+
+    private async Task<List<string>> RoleNamesAsync(Guid clientId, CancellationToken ct)
+    {
         var names = new List<string>();
         const int pageSize = PageQuery.MaxLimit;
         while (true)
         {
-            var batch = await clients.ListRolesAsync(client.Id, new Slice(names.Count, pageSize), ct);
+            var batch = await clients.ListRolesAsync(clientId, new Slice(names.Count, pageSize), ct);
             names.AddRange(batch.Select(r => r.Name));
             if (batch.Count < pageSize) break;
         }
-        return names.Count == 0 ? null : new ClientAuthResult(client, app, names);
+        return names;
     }
 }
 

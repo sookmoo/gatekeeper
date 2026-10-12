@@ -9,6 +9,8 @@ public sealed record LoginRequest(string? Username, string? Password, string? Ap
 
 public sealed record ClientTokenRequest(string? ClientId, string? ClientSecret);
 
+public sealed record IntrospectRequest(string? Token);
+
 public sealed record RefreshRequest(string? RefreshToken);
 
 public sealed record LoginResponse(
@@ -18,6 +20,23 @@ public sealed record LoginResponse(
 
 public static class AuthEndpoints
 {
+    // "Authorization: Basic base64(clientId:secret)"; anything else yields nulls, which fail authentication like a wrong secret.
+    internal static (string? Id, string? Secret) BasicCredentials(Microsoft.Extensions.Primitives.StringValues header)
+    {
+        if (header.Count != 1 || header[0] is not { Length: < 1024 } value || !value.StartsWith("Basic ", StringComparison.OrdinalIgnoreCase))
+            return (null, null);
+        try
+        {
+            var text = System.Text.Encoding.UTF8.GetString(Convert.FromBase64String(value["Basic ".Length..].Trim()));
+            var colon = text.IndexOf(':');
+            return colon < 0 ? (null, null) : (text[..colon], text[(colon + 1)..]);
+        }
+        catch (FormatException)
+        {
+            return (null, null);
+        }
+    }
+
     private const int SlowDownAfterFailures = 20;
 
     public static void MapAuth(this IEndpointRouteBuilder routes)
@@ -87,6 +106,34 @@ public static class AuthEndpoints
                 http.Response.Headers.CacheControl = "no-store";
                 return Results.Ok(new LoginResponse(token, "Bearer", (int)(expires - DateTimeOffset.UtcNow).TotalSeconds,
                     result.Token, (int)(result.Session.ExpiresAt - DateTimeOffset.UtcNow).TotalSeconds));
+            })
+            .AllowAnonymous().WithTags("Auth");
+
+        // Token introspection for consuming systems. The caller authenticates as a client (HTTP Basic: client id and secret)
+        // and can only ask about tokens issued for its own application. Any problem with the caller is one uniform 401.
+        routes.MapPost("/v1/auth/introspect", async (IntrospectRequest r, Introspector introspector, ClientAuthService clients,
+                [FromKeyedServices("client")] LoginThrottle throttle, HttpContext http, AuditRecorder audit, IClientRepository clientRepo, CancellationToken ct) =>
+            {
+                var address = (http.Connection.RemoteIpAddress ?? IPAddress.None).ToString();
+                var (id, secret) = BasicCredentials(http.Request.Headers.Authorization);
+                if (throttle.IsBlocked(address, id, out var retryAfter))
+                {
+                    http.Response.Headers.RetryAfter = ((int)Math.Ceiling(retryAfter.TotalSeconds)).ToString();
+                    return Results.Problem("Too many failed attempts. Try again later.", statusCode: StatusCodes.Status429TooManyRequests);
+                }
+
+                if (await clients.AuthenticateAsync(id, secret, ct) is not var (client, app))
+                {
+                    throttle.RecordFailure(address, id);
+                    var known = Validation.LooksLikeUsername(id) && await clientRepo.GetByNameAsync(id!, ct) is not null;
+                    await audit.RecordAsync(http, "anonymous", "auth.introspect", null, false, AuditRecorder.Attempted("client", id, known));
+                    http.Response.Headers.WWWAuthenticate = "Basic realm=\"gatekeeper\"";
+                    return Results.Problem("Invalid credentials.", statusCode: StatusCodes.Status401Unauthorized);
+                }
+
+                throttle.RecordSuccess(address, id);
+                http.Response.Headers.CacheControl = "no-store";
+                return Results.Json(await introspector.IntrospectAsync(r.Token, app, ct));
             })
             .AllowAnonymous().WithTags("Auth");
 

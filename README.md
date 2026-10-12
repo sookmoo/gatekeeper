@@ -68,7 +68,42 @@ dotnet bin/Debug/net10.0/Gatekeeper.Api.dll           # serve, uses Gatekeeper
   loopback or put TLS in front, because logins carry passwords. Behind a proxy also set `Auth__TrustedProxies` and make the
   proxy send `Host: localhost` (or extend `AllowedHosts`).
 - The service refuses to start in a container/proxy setup (`Gatekeeper__AllowNonLoopback`) without an explicit `Store__Provider`.
-- Not yet: refresh tokens and revocation, key rotation tooling.
+
+### Sessions, refresh tokens and revocation
+
+- `POST /v1/auth/login` with `"refresh": true` also returns `refreshToken` (`gkr_...`, 256-bit secret, stored only as a SHA-256) and
+  `refreshExpiresIn` (default 30 days, absolute: `Auth__RefreshTokenDays`, 1-90). Only users get refresh tokens; service clients simply
+  authenticate again with their secret. Access tokens issued from a session carry its id as the `sid` claim.
+- `POST /v1/auth/refresh {"refreshToken"}` returns a new access token and a **new** refresh token; the old one stops working.
+  Presenting the token that was just replaced means a stale copy exists (theft or a replay), so the whole session is ended.
+  Anything else invalid is a plain `401` (identical for every reason, throttled per address). A refresh re-reads the user: a deactivated
+  user, a removed role or a deleted application ends the session.
+- `POST /v1/auth/logout {"refreshToken"}` ends the session (always `204`). A new password ends all of that user's sessions.
+  Admins: `GET /v1/users/{id}/sessions`, `DELETE /v1/users/{id}/sessions` (all), `DELETE /v1/sessions/{id}`; CLI
+  `gk user sessions|revoke-sessions <user>`. The management API also checks the token's session, so ending an admin's session ends
+  their access within ~10 s without waiting for `exp`.
+- `gk login` asks for a session and renews the access token by itself; concurrent `gk` commands share one refresh under a file lock,
+  because refresh tokens rotate. `gk logout` ends the session on the server too.
+- **Introspection** (`POST /v1/auth/introspect {"token"}`, RFC 7662 style) is for systems that cannot wait for `exp`: it returns
+  `{"active":false}` or `{"active":true,...}` with the roles **as they are now**, after checking the signature, that the user or client is
+  still active and still holds roles in the application, and that the session is not ended. The caller authenticates as a service
+  identity of that application (HTTP Basic `clientId:secret`; a client with no roles is fine for this) and can only ask about tokens issued
+  for its own application; anything else is `{"active":false}`. Failures are one uniform `401`, throttled with the client-token counters.
+  Plain offline verification stays valid for the access token's lifetime (15 minutes by default); use introspection where that is too long.
+
+### Key rotation
+
+The JWKS lists the current signing key first, then retired keys (public halves only). Tokens signed by a retired key keep verifying
+(here and at consumers) until they expire, so rotating does not log anyone out. Configuration: `Auth__SigningKeyPemFile` (current) and
+`Auth__RetiredKeysPemFile` (or `Auth__RetiredKeysPem`): PEM blocks (`PUBLIC KEY`, or a private key) with optional `#` comment lines; at
+most 5 retired keys. On the Quadlet installation:
+
+- `deploy/rotate-signing-key.sh` generates a new key, moves the old public key to the retired list and restarts the service.
+- `deploy/rotate-signing-key.sh --compromised` does not keep the old key: everything it signed stops verifying now.
+- `deploy/rotate-signing-key.sh --prune` empties the retired list (do this once the longest token lifetime has passed).
+Consumers that cache the JWKS must refetch it on an unknown `kid`.
+
+- Not yet: federation, an identity-provider broker (see the planner backlog in `status.md`).
 
 ### Service identities (clients)
 
@@ -121,6 +156,7 @@ saved in `$XDG_STATE_HOME/gatekeeper/token.json` (mode 0600), sent only to the s
 The CLI refuses plain `http://` to non-local hosts (override: `GATEKEEPER_ALLOW_INSECURE=1`), never follows redirects, and
 strips control characters from server text before printing. `gk user set-password <user>` sets a password.
 `gk client ...` manages service identities and `gk audit list` reads the audit trail.
+`gk login` keeps a session (see "Sessions"): the saved login holds a refresh token and renews itself; `gk logout` ends it on the server.
 
 Server URL: `--url` or `GATEKEEPER_URL` (default `http://localhost:5080`).
 Exit codes: 0 ok, 1 error, 2 not found, 3 conflict, 4 server unreachable or store unavailable, 5 not logged in or not allowed.

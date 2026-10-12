@@ -64,6 +64,11 @@ In-memory store, REST API under /v1, `gk` CLI, OpenAPI contract, QA + security r
 - Not changed: `/health/ready` still trusts the signed token alone (documented); audit has no retention; audit writes stay best effort and synchronous (5 s cap); PATCH gate is per process; no `token_use` claim (consumers use `client_id`/`sub`).
 - Tests: 462 with Postgres (Api 227, Contract 103 + 1 skipped, Cli 60, Application 38, Domain 34), including the QA agent's Qa4b* suites; without Postgres the Postgres variants are skipped.
 
+## Slice 4c: sessions, revocation, introspection, key rotation (branch `feat/slice-4c`)
+- Decisions (user, 2026-10-12): refresh sessions + introspection for revocation; refresh tokens for users only; key rotation with current + retired key files.
+- Done: `sessions` table (migration `AddSessions`; token hash current + previous, absolute expiry, revoked-at; cascades with user/app; expired rows purged after 7 days); refresh tokens `gkr_<session id>.<secret>` with rotation and reuse detection (the just-replaced token coming back ends the session); `POST /v1/auth/refresh|logout|introspect`; login `refresh:true`; `sid` claim; password change, deactivation, role removal and app deletion end sessions; the management API (`AdminAccessCheck`) rejects tokens whose session ended; admin session list/revoke (`/v1/users/{id}/sessions`, `/v1/sessions/{id}`, `gk user sessions|revoke-sessions`); CLI keeps the session alive (auto-refresh under a file lock, logout ends the session server-side); introspection with live roles, client Basic auth, own-application scope; JWKS with retired keys (`Auth__RetiredKeysPemFile`), `deploy/rotate-signing-key.sh` (+ `--compromised`, `--prune`), Quadlet mount for the retired-keys secret.
+- Known limits: access tokens without a session (plain login, client tokens) live until `exp` unless the consumer introspects; only the immediately replaced refresh token triggers reuse detection (older ones are just invalid); a client that loses a refresh response (network failure after rotation) must log in again; refresh/PATCH/throttle state is per process; introspection has no caching or rate limit beyond the failure throttle; no per-session device names/IP.
+
 ## Deferred hardening (from slice 1 reviews)
 Escape control characters in CLI output; request body size limit; pagination and rate limiting; https required for non-loopback CLI URLs; CI hardening (pin action SHAs, `persist-credentials: false`, `global.json`, lock files); central package management; paging + cancellation tokens (before slice 4); unbounded lists today.
 
@@ -73,4 +78,4 @@ Escape control characters in CLI output; request body size limit; pagination and
 3. ~~PATCH~~ done in slice 4b.
 
 ## Next action
-Slice 4b: QA and security reviews done and fixed; ask before pushing and opening the PR. Then slice 4c (refresh tokens + revocation, key rotation), or the planner backlog (federation, IdP broker).
+Slice 4c: implementation done, tests running; then ask whether to run independent QA/security reviews and before pushing.
