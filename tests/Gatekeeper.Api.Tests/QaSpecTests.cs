@@ -12,7 +12,7 @@ namespace Gatekeeper.Api.Tests;
 
 public class QaSpecTests(WebApplicationFactory<Program> f) : IClassFixture<WebApplicationFactory<Program>>
 {
-    private HttpClient C => f.CreateClient();
+    private HttpClient C => f.CreateAdminClient();
     private static string N(string p) => $"{p}-{Guid.NewGuid():N}"[..20];
     private static StringContent J(string s) => new(s, Encoding.UTF8, "application/json");
 

@@ -12,7 +12,7 @@ public class ApiTests : IClassFixture<WebApplicationFactory<Program>>
     public ApiTests(WebApplicationFactory<Program> factory)
     {
         // Each test class instance shares the factory; use unique names per test instead of resetting state.
-        _http = factory.CreateClient();
+        _http = factory.CreateAdminClient();
     }
 
     private static string Unique(string prefix) => $"{prefix}-{Guid.NewGuid():N}"[..24];

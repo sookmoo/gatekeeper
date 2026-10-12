@@ -41,6 +41,11 @@ public sealed class InMemoryAppRepository(InMemoryStore s) : IAppRepository
         lock (s.Gate) return Task.FromResult(s.Apps.GetValueOrDefault(id));
     }
 
+    public Task<App?> GetByNameAsync(string name, CancellationToken ct = default)
+    {
+        lock (s.Gate) return Task.FromResult(s.Apps.Values.FirstOrDefault(a => Same(a.Name, name)));
+    }
+
     public Task<IReadOnlyList<App>> ListAsync(Slice? slice = null, CancellationToken ct = default)
     {
         lock (s.Gate) return Task.FromResult<IReadOnlyList<App>>(InMemoryStore.Paged(s.Apps.Values.OrderBy(a => a.Name), slice));

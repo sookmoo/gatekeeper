@@ -9,7 +9,7 @@ public class QaCliTests(WebApplicationFactory<Program> f) : IClassFixture<WebApp
     private async Task<(int Code, string Out, string Err)> Gk(params string[] a)
     {
         var o = new StringWriter(); var e = new StringWriter();
-        return (await CliApp.RunAsync(a, _ => f.CreateClient(), o, e), o.ToString(), e.ToString());
+        return (await CliApp.RunAsync(a, _ => f.CreateAdminClient(), o, e), o.ToString(), e.ToString());
     }
 
     [Fact]

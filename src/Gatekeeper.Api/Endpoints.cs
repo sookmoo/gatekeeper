@@ -13,9 +13,11 @@ public sealed record PasswordRequest(string? Password);
 
 public static class Endpoints
 {
+    public const string AdminPolicy = "admin";
+
     public static void MapApi(this IEndpointRouteBuilder routes)
     {
-        var v1 = routes.MapGroup("/v1");
+        var v1 = routes.MapGroup("/v1").RequireAuthorization(AdminPolicy);
 
         var apps = v1.MapGroup("/applications").WithTags("Applications");
         apps.MapGet("/", (AppService s, int? limit, string? cursor, CancellationToken ct) =>

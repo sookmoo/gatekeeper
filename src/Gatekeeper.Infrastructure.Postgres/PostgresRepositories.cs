@@ -81,6 +81,9 @@ public sealed class PostgresAppRepository(Factory factory) : PostgresRepository(
     public Task<App?> GetAsync(Guid id, CancellationToken ct = default) =>
         Run(db => db.Apps.AsNoTracking().FirstOrDefaultAsync(a => a.Id == id, ct), ct: ct);
 
+    public Task<App?> GetByNameAsync(string name, CancellationToken ct = default) =>
+        Run(db => db.Apps.AsNoTracking().FirstOrDefaultAsync(a => a.Name == name, ct), ct: ct); // citext: case-insensitive
+
     public Task<IReadOnlyList<App>> ListAsync(Slice? slice = null, CancellationToken ct = default) =>
         Run<IReadOnlyList<App>>(async db => await db.Apps.AsNoTracking().OrderBy(a => a.Name).Page(slice).ToListAsync(ct), ct: ct);
 

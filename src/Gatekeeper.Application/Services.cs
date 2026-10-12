@@ -22,13 +22,22 @@ public sealed class AppService(IAppRepository apps)
     public async Task<App> UpdateAsync(Guid id, string? name, CancellationToken ct = default)
     {
         Validation.AppName(name);
+        await RejectReserved(id, "renamed", ct);
         return await apps.UpdateAsync(new App(id, name!), ct)
             ?? throw new NotFoundException($"Application {id} not found.");
     }
 
     public async Task DeleteAsync(Guid id, CancellationToken ct = default)
     {
+        await RejectReserved(id, "deleted", ct);
         if (!await apps.DeleteAsync(id, ct)) throw new NotFoundException($"Application {id} not found.");
+    }
+
+    // Renaming or deleting the admin app would lock every administrator out.
+    private async Task RejectReserved(Guid id, string action, CancellationToken ct)
+    {
+        if (await apps.GetAsync(id, ct) is { } app && string.Equals(app.Name, Reserved.AdminApp, StringComparison.OrdinalIgnoreCase))
+            throw new ConflictException($"Application '{app.Name}' is reserved and cannot be {action}.");
     }
 }
 
@@ -54,13 +63,22 @@ public sealed class RoleService(IAppRepository apps, IRoleRepository roles)
     {
         Validation.RoleFields(name, description);
         var existing = await GetAsync(id, ct);
+        if (!string.Equals(existing.Name, name, StringComparison.OrdinalIgnoreCase)) await RejectReserved(existing, "renamed", ct);
         return await roles.UpdateAsync(existing with { Name = name!, Description = description ?? "" }, ct)
             ?? throw new NotFoundException($"Role {id} not found.");
     }
 
     public async Task DeleteAsync(Guid id, CancellationToken ct = default)
     {
+        if (await roles.GetAsync(id, ct) is { } existing) await RejectReserved(existing, "deleted", ct);
         if (!await roles.DeleteAsync(id, ct)) throw new NotFoundException($"Role {id} not found.");
+    }
+
+    private async Task RejectReserved(Role role, string action, CancellationToken ct)
+    {
+        if (!string.Equals(role.Name, Reserved.AdminRole, StringComparison.OrdinalIgnoreCase)) return;
+        if (await apps.GetAsync(role.AppId, ct) is { } app && string.Equals(app.Name, Reserved.AdminApp, StringComparison.OrdinalIgnoreCase))
+            throw new ConflictException($"Role '{role.Name}' of application '{app.Name}' is reserved and cannot be {action}.");
     }
 
     private async Task RequireApp(Guid appId, CancellationToken ct)
@@ -139,5 +157,50 @@ public sealed class CredentialService(IUserRepository users, ICredentialReposito
         // Argon2 is CPU and memory heavy; keep it off the request thread.
         var hash = await Task.Run(() => hasher.Hash(password!), ct);
         await credentials.SetAsync(userId, hash, Clock.UtcNowMicros(), ct);
+    }
+}
+
+public sealed record AuthResult(User User, App App, IReadOnlyList<string> Roles);
+
+/// <summary>
+/// Verifies a user's password and resolves their roles in one application. Every failure returns null so callers
+/// cannot tell an unknown user from a wrong password, an inactive account, an unknown application or no access.
+/// A hash is verified on every attempt (against a dummy for unknown users) so timing does not reveal which case it was.
+/// </summary>
+public sealed class AuthService(
+    IUserRepository users, IAppRepository apps, ICredentialRepository credentials, IPasswordHasher hasher)
+{
+    private readonly Lazy<string> _dummyHash = new(() => hasher.Hash(Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(24))));
+
+    public async Task<AuthResult?> LoginAsync(string? username, string? password, string? application, CancellationToken ct = default)
+    {
+        // Malformed input can never match; reject cheaply but still spend a hash so the response time stays similar.
+        var wellFormed = username is { Length: > 0 and <= Validation.MaxNameLength } && Validation.IsCleanText(username)
+                         && password is { Length: >= Validation.MinPasswordLength and <= Validation.MaxPasswordLength }
+                         && application is { Length: > 0 and <= Validation.MaxNameLength } && Validation.IsCleanText(application);
+
+        User? user = null;
+        App? app = null;
+        string? stored = null;
+        if (wellFormed)
+        {
+            user = (await users.ListAsync(username: username, slice: new Slice(0, 1), ct: ct)).FirstOrDefault();
+            app = await apps.GetByNameAsync(application!, ct);
+            if (user is not null) stored = await credentials.GetHashAsync(user.Id, ct);
+        }
+
+        var hash = stored ?? _dummyHash.Value;
+        var candidate = wellFormed ? password! : "dummy password for malformed input";
+        var verified = await Task.Run(() => hasher.Verify(hash, candidate), ct);
+
+        if (!wellFormed || user is null || stored is null || app is null || !verified || !user.IsActive) return null;
+
+        var roles = await users.ListRolesAsync(user.Id, app.Id, new Slice(0, PageQuery.MaxLimit), ct);
+        if (roles.Count == 0) return null;
+
+        if (hasher.NeedsRehash(stored))
+            await credentials.SetAsync(user.Id, await Task.Run(() => hasher.Hash(password!), ct), Clock.UtcNowMicros(), ct);
+
+        return new AuthResult(user, app, roles.Select(r => r.Name).ToList());
     }
 }

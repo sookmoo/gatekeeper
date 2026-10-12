@@ -27,9 +27,10 @@ public class PostgresApiTests : IDisposable
         _factory = new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
         {
             b.UseSetting("Store:Provider", "Postgres");
+            b.UseSetting("Auth:SigningKeyPem", TestKey.Pem);
             b.UseSetting("ConnectionStrings:Gatekeeper", connection ?? _db.AppConnection);
         });
-        return _factory.CreateClient();
+        return _factory.CreateAdminClient();
     }
 
     [SkippableFact]
@@ -98,6 +99,7 @@ public class PostgresApiTests : IDisposable
         _factory = new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
         {
             b.UseSetting("Store:Provider", "Postgres");
+            b.UseSetting("Auth:SigningKeyPem", TestKey.Pem);
             b.UseSetting("ConnectionStrings:Gatekeeper", _db.AppConnection);
         });
         Assert.Equal(HttpStatusCode.ServiceUnavailable, (await _factory.CreateClient().GetAsync("/health/ready")).StatusCode);

@@ -16,7 +16,7 @@ public class CliTests : IClassFixture<WebApplicationFactory<Program>>
     {
         var o = new StringWriter();
         var e = new StringWriter();
-        var code = await CliApp.RunAsync(args, _ => _factory.CreateClient(), o, e);
+        var code = await CliApp.RunAsync(args, _ => _factory.CreateAdminClient(), o, e);
         return (code, o.ToString(), e.ToString());
     }
 

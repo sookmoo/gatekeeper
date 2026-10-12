@@ -9,13 +9,23 @@ public static class CliApp
 
     private static readonly JsonSerializerOptions Pretty = new() { WriteIndented = true };
 
+    private static class Domain
+    {
+        public const string AdminApp = "gatekeeper";
+    }
+
     private static readonly string[] AppFields = ["id", "name"];
     private static readonly string[] RoleFields = ["id", "name", "description"];
     private static readonly string[] UserFields = ["id", "username", "email", "isActive", "displayName"];
 
+    /// <param name="tokens">Where the login token is kept (default: a private file in the user's state directory).</param>
+    /// <param name="readSecret">Reads a password without echo (prompt text, whether to ask twice; null at end of input).</param>
     public static async Task<int> RunAsync(
-        string[] args, Func<Uri, HttpClient> httpFactory, TextWriter stdout, TextWriter stderr)
+        string[] args, Func<Uri, HttpClient> httpFactory, TextWriter stdout, TextWriter stderr,
+        ITokenStore? tokens = null, Func<string, bool, string?>? readSecret = null)
     {
+        tokens ??= new FileTokenStore();
+        readSecret ??= Secrets.Read;
         var url = new Option<string?>("--url") { Description = $"Gatekeeper base URL (env GATEKEEPER_URL, default {DefaultUrl})", Recursive = true };
         var json = new Option<bool>("--json") { Description = "Print raw JSON", Recursive = true };
 
@@ -23,10 +33,46 @@ public static class CliApp
         root.Subcommands.Add(AppCommands());
         root.Subcommands.Add(RoleCommands());
         root.Subcommands.Add(UserCommands());
+        root.Subcommands.Add(LoginCommand());
+        root.Subcommands.Add(LogoutCommand());
 
         return await root.Parse(args).InvokeAsync(new InvocationConfiguration { Output = stdout, Error = stderr });
 
         // ---- helpers capture url/json/streams ----
+
+        // The saved token is sent only to the server it was issued by, never to whatever --url points at.
+        string? TokenFor(Uri uri)
+        {
+            var fromEnv = Environment.GetEnvironmentVariable("GATEKEEPER_TOKEN");
+            if (!string.IsNullOrWhiteSpace(fromEnv)) return fromEnv;
+            var saved = tokens.Load();
+            return saved is not null && saved.ExpiresAt > DateTimeOffset.UtcNow
+                   && string.Equals(saved.Origin, uri.GetLeftPart(UriPartial.Authority), StringComparison.OrdinalIgnoreCase)
+                ? saved.AccessToken
+                : null;
+        }
+
+        Command LoginCommand()
+        {
+            var user = new Option<string>("--user") { Description = "Username", Required = true };
+            var application = new Option<string>("--application") { Description = "Application to sign in to", DefaultValueFactory = _ => Domain.AdminApp };
+            return Cmd("login", "Sign in (password from stdin or a hidden prompt) and save the token", c => { c.Options.Add(user); c.Options.Add(application); }, async x =>
+            {
+                var password = readSecret("Password: ", false) ?? throw new CliException(1, "No password given.");
+                var body = await x.Api.PostAsync(ApiClient.LoginPath,
+                    new { username = x.Get(user), password, application = x.Get(application) });
+                var expires = DateTimeOffset.UtcNow.AddSeconds(body.GetProperty("expiresIn").GetInt32());
+                tokens.Save(new StoredToken(x.Origin, body.GetProperty("accessToken").GetString()!, expires, x.Get(user)!));
+                x.Message($"logged in as {x.Get(user)} until {expires.ToLocalTime():yyyy-MM-dd HH:mm}");
+            });
+        }
+
+        Command LogoutCommand() => Cmd("logout", "Forget the saved token", _ => { }, x =>
+        {
+            tokens.Clear();
+            x.Message("logged out");
+            return Task.CompletedTask;
+        });
 
         Command Cmd(string name, string description, Action<Command> configure, Func<Ctx, Task> run)
         {
@@ -40,7 +86,7 @@ public static class CliApp
                     if (!Uri.TryCreate(baseUrl, UriKind.Absolute, out var uri)
                         || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
                         throw new CliException(1, $"Invalid URL '{baseUrl}': expected http:// or https://.");
-                    await run(new Ctx(parse, new ApiClient(httpFactory(uri)), parse.GetValue(json), stdout));
+                    await run(new Ctx(parse, new ApiClient(httpFactory(uri), TokenFor(uri)), parse.GetValue(json), stdout, uri.GetLeftPart(UriPartial.Authority)));
                     return 0;
                 }
                 catch (CliException ex)
@@ -183,6 +229,15 @@ public static class CliApp
                 x.Print(await x.Api.PutAsync($"/v1/users/{id}", body), UserFields, single: true);
             }));
 
+            var pUser = UserArg();
+            cmd.Subcommands.Add(Cmd("set-password", "Set a user's password (read from stdin or a hidden prompt)", c => c.Arguments.Add(pUser), async x =>
+            {
+                var id = await x.ResolveUser(x.Get(pUser)!);
+                var password = readSecret("New password: ", true) ?? throw new CliException(1, "No password given.");
+                await x.Api.PutAsync($"/v1/users/{id}/password", new { password });
+                x.Message("password set");
+            }));
+
             var dUser = UserArg();
             cmd.Subcommands.Add(Cmd("delete", "Delete a user", c => c.Arguments.Add(dUser), async x =>
             {
@@ -220,8 +275,10 @@ public static class CliApp
         }
     }
 
-    private sealed class Ctx(ParseResult parse, ApiClient api, bool json, TextWriter stdout)
+    private sealed class Ctx(ParseResult parse, ApiClient api, bool json, TextWriter stdout, string origin)
     {
+        public string Origin { get; } = origin;
+
         public ApiClient Api { get; } = api;
 
         public T? Get<T>(Argument<T> a) => parse.GetValue(a);

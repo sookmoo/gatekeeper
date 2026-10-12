@@ -7,7 +7,7 @@ namespace Gatekeeper.Api.Tests;
 
 public class PagingApiTests(WebApplicationFactory<Program> factory) : IClassFixture<WebApplicationFactory<Program>>
 {
-    private readonly HttpClient _http = factory.CreateClient();
+    private readonly HttpClient _http = factory.CreateAdminClient();
 
     [Fact]
     public async Task Pages_are_complete_ordered_and_end_with_null_cursor()
@@ -46,7 +46,7 @@ public class PagingApiTests(WebApplicationFactory<Program> factory) : IClassFixt
 
 public class PasswordApiTests(WebApplicationFactory<Program> factory) : IClassFixture<WebApplicationFactory<Program>>
 {
-    private readonly HttpClient _http = factory.CreateClient();
+    private readonly HttpClient _http = factory.CreateAdminClient();
 
     private async Task<Guid> MkUser()
     {

@@ -13,6 +13,8 @@ public interface IAppRepository
 {
     Task<App> AddAsync(App app, CancellationToken ct = default);
     Task<App?> GetAsync(Guid id, CancellationToken ct = default);
+    /// <summary>Case-insensitive.</summary>
+    Task<App?> GetByNameAsync(string name, CancellationToken ct = default);
     Task<IReadOnlyList<App>> ListAsync(Slice? slice = null, CancellationToken ct = default);
     Task<App?> UpdateAsync(App app, CancellationToken ct = default);
     Task<bool> DeleteAsync(Guid id, CancellationToken ct = default);
