@@ -29,6 +29,7 @@ public static class Endpoints
         });
         apps.MapGet("/{id:guid}", (Guid id, AppService s, CancellationToken ct) => s.GetAsync(id, ct));
         apps.MapPut("/{id:guid}", (Guid id, AppRequest r, AppService s, CancellationToken ct) => s.UpdateAsync(id, r.Name, ct));
+        apps.MapMethods("/{id:guid}", ["PATCH"], (Guid id, AppRequest r, AppService s, CancellationToken ct) => s.PatchAsync(id, r.Name, ct));
         apps.MapDelete("/{id:guid}", async (Guid id, AppService s, CancellationToken ct) =>
         {
             await s.DeleteAsync(id, ct);
@@ -45,6 +46,7 @@ public static class Endpoints
         var roles = v1.MapGroup("/roles").WithTags("Roles");
         roles.MapGet("/{id:guid}", (Guid id, RoleService s, CancellationToken ct) => s.GetAsync(id, ct));
         roles.MapPut("/{id:guid}", (Guid id, RoleRequest r, RoleService s, CancellationToken ct) => s.UpdateAsync(id, r.Name, r.Description, ct));
+        roles.MapMethods("/{id:guid}", ["PATCH"], (Guid id, RoleRequest r, RoleService s, CancellationToken ct) => s.PatchAsync(id, r.Name, r.Description, ct));
         roles.MapDelete("/{id:guid}", async (Guid id, RoleService s, CancellationToken ct) =>
         {
             await s.DeleteAsync(id, ct);
@@ -62,6 +64,8 @@ public static class Endpoints
         users.MapGet("/{id:guid}", (Guid id, UserService s, CancellationToken ct) => s.GetAsync(id, ct));
         users.MapPut("/{id:guid}", (Guid id, UserRequest r, UserService s, CancellationToken ct) =>
             s.UpdateAsync(id, r.Username, r.Email, r.DisplayName, r.IsActive, ct));
+        users.MapMethods("/{id:guid}", ["PATCH"], (Guid id, UserRequest r, UserService s, CancellationToken ct) =>
+            s.PatchAsync(id, r.Username, r.Email, r.DisplayName, r.IsActive, ct));
         users.MapDelete("/{id:guid}", async (Guid id, UserService s, CancellationToken ct) =>
         {
             await s.DeleteAsync(id, ct);

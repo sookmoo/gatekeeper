@@ -42,6 +42,8 @@ public sealed class ApiClient(HttpClient http, string? bearerToken = null)
 
     public Task<JsonElement> PutAsync(string path, object? body = null) => SendAsync(HttpMethod.Put, path, body);
 
+    public Task<JsonElement> PatchAsync(string path, object body) => SendAsync(HttpMethod.Patch, path, body);
+
     public Task<JsonElement> DeleteAsync(string path) => SendAsync(HttpMethod.Delete, path, null);
 
     private async Task<JsonElement> SendAsync(HttpMethod method, string path, object? body)

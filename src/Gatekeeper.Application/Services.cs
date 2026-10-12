@@ -29,6 +29,10 @@ public sealed class AppService(IAppRepository apps)
             ?? throw new NotFoundException($"Application {id} not found.");
     }
 
+    /// <summary>Partial update: a null field is left unchanged.</summary>
+    public async Task<App> PatchAsync(Guid id, string? name, CancellationToken ct = default) =>
+        await UpdateAsync(id, name ?? (await GetAsync(id, ct)).Name, ct);
+
     public async Task DeleteAsync(Guid id, CancellationToken ct = default)
     {
         await RejectReserved(id, "deleted", ct);
@@ -75,6 +79,13 @@ public sealed class RoleService(IAppRepository apps, IRoleRepository roles)
         if (!string.Equals(existing.Name, name, StringComparison.OrdinalIgnoreCase)) await RejectReserved(existing, "renamed", ct);
         return await roles.UpdateAsync(existing with { Name = name!, Description = description ?? "" }, ct)
             ?? throw new NotFoundException($"Role {id} not found.");
+    }
+
+    /// <summary>Partial update: a null field is left unchanged (use an empty description to clear it).</summary>
+    public async Task<Role> PatchAsync(Guid id, string? name, string? description, CancellationToken ct = default)
+    {
+        var existing = await GetAsync(id, ct);
+        return await UpdateAsync(id, name ?? existing.Name, description ?? existing.Description, ct);
     }
 
     public async Task DeleteAsync(Guid id, CancellationToken ct = default)
@@ -127,6 +138,13 @@ public sealed class UserService(IUserRepository users, AdminGuard? guard = null)
                 return await Save(existing, username, email, displayName, isActive, ct);
             }, ct);
         return await Save(existing, username, email, displayName, isActive, ct);
+    }
+
+    /// <summary>Partial update: a null field is left unchanged (use an empty display name to clear it).</summary>
+    public async Task<User> PatchAsync(Guid id, string? username, string? email, string? displayName, bool? isActive, CancellationToken ct = default)
+    {
+        var e = await GetAsync(id, ct);
+        return await UpdateAsync(id, username ?? e.Username, email ?? e.Email, displayName ?? e.DisplayName, isActive, ct);
     }
 
     private async Task<User> Save(User existing, string? username, string? email, string? displayName, bool? isActive, CancellationToken ct)

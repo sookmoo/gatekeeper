@@ -127,7 +127,7 @@ public static class CliApp
             cmd.Subcommands.Add(Cmd("update", "Rename an application", c => { c.Arguments.Add(updApp); c.Options.Add(newName); }, async x =>
             {
                 var id = await x.ResolveApp(x.Get(updApp)!);
-                x.Print(await x.Api.PutAsync($"/v1/applications/{id}", new { name = x.Get(newName) }), AppFields, single: true);
+                x.Print(await x.Api.PatchAsync($"/v1/applications/{id}", new { name = x.Get(newName) }), AppFields, single: true);
             }));
             var delApp = app();
             cmd.Subcommands.Add(Cmd("delete", "Delete an application and its roles", c => c.Arguments.Add(delApp), async x =>
@@ -167,13 +167,8 @@ public static class CliApp
             cmd.Subcommands.Add(Cmd("update", "Update a role", c => { c.Arguments.Add(uRole); c.Options.Add(uApp); c.Options.Add(uName); c.Options.Add(uDesc); }, async x =>
             {
                 var id = await x.ResolveRole(x.Get(uRole)!, x.Get(uApp));
-                var current = await x.Api.GetAsync($"/v1/roles/{id}");
-                var body = new
-                {
-                    name = x.Get(uName) ?? current.GetProperty("name").GetString(),
-                    description = x.Get(uDesc) ?? current.GetProperty("description").GetString(),
-                };
-                x.Print(await x.Api.PutAsync($"/v1/roles/{id}", body), RoleFields, single: true);
+                var body = new { name = x.Get(uName), description = x.Get(uDesc) };
+                x.Print(await x.Api.PatchAsync($"/v1/roles/{id}", body), RoleFields, single: true);
             }));
 
             var dRole = RoleArg(); var dApp = AppOpt(false);
@@ -222,15 +217,8 @@ public static class CliApp
             cmd.Subcommands.Add(Cmd("update", "Update a user", c => { c.Arguments.Add(uUser); c.Options.Add(uName); c.Options.Add(uEmail); c.Options.Add(uDisplay); c.Options.Add(uActive); }, async x =>
             {
                 var id = await x.ResolveUser(x.Get(uUser)!);
-                var cur = await x.Api.GetAsync($"/v1/users/{id}");
-                var body = new
-                {
-                    username = x.Get(uName) ?? cur.GetProperty("username").GetString(),
-                    email = x.Get(uEmail) ?? cur.GetProperty("email").GetString(),
-                    displayName = x.Get(uDisplay) ?? cur.GetProperty("displayName").GetString(),
-                    isActive = x.Get(uActive) ?? cur.GetProperty("isActive").GetBoolean(),
-                };
-                x.Print(await x.Api.PutAsync($"/v1/users/{id}", body), UserFields, single: true);
+                var body = new { username = x.Get(uName), email = x.Get(uEmail), displayName = x.Get(uDisplay), isActive = x.Get(uActive) };
+                x.Print(await x.Api.PatchAsync($"/v1/users/{id}", body), UserFields, single: true);
             }));
 
             var pUser = UserArg();

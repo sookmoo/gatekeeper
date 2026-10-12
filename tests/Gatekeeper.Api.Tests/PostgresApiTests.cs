@@ -106,7 +106,9 @@ public class PostgresApiTests : IDisposable
             b.UseSetting("Auth:SigningKeyPem", TestKey.Pem);
             b.UseSetting("ConnectionStrings:Gatekeeper", _db.AppConnection);
         });
-        Assert.Equal(HttpStatusCode.ServiceUnavailable, (await _factory.CreateClient().GetAsync("/health/ready")).StatusCode);
+        var c = _factory.CreateClient();
+        c.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", TestAuth.Token(_factory, "gatekeeper", ["admin"]));
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, (await c.GetAsync("/health/ready")).StatusCode);
     }
 
     public void Dispose()

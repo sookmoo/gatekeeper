@@ -71,7 +71,7 @@ builder.Services
     .AddSingleton<AuthService>()
     .AddSingleton<LoginThrottle>()
     .AddProblemDetails()
-    .AddOpenApi();
+    .AddOpenApi(o => o.AddDocumentTransformer<BearerSecurityTransformer>());
 
 if (!migrateOnly && !bootstrap)
 {
@@ -126,10 +126,10 @@ if (!migrateOnly && !bootstrap)
         // A valid signature is not enough: the user must still be an active administrator right now.
         o.Events = new JwtBearerEvents
         {
-            // Only the management API uses tokens: a stray Authorization header must not make /health or the JWKS touch the store.
+            // Only the management API and the readiness probe use tokens: a stray Authorization header must not make /health or the JWKS touch the store.
             OnMessageReceived = ctx =>
             {
-                if (!ctx.Request.Path.StartsWithSegments("/v1")) ctx.NoResult();
+                if (!ctx.Request.Path.StartsWithSegments("/v1") && !ctx.Request.Path.StartsWithSegments("/health/ready")) ctx.NoResult();
                 return Task.CompletedTask;
             },
             OnTokenValidated = async ctx =>
@@ -220,7 +220,7 @@ app.UseAuthentication();
 app.UseAuthorization();
 app.MapOpenApi("/openapi/{documentName}.json");
 app.MapGet("/health", () => Results.Ok(new { status = "ok" })).ExcludeFromDescription();
-// Unauthenticated and it queries the store, so remember the answer briefly instead of letting callers amplify load.
+// It queries the store and reveals its state, so it needs an admin token; the answer is still cached briefly.
 var readyLock = new object();
 var readyAt = DateTimeOffset.MinValue;
 var readyResult = false;
@@ -232,6 +232,7 @@ app.MapGet("/health/ready", async (IReadinessProbe probe, CancellationToken ct) 
         if (!cached) lock (readyLock) (readyAt, readyResult) = (DateTimeOffset.UtcNow, ready);
         return ready ? Results.Ok(new { status = "ready" }) : Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
     })
+    .RequireAuthorization(Endpoints.AdminPolicy)
     .ExcludeFromDescription();
 app.MapApi();
 app.MapAuth();
