@@ -126,6 +126,15 @@ if (ephemeralKey)
 if (bootstrap)
     return await Bootstrap.RunAsync(app.Services, args[1], args[2]);
 
+// Local development only: the in-memory store starts empty, so nobody could log in. Opt in explicitly.
+if (builder.Configuration.GetValue<bool>("Auth:SeedDevAdmin"))
+{
+    if (provider != "InMemory") return Fail("Auth:SeedDevAdmin is only allowed with Store:Provider=InMemory.");
+    var devPassword = Convert.ToHexString(RandomNumberGenerator.GetBytes(12)).ToLowerInvariant();
+    await Bootstrap.CreateAdminAsync(app.Services, "admin", "admin@localhost.example", devPassword);
+    app.Logger.LogWarning("Development administrator created. Username: admin  Password: {Password}  (in-memory data, lost on exit)", devPassword);
+}
+
 if (migrateOnly)
 {
     try

@@ -40,11 +40,19 @@ In-memory store, REST API under /v1, `gk` CLI, OpenAPI contract, QA + security r
 - Tests: 153 pass with Postgres (`scripts/test-pg.sh`); without `GATEKEEPER_TEST_PG` the Postgres tests show as skipped. QA parity tests (in-memory vs Postgres) are kept.
 - Manually verified with the real roles: migrate as owner, serve as app, DDL refused for the app role, DB-down gives 503 and recovery, migrate failure paths.
 
-## Slice 3: containers (branch `feat/slice-3-containers`)
+## Slice 3: containers (done, PR #4 merged 2026-10-12)
 - Done: `Containerfile` (digest-pinned sdk and chiseled aspnet runtime, non-root), `healthcheck` command (no shell in image), explicit `Gatekeeper:AllowNonLoopback` opt-in for the loopback guard, Quadlet units in `deploy/quadlet/` (network, volume, db, one-shot migrate, api), `deploy/install.sh` (podman secrets), CI `image` job (build on PRs, push to GHCR from main).
 - Verified locally with Quadlet: migrate runs before the API, API healthy, data persists across restarts, app role cannot DDL, image refuses to start without the opt-in.
 - Decision: no podman-compose; Quadlet is used for local and server alike (one mechanism).
 - Not done: tag-based promotion to staging/production (needs a server), image vulnerability scan, Dependabot for base-image digests.
+
+## Slice 4a: paging, passwords, login, JWT (branch `feat/slice-4a-auth`)
+- Decisions (user: "go for recommended choices", 2026-10-12): split auth into 4a (this) and 4b (service identities, audit table, PATCH, refresh/revocation); admins are users with role `admin` in the reserved app `gatekeeper`; ES256 keys from a podman secret, public key at `/.well-known/jwks.json`.
+- Done: lists return `{items,nextCursor}` (limit 1-200, opaque offset cursor) and everything takes a CancellationToken; `user_credentials` table (separate from users) with Argon2id; `PUT /v1/users/{id}/password`; `POST /v1/auth/login` (uniform 401, dummy hash for unknown users, 429 throttle per username/address); ES256 access tokens (aud = application, roles = that app only, typ `at+jwt`, 15 min); JWT bearer on `/v1` with pinned alg/typ/iss/aud and admin policy; `bootstrap-admin` command and `deploy/bootstrap-admin.sh`; `Auth:SeedDevAdmin` for the in-memory store; CLI `login`/`logout`/`set-password`, token file 0600 bound to its server, exit code 5.
+- Deviation from the plan: the loopback guard stays (opt-in `Gatekeeper:AllowNonLoopback`), because logins carry passwords over plain HTTP; its message now says so.
+- Findings along the way: `InvariantGlobalization` makes `string.Normalize` a silent no-op, so passwords are not normalised (documented); a flaky advisory-lock race in the Postgres test helper was fixed.
+- Verified on Quadlet: bootstrap, `gk login`, CRUD with the token, 401 without; a login token verified independently with openssl against the JWKS.
+- Known limits: a deactivated user keeps a token for up to 15 min; throttle is per process and per proxy address; no key rotation tooling; OpenAPI does not declare the bearer scheme; the last admin can be deleted or demoted (only the reserved app and role are protected).
 
 ## Deferred hardening (from slice 1 reviews)
 Escape control characters in CLI output; request body size limit; pagination and rate limiting; https required for non-loopback CLI URLs; CI hardening (pin action SHAs, `persist-credentials: false`, `global.json`, lock files); central package management; paging + cancellation tokens (before slice 4); unbounded lists today.
@@ -55,4 +63,4 @@ Escape control characters in CLI output; request body size limit; pagination and
 3. PATCH (partial update) alongside GET/POST/PUT in the API; the CLI `update` commands currently emulate it with GET + PUT.
 
 ## Next action
-Open the slice 3 PR (needs the user's go-ahead to push). Then slice 4 (auth): paging/cancellation first, audit table with INSERT-only rights, protect `/health/ready`, consider 409 messages as an enumeration channel.
+Slice 4a: run independent QA and security reviews, fix, then ask before pushing and opening the PR. Then slice 4b (auth): paging/cancellation first, audit table with INSERT-only rights, protect `/health/ready`, consider 409 messages as an enumeration channel.
