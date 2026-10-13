@@ -36,6 +36,37 @@ public class KeyRotationTests
     }
 
     [Fact]
+    public async Task A_retired_key_cannot_mint_tokens_that_outlive_the_normal_lifetime()
+    {
+        var cur = NewKey(); var old = NewKey();
+        using var f = Factory(cur, old.ExportSubjectPublicKeyInfoPem());
+        var admin = TestAuth.EnsureAdmin(f);
+        var auth = new AuthResult(admin, new App(Guid.NewGuid(), Reserved.AdminApp), [Reserved.AdminRole]);
+        Assert.Equal(HttpStatusCode.OK, await Call(f, new TokenService(old, new AuthOptions()).Issue(auth).Token));
+        var tenYears = new TokenService(old, new AuthOptions { AccessTokenLifetime = TimeSpan.FromDays(3650) }).Issue(auth).Token;
+        Assert.Equal(HttpStatusCode.Unauthorized, await Call(f, tenYears));
+    }
+
+    [Fact]
+    public void Stamped_retired_keys_stop_being_trusted_once_their_tokens_have_expired_and_unstamped_ones_stay()
+    {
+        var time = new Microsoft.Extensions.Time.Testing.FakeTimeProvider(DateTimeOffset.Parse("2026-10-13T12:00:00Z"));
+        var cur = NewKey(); var stamped = NewKey(); var unstamped = NewKey();
+        var keys = TokenService.LoadRetiredKeys(
+            "# retired-at: 2026-10-13T11:00:00Z\n" + stamped.ExportSubjectPublicKeyInfoPem() + "\n" + unstamped.ExportSubjectPublicKeyInfoPem(),
+            out var at);
+        Assert.Single(at);
+        var t = new TokenService(cur, new AuthOptions(), keys, at, time);
+        Assert.Equal(2, t.VerificationKeys.Count); // retired an hour ago: the 15 minute tokens are long gone
+        Assert.Equal(2, ((System.Text.Json.Nodes.JsonArray)t.Jwks()["keys"]!).Count);
+
+        var fresh = new TokenService(cur, new AuthOptions(), keys, new Dictionary<ECDsa, DateTimeOffset> { [keys[0]] = time.GetUtcNow().AddMinutes(-5) }, time);
+        Assert.Equal(3, fresh.VerificationKeys.Count); // retired five minutes ago: still needed
+        time.Advance(TimeSpan.FromMinutes(20));
+        Assert.Equal(2, fresh.VerificationKeys.Count);
+    }
+
+    [Fact]
     public async Task Tokens_of_a_retired_key_still_verify_and_the_jwks_lists_both_keys_current_first()
     {
         var oldKey = NewKey();
@@ -73,7 +104,7 @@ public class KeyRotationTests
     public void Retired_keys_accept_public_or_private_blocks_and_reject_garbage()
     {
         var a = NewKey(); var b = NewKey();
-        var keys = TokenService.LoadRetiredKeys(a.ExportSubjectPublicKeyInfoPem() + "\nnote\n" + b.ExportPkcs8PrivateKeyPem());
+        var keys = TokenService.LoadRetiredKeys(a.ExportSubjectPublicKeyInfoPem() + "\n# note\n" + b.ExportPkcs8PrivateKeyPem());
         Assert.Equal(2, keys.Count);
         Assert.Empty(TokenService.LoadRetiredKeys("# none\n"));
         Assert.Throws<ArgumentException>(() => TokenService.LoadRetiredKeys("-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----"));

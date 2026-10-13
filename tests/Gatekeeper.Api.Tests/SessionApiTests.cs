@@ -3,6 +3,8 @@ using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Gatekeeper.Application;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.IdentityModel.JsonWebTokens;
 
 namespace Gatekeeper.Api.Tests;
@@ -69,6 +71,13 @@ public class SessionApiTests : IClassFixture<WebApplicationFactory<Program>>
     [Fact]
     public async Task Refresh_rotates_and_replaying_an_old_token_kills_the_session()
     {
+        var sessions = _factory.Services.GetRequiredService<SessionService>();
+        sessions.ReuseGrace = TimeSpan.Zero; // otherwise an immediate replay counts as a lost race (see the next test)
+        try { await ReplayScenario(); } finally { sessions.ReuseGrace = new RefreshOptions().ReuseGrace; }
+    }
+
+    private async Task ReplayScenario()
+    {
         var p = await NewPerson();
         var first = (await Login(p)).GetProperty("refreshToken").GetString()!;
 
@@ -91,6 +100,49 @@ public class SessionApiTests : IClassFixture<WebApplicationFactory<Program>>
         Assert.Equal(HttpStatusCode.Unauthorized, (await Refresh(second)).StatusCode);
         Assert.Equal(HttpStatusCode.Unauthorized, (await Refresh(third)).StatusCode);
         Assert.Contains("reuse", await _admin.GetStringAsync("/v1/audit?action=auth.refresh&limit=20"));
+    }
+
+    [Fact]
+    public async Task Parallel_refreshes_of_one_token_leave_exactly_one_winner_and_the_session_alive()
+    {
+        var p = await NewPerson();
+        var first = (await Login(p)).GetProperty("refreshToken").GetString()!;
+        var results = await Task.WhenAll(Enumerable.Range(0, 6).Select(_ => Refresh(first)));
+        var winners = results.Where(r => r.StatusCode == HttpStatusCode.OK).ToList();
+        Assert.Single(winners);
+        Assert.All(results.Except(winners), r => Assert.Equal(HttpStatusCode.Unauthorized, r.StatusCode));
+        // The losers lost a race; they did not cut the session, so the winner's new token still works.
+        var next = (await winners[0].Content.ReadFromJsonAsync<JsonElement>()).GetProperty("refreshToken").GetString()!;
+        Assert.Equal(HttpStatusCode.OK, (await Refresh(next)).StatusCode);
+    }
+
+    [Fact]
+    public async Task Failed_refreshes_never_name_a_user_without_proof_and_do_not_use_the_login_throttle()
+    {
+        var p = await NewPerson();
+        var token = (await Login(p)).GetProperty("refreshToken").GetString()!;
+        var sid = token["gkr_".Length..token.IndexOf('.')];
+        var forged = $"gkr_{sid}.{new string('A', 43)}";
+        Assert.Equal(HttpStatusCode.Unauthorized, (await Refresh(forged)).StatusCode);
+        var rows = await _admin.GetStringAsync("/v1/audit?action=auth.refresh&actor=" + p.UserId);
+        Assert.DoesNotContain(sid, rows); // the forged attempt is not attributed to the victim or their session
+
+        using var f = _factory.WithWebHostBuilder(_ => { });
+        var c = f.CreateClient();
+        for (var i = 0; i < 70; i++) await c.PostAsJsonAsync("/v1/auth/refresh", new { refreshToken = "gkr_nope" });
+        var login = await c.PostAsJsonAsync("/v1/auth/login", new { username = "nobody", password = "wrong password here", application = "gatekeeper" });
+        Assert.Equal(HttpStatusCode.Unauthorized, login.StatusCode); // refresh failures are counted separately: not 429
+    }
+
+    [Fact]
+    public async Task A_user_cannot_hold_more_than_the_cap_of_active_sessions()
+    {
+        var p = await NewPerson();
+        var first = (await Login(p)).GetProperty("refreshToken").GetString()!;
+        for (var i = 0; i < Gatekeeper.Application.SessionService.MaxActiveSessionsPerUser + 2; i++) await Login(p);
+        var list = await _admin.GetFromJsonAsync<JsonElement>($"/v1/users/{p.UserId}/sessions?limit=200");
+        Assert.Equal(Gatekeeper.Application.SessionService.MaxActiveSessionsPerUser, list.GetProperty("items").GetArrayLength());
+        Assert.Equal(HttpStatusCode.Unauthorized, (await Refresh(first)).StatusCode); // the oldest one was ended
     }
 
     [Fact]

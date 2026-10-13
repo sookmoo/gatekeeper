@@ -80,7 +80,7 @@ public static class AuthEndpoints
             .AllowAnonymous().WithTags("Auth");
 
         // Trade a refresh token for a new access token and a new refresh token (the old one stops working).
-        routes.MapPost("/v1/auth/refresh", async (RefreshRequest r, SessionService sessions, TokenService tokens, LoginThrottle throttle,
+        routes.MapPost("/v1/auth/refresh", async (RefreshRequest r, SessionService sessions, TokenService tokens, [FromKeyedServices("refresh")] LoginThrottle throttle,
                 HttpContext http, AuditRecorder audit, CancellationToken ct) =>
             {
                 var address = (http.Connection.RemoteIpAddress ?? IPAddress.None).ToString();
@@ -93,8 +93,9 @@ public static class AuthEndpoints
                 var result = await sessions.RefreshAsync(r.RefreshToken, ct);
                 if (result.Failure is not null || result.Auth is null || result.Session is null || result.Token is null)
                 {
-                    throttle.RecordFailure(address, null);
-                    // The session id is not a secret; the token itself is never recorded.
+                    // Losing a race against a parallel refresh of the same token is not an attack.
+                    if (result.Failure != "raced") throttle.RecordFailure(address, null);
+                    // The session is only named when the caller proved it holds a token of it (the session id itself is public in the sid claim).
                     await audit.RecordAsync(http, result.Session?.UserId.ToString() ?? "anonymous", "auth.refresh",
                         result.SessionId?.ToString(), false, result.Failure ?? "invalid");
                     http.Response.Headers.WWWAuthenticate = "Bearer";
@@ -107,11 +108,12 @@ public static class AuthEndpoints
                 return Results.Ok(new LoginResponse(token, "Bearer", (int)(expires - DateTimeOffset.UtcNow).TotalSeconds,
                     result.Token, (int)(result.Session.ExpiresAt - DateTimeOffset.UtcNow).TotalSeconds));
             })
+            .Produces<LoginResponse>().ProducesProblem(StatusCodes.Status401Unauthorized).ProducesProblem(StatusCodes.Status429TooManyRequests)
             .AllowAnonymous().WithTags("Auth");
 
         // Token introspection for consuming systems. The caller authenticates as a client (HTTP Basic: client id and secret)
         // and can only ask about tokens issued for its own application. Any problem with the caller is one uniform 401.
-        routes.MapPost("/v1/auth/introspect", async (IntrospectRequest r, Introspector introspector, ClientAuthService clients,
+        routes.MapPost("/v1/auth/introspect", async (Introspector introspector, ClientAuthService clients,
                 [FromKeyedServices("client")] LoginThrottle throttle, HttpContext http, AuditRecorder audit, IClientRepository clientRepo, CancellationToken ct) =>
             {
                 var address = (http.Connection.RemoteIpAddress ?? IPAddress.None).ToString();
@@ -132,9 +134,21 @@ public static class AuthEndpoints
                 }
 
                 throttle.RecordSuccess(address, id);
+                // The body is read only now, so an unauthenticated caller always gets the 401, never a 400 or 415.
+                IntrospectRequest? body;
+                try
+                {
+                    if (!http.Request.HasJsonContentType()) return Results.Problem("Send application/json.", statusCode: StatusCodes.Status415UnsupportedMediaType);
+                    body = await http.Request.ReadFromJsonAsync<IntrospectRequest>(ct);
+                }
+                catch (System.Text.Json.JsonException)
+                {
+                    return Results.Problem("The request body is not valid JSON.", statusCode: StatusCodes.Status400BadRequest);
+                }
                 http.Response.Headers.CacheControl = "no-store";
-                return Results.Json(await introspector.IntrospectAsync(r.Token, app, ct));
+                return Results.Json(await introspector.IntrospectAsync(body?.Token, app, ct));
             })
+            .Produces(StatusCodes.Status200OK, contentType: "application/json").ProducesProblem(StatusCodes.Status401Unauthorized).ProducesProblem(StatusCodes.Status429TooManyRequests)
             .AllowAnonymous().WithTags("Auth");
 
         // Ends the session of a refresh token. Always 204, so it does not reveal whether the token was valid.
@@ -144,6 +158,7 @@ public static class AuthEndpoints
                     await audit.RecordAsync(http, ended.UserId.ToString(), "auth.logout", ended.Id.ToString(), true);
                 return Results.NoContent();
             })
+            .Produces(StatusCodes.Status204NoContent)
             .AllowAnonymous().WithTags("Auth");
 
         // Client credentials for service identities. Same uniform 401 and throttling as user logins, in a separate counter set.

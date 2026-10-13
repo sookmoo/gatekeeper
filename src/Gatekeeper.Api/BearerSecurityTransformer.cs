@@ -31,7 +31,25 @@ public sealed class BearerSecurityTransformer : IOpenApiDocumentTransformer
             if (path == "/v1/auth/introspect" && item.Operations is not null)
             {
                 foreach (var op in item.Operations.Values)
+                {
                     op.Security = [new OpenApiSecurityRequirement { [new OpenApiSecuritySchemeReference("clientBasic", document)] = [] }];
+                    // The endpoint reads the body itself after authenticating, so describe it here.
+                    op.RequestBody = new OpenApiRequestBody
+                    {
+                        Required = true,
+                        Content = new Dictionary<string, OpenApiMediaType>
+                        {
+                            ["application/json"] = new OpenApiMediaType
+                            {
+                                Schema = new OpenApiSchema
+                                {
+                                    Type = JsonSchemaType.Object,
+                                    Properties = new Dictionary<string, IOpenApiSchema> { ["token"] = new OpenApiSchema { Type = JsonSchemaType.String } },
+                                },
+                            },
+                        },
+                    };
+                }
                 continue;
             }
             if (Anonymous.Contains(path) || item.Operations is null) continue;

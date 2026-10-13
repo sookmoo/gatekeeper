@@ -59,6 +59,8 @@ switch (provider)
 }
 
 var refreshDays = builder.Configuration.GetValue("Auth:RefreshTokenDays", 30);
+var graceSeconds = builder.Configuration.GetValue("Auth:RefreshReuseGraceSeconds", 10);
+if (graceSeconds is < 0 or > 60) return Fail("Auth:RefreshReuseGraceSeconds must be between 0 and 60.");
 if (refreshDays is < 1 or > 90) return Fail("Auth:RefreshTokenDays must be between 1 and 90.");
 builder.Services
     .AddSingleton<AppService>()
@@ -71,12 +73,13 @@ builder.Services
     .AddSingleton<AdminAccessCheck>()
     .AddMemoryCache()
     .AddSingleton<AuthService>()
-    .AddSingleton(new RefreshOptions { RefreshLifetime = TimeSpan.FromDays(refreshDays) })
+    .AddSingleton(new RefreshOptions { RefreshLifetime = TimeSpan.FromDays(refreshDays), ReuseGrace = TimeSpan.FromSeconds(graceSeconds) })
     .AddSingleton<SessionService>()
     .AddSingleton<Introspector>()
     .AddSingleton<ClientService>()
     .AddSingleton<ClientAuthService>()
     .AddKeyedSingleton<LoginThrottle>("client", (_, _) => new LoginThrottle())
+    .AddKeyedSingleton<LoginThrottle>("refresh", (_, _) => new LoginThrottle())
     .AddSingleton<AuditService>()
     .AddSingleton<AuditRecorder>()
     .AddSingleton<LoginThrottle>()
@@ -113,12 +116,13 @@ if (!migrateOnly && !bootstrap)
 
     // Retired keys stay published (and accepted) until the tokens they signed have expired; see README "Key rotation".
     var retired = new List<ECDsa>();
+    IReadOnlyDictionary<ECDsa, DateTimeOffset> retiredAt = new Dictionary<ECDsa, DateTimeOffset>();
     var retiredFile = builder.Configuration["Auth:RetiredKeysPemFile"];
     var retiredPem = builder.Configuration["Auth:RetiredKeysPem"];
     try
     {
         if (!string.IsNullOrWhiteSpace(retiredFile)) retiredPem = File.ReadAllText(retiredFile);
-        if (!string.IsNullOrWhiteSpace(retiredPem)) retired = TokenService.LoadRetiredKeys(retiredPem);
+        if (!string.IsNullOrWhiteSpace(retiredPem)) retired = TokenService.LoadRetiredKeys(retiredPem, out retiredAt);
     }
     catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or CryptographicException or ArgumentException)
     {
@@ -134,7 +138,7 @@ if (!migrateOnly && !bootstrap)
         {
             Issuer = builder.Configuration["Auth:Issuer"] ?? "gatekeeper",
             AccessTokenLifetime = TimeSpan.FromMinutes(minutes),
-        }, retired);
+        }, retired, retiredAt);
     }
     catch (ArgumentException ex)
     {
@@ -183,7 +187,8 @@ if (!migrateOnly && !bootstrap)
             RequireExpirationTime = true,
             RequireSignedTokens = true,
             ValidateIssuerSigningKey = true,
-            IssuerSigningKeys = tokens.VerificationKeys,
+            IssuerSigningKeyResolver = (_, _, _, _) => tokens.VerificationKeys, // evaluated per request: retired keys age out
+            LifetimeValidator = tokens.LifetimeValidator(TimeSpan.FromSeconds(30)),
             ValidAlgorithms = [SecurityAlgorithms.EcdsaSha256],
             ValidTypes = [TokenService.TokenType],
             ClockSkew = TimeSpan.FromSeconds(30),

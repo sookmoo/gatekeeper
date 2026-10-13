@@ -85,12 +85,12 @@ public static class Endpoints
             return Results.NoContent();
         });
         users.MapGet("/{id:guid}/sessions", (Guid id, SessionService s, IUserRepository u, int? limit, string? cursor, CancellationToken ct) =>
-            s.ListAsync(id, u, PageQuery.Parse(limit, cursor), ct));
+            s.ListAsync(id, u, PageQuery.Parse(limit, cursor), ct)).ProducesProblem(StatusCodes.Status404NotFound);
         users.MapDelete("/{id:guid}/sessions", async (Guid id, SessionService s, UserService u, CancellationToken ct) =>
         {
             await u.GetAsync(id, ct); // 404 for an unknown user
             return Results.Ok(new RevokedResponse(await s.RevokeAllAsync(id, ct)));
-        });
+        }).ProducesProblem(StatusCodes.Status404NotFound);
         users.MapGet("/{id:guid}/roles", (Guid id, UserService s, Guid? application, int? limit, string? cursor, CancellationToken ct) =>
             s.ListRolesAsync(id, application, PageQuery.Parse(limit, cursor), ct));
         users.MapPut("/{id:guid}/roles/{roleId:guid}", async (Guid id, Guid roleId, UserService s, CancellationToken ct) =>
@@ -108,7 +108,7 @@ public static class Endpoints
         {
             await s.RevokeAsync(id, ct);
             return Results.NoContent();
-        });
+        }).ProducesProblem(StatusCodes.Status404NotFound);
 
         var clients = v1.MapGroup("/clients").WithTags("Clients");
         clients.MapGet("/", (ClientService s, Guid? application, int? limit, string? cursor, CancellationToken ct) =>

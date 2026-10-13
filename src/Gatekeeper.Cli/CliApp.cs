@@ -118,9 +118,9 @@ public static class CliApp
             }
             tokens.Clear();
             x.Message("logged out");
-        });
+        }, authenticate: false); // never renews the access token first: that would rotate the very token being ended, and fail offline
 
-        Command Cmd(string name, string description, Action<Command> configure, Func<Ctx, Task> run)
+        Command Cmd(string name, string description, Action<Command> configure, Func<Ctx, Task> run, bool authenticate = true)
         {
             var c = new Command(name, description);
             configure(c);
@@ -136,7 +136,7 @@ public static class CliApp
                     if (uri.Scheme == Uri.UriSchemeHttp && !uri.IsLoopback
                         && Environment.GetEnvironmentVariable("GATEKEEPER_ALLOW_INSECURE") != "1")
                         throw new CliException(1, $"Refusing plain http to {uri.Host}: use https:// (or set GATEKEEPER_ALLOW_INSECURE=1 for a trusted network).");
-                    await run(new Ctx(parse, new ApiClient(httpFactory(uri), await TokenForAsync(uri)), parse.GetValue(json), stdout, stderr, uri.GetLeftPart(UriPartial.Authority)));
+                    await run(new Ctx(parse, new ApiClient(httpFactory(uri), authenticate ? await TokenForAsync(uri) : null), parse.GetValue(json), stdout, stderr, uri.GetLeftPart(UriPartial.Authority)));
                     return 0;
                 }
                 catch (CliException ex)

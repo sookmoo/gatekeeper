@@ -390,6 +390,7 @@ public sealed class InMemorySessionRepository(InMemoryStore s) : ISessionReposit
         {
             if (!s.Users.ContainsKey(session.UserId)) throw new NotFoundException($"User {session.UserId} not found.");
             if (!s.Apps.ContainsKey(session.AppId)) throw new NotFoundException($"Application {session.AppId} not found.");
+            if (s.Sessions.ContainsKey(session.Id)) throw new ConflictException($"Session {session.Id} already exists.");
             s.Sessions[session.Id] = session;
             s.SessionHashes[session.Id] = new SessionHashes(tokenHash, null);
         }

@@ -554,6 +554,8 @@ public sealed class ClientAuthService(IClientRepository clients, IAppRepository 
 public sealed record RefreshOptions
 {
     public TimeSpan RefreshLifetime { get; init; } = TimeSpan.FromDays(30);
+    /// <summary>A replaced refresh token presented again within this time of the rotation is a lost race between parallel requests, not reuse.</summary>
+    public TimeSpan ReuseGrace { get; init; } = TimeSpan.FromSeconds(10);
 }
 
 /// <param name="Failure">Null on success; otherwise "invalid", "reuse" (an already-rotated token was replayed: the session is revoked), "inactive" (the user or roles are gone: revoked) or "raced".</param>
@@ -571,7 +573,13 @@ public sealed class SessionService(ISessionRepository sessions, AuthService auth
     private readonly TimeSpan _lifetime = (options ?? new RefreshOptions()).RefreshLifetime;
     private long _lastPurgeTicks;
 
+    /// <summary>Active sessions per user; starting one more ends the least recently used.</summary>
+    public const int MaxActiveSessionsPerUser = 20;
+
     public TimeSpan Lifetime => _lifetime;
+
+    /// <summary>See <see cref="RefreshOptions.ReuseGrace"/>. Settable so tests can turn the grace off.</summary>
+    public TimeSpan ReuseGrace { get; set; } = (options ?? new RefreshOptions()).ReuseGrace;
 
     public async Task<(Session Session, string Token)> StartAsync(AuthResult login, CancellationToken ct = default)
     {
@@ -580,6 +588,7 @@ public sealed class SessionService(ISessionRepository sessions, AuthService auth
         var token = NewToken(id);
         var session = new Session(id, login.User.Id, login.App.Id, now, now, now + _lifetime, null);
         await sessions.AddAsync(session, HashToken(token), ct);
+        await TrimAsync(login.User.Id, id, now, ct);
         await PurgeSometimesAsync(now, ct);
         return (session, token);
     }
@@ -595,11 +604,16 @@ public sealed class SessionService(ISessionRepository sessions, AuthService auth
 
         if (Eq(hashes.Previous, presented))
         {
-            // A rotated-away token came back: either the legitimate client or a thief holds a stale copy. Cut the session.
+            // Two requests carrying the same token (a retry, two tabs) race: the loser holds the token that was just replaced.
+            // Within a short grace window that is a lost race, not theft; the loser simply fails and the winner's token stays valid.
+            if (now - session.LastUsedAt <= ReuseGrace) return new RefreshResult(null, session, null, "raced", id);
+            // A rotated-away token came back later: either the legitimate client or a thief holds a stale copy. Cut the session.
             await sessions.RevokeAsync(id, now, ct);
             return new RefreshResult(null, session, null, "reuse", id);
         }
-        if (!Eq(hashes.Current, presented) || !session.IsActive(now)) return new RefreshResult(null, session, null, "invalid", id);
+        // Without the current token nothing is proven, so nothing about the session is returned.
+        if (!Eq(hashes.Current, presented)) return new RefreshResult(null, null, null, "invalid");
+        if (!session.IsActive(now)) return new RefreshResult(null, session, null, "invalid", id);
 
         // Re-resolve who they are now: a deactivated user, a removed role or a deleted application ends the session.
         if (await auth.ResolveAsync(session.UserId, session.AppId, ct) is not { } resolved)
@@ -644,6 +658,15 @@ public sealed class SessionService(ISessionRepository sessions, AuthService auth
 
     public Task<int> RevokeAllAsync(Guid userId, CancellationToken ct = default) =>
         sessions.RevokeAllForUserAsync(userId, Clock.UtcNowMicros(), ct);
+
+    // A user cannot pile up sessions without bound: past the cap the least recently used ones are ended.
+    private async Task TrimAsync(Guid userId, Guid keep, DateTimeOffset now, CancellationToken ct)
+    {
+        var active = await sessions.ListActiveByUserAsync(userId, now, new Slice(0, PageQuery.MaxLimit), ct);
+        if (active.Count <= MaxActiveSessionsPerUser) return;
+        foreach (var old in active.Where(a => a.Id != keep).OrderBy(a => a.LastUsedAt).ThenBy(a => a.CreatedAt).Take(active.Count - MaxActiveSessionsPerUser))
+            await sessions.RevokeAsync(old.Id, now, ct);
+    }
 
     // Expired sessions are only kept briefly (so a replayed old token is still recognised), then removed.
     private async Task PurgeSometimesAsync(DateTimeOffset now, CancellationToken ct)

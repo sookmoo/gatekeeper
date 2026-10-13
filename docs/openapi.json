@@ -61,7 +61,34 @@
         },
         "responses": {
           "200": {
-            "description": "OK"
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too Many Requests",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
           }
         }
       }
@@ -75,7 +102,12 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/IntrospectRequest"
+                "type": "object",
+                "properties": {
+                  "token": {
+                    "type": "string"
+                  }
+                }
               }
             }
           },
@@ -84,11 +116,31 @@
         "responses": {
           "200": {
             "description": "OK"
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too Many Requests",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
           }
         },
         "security": [
           {
-            "clientBasic": []
+            "clientBasic": [ ]
           }
         ]
       }
@@ -109,8 +161,8 @@
           "required": true
         },
         "responses": {
-          "200": {
-            "description": "OK"
+          "204": {
+            "description": "No Content"
           }
         }
       }
@@ -177,7 +229,7 @@
         },
         "security": [
           {
-            "bearer": []
+            "bearer": [ ]
           }
         ]
       },
@@ -202,7 +254,7 @@
         },
         "security": [
           {
-            "bearer": []
+            "bearer": [ ]
           }
         ]
       }
@@ -237,7 +289,7 @@
         },
         "security": [
           {
-            "bearer": []
+            "bearer": [ ]
           }
         ]
       },
@@ -280,7 +332,7 @@
         },
         "security": [
           {
-            "bearer": []
+            "bearer": [ ]
           }
         ]
       },
@@ -323,7 +375,7 @@
         },
         "security": [
           {
-            "bearer": []
+            "bearer": [ ]
           }
         ]
       },
@@ -349,7 +401,7 @@
         },
         "security": [
           {
-            "bearer": []
+            "bearer": [ ]
           }
         ]
       }
@@ -403,7 +455,7 @@
         },
         "security": [
           {
-            "bearer": []
+            "bearer": [ ]
           }
         ]
       },
@@ -439,7 +491,7 @@
         },
         "security": [
           {
-            "bearer": []
+            "bearer": [ ]
           }
         ]
       }
@@ -474,7 +526,7 @@
         },
         "security": [
           {
-            "bearer": []
+            "bearer": [ ]
           }
         ]
       },
@@ -517,7 +569,7 @@
         },
         "security": [
           {
-            "bearer": []
+            "bearer": [ ]
           }
         ]
       },
@@ -560,7 +612,7 @@
         },
         "security": [
           {
-            "bearer": []
+            "bearer": [ ]
           }
         ]
       },
@@ -586,7 +638,7 @@
         },
         "security": [
           {
-            "bearer": []
+            "bearer": [ ]
           }
         ]
       }
@@ -645,7 +697,7 @@
         },
         "security": [
           {
-            "bearer": []
+            "bearer": [ ]
           }
         ]
       },
@@ -670,7 +722,7 @@
         },
         "security": [
           {
-            "bearer": []
+            "bearer": [ ]
           }
         ]
       }
@@ -705,7 +757,7 @@
         },
         "security": [
           {
-            "bearer": []
+            "bearer": [ ]
           }
         ]
       },
@@ -748,7 +800,7 @@
         },
         "security": [
           {
-            "bearer": []
+            "bearer": [ ]
           }
         ]
       },
@@ -791,7 +843,7 @@
         },
         "security": [
           {
-            "bearer": []
+            "bearer": [ ]
           }
         ]
       },
@@ -817,7 +869,7 @@
         },
         "security": [
           {
-            "bearer": []
+            "bearer": [ ]
           }
         ]
       }
@@ -855,7 +907,7 @@
         },
         "security": [
           {
-            "bearer": []
+            "bearer": [ ]
           }
         ]
       }
@@ -905,11 +957,21 @@
                 }
               }
             }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
           }
         },
         "security": [
           {
-            "bearer": []
+            "bearer": [ ]
           }
         ]
       },
@@ -929,13 +991,20 @@
           }
         ],
         "responses": {
-          "200": {
-            "description": "OK"
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
           }
         },
         "security": [
           {
-            "bearer": []
+            "bearer": [ ]
           }
         ]
       }
@@ -997,7 +1066,7 @@
         },
         "security": [
           {
-            "bearer": []
+            "bearer": [ ]
           }
         ]
       }
@@ -1034,7 +1103,7 @@
         },
         "security": [
           {
-            "bearer": []
+            "bearer": [ ]
           }
         ]
       },
@@ -1069,7 +1138,7 @@
         },
         "security": [
           {
-            "bearer": []
+            "bearer": [ ]
           }
         ]
       }
@@ -1091,13 +1160,20 @@
           }
         ],
         "responses": {
-          "200": {
-            "description": "OK"
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
           }
         },
         "security": [
           {
-            "bearer": []
+            "bearer": [ ]
           }
         ]
       }
@@ -1150,7 +1226,7 @@
         },
         "security": [
           {
-            "bearer": []
+            "bearer": [ ]
           }
         ]
       },
@@ -1175,7 +1251,7 @@
         },
         "security": [
           {
-            "bearer": []
+            "bearer": [ ]
           }
         ]
       }
@@ -1210,7 +1286,7 @@
         },
         "security": [
           {
-            "bearer": []
+            "bearer": [ ]
           }
         ]
       },
@@ -1253,7 +1329,7 @@
         },
         "security": [
           {
-            "bearer": []
+            "bearer": [ ]
           }
         ]
       },
@@ -1296,7 +1372,7 @@
         },
         "security": [
           {
-            "bearer": []
+            "bearer": [ ]
           }
         ]
       },
@@ -1322,7 +1398,7 @@
         },
         "security": [
           {
-            "bearer": []
+            "bearer": [ ]
           }
         ]
       }
@@ -1350,7 +1426,7 @@
         },
         "security": [
           {
-            "bearer": []
+            "bearer": [ ]
           }
         ]
       }
@@ -1404,7 +1480,7 @@
         },
         "security": [
           {
-            "bearer": []
+            "bearer": [ ]
           }
         ]
       }
@@ -1441,7 +1517,7 @@
         },
         "security": [
           {
-            "bearer": []
+            "bearer": [ ]
           }
         ]
       },
@@ -1476,7 +1552,7 @@
         },
         "security": [
           {
-            "bearer": []
+            "bearer": [ ]
           }
         ]
       }
@@ -1535,7 +1611,7 @@
         },
         "security": [
           {
-            "bearer": []
+            "bearer": [ ]
           }
         ]
       }
@@ -1708,20 +1784,6 @@
           }
         }
       },
-      "IntrospectRequest": {
-        "required": [
-          "token"
-        ],
-        "type": "object",
-        "properties": {
-          "token": {
-            "type": [
-              "null",
-              "string"
-            ]
-          }
-        }
-      },
       "LoginRequest": {
         "required": [
           "username",
@@ -1753,6 +1815,45 @@
               "null",
               "boolean"
             ]
+          }
+        }
+      },
+      "LoginResponse": {
+        "required": [
+          "accessToken",
+          "tokenType",
+          "expiresIn"
+        ],
+        "type": "object",
+        "properties": {
+          "accessToken": {
+            "type": "string"
+          },
+          "tokenType": {
+            "type": "string"
+          },
+          "expiresIn": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int32"
+          },
+          "refreshToken": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "refreshExpiresIn": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "null",
+              "integer",
+              "string"
+            ],
+            "format": "int32"
           }
         }
       },
@@ -1889,6 +1990,44 @@
         "type": "object",
         "properties": {
           "password": {
+            "type": [
+              "null",
+              "string"
+            ]
+          }
+        }
+      },
+      "ProblemDetails": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "title": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "status": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "null",
+              "integer",
+              "string"
+            ],
+            "format": "int32"
+          },
+          "detail": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "instance": {
             "type": [
               "null",
               "string"
