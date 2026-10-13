@@ -1,0 +1,7 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <RootNamespace>Gatekeeper.Web</RootNamespace>
+  </PropertyGroup>
+
+</Project>

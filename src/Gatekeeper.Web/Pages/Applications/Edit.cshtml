@@ -1,0 +1,17 @@
+@page "{id:guid}"
+@model Gatekeeper.Web.Pages.Applications.EditModel
+@{
+    ViewData["Title"] = "Rename application";
+}
+<h1>Rename application</h1>
+@if (Model.Error is not null)
+{
+    <p class="error" role="alert">@Model.Error</p>
+}
+<form method="post">
+    <label>Name
+        <input name="Name" value="@Model.Name" maxlength="100" required autofocus>
+    </label>
+    <button type="submit">Save</button>
+    <a href="/Applications">Cancel</a>
+</form>

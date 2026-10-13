@@ -1,7 +1,7 @@
 # Gatekeeper
 
 Central user and role management for locally developed services. Other systems call it over REST.
-Status: slice 4a (applications, roles, users CRUD, role assignment; passwords, login and JWTs; in-memory or PostgreSQL store; containers; CLI). See `status.md`.
+Status: slice 5a (REST API with sessions, introspection and key rotation; CLI; first screens of the administration UI). See `status.md`.
 
 ## Run
 
@@ -147,6 +147,24 @@ and the error is logged. Not recorded: reads, throttled attempts, and requests r
 `PATCH` on `/v1/applications/{id}`, `/v1/roles/{id}`, `/v1/users/{id}` and `/v1/clients/{id}` changes only the fields you send
 (an absent or null field is left alone; send `""` to clear a description or display name). The CLI `update` commands use it.
 Concurrent PATCHes run one at a time in a process (so one cannot silently undo another's change, for example a disable).
+
+## Administration UI
+
+`src/Gatekeeper.Web` is a small server-rendered web UI (Razor Pages, no JavaScript) in its own container. It signs administrators in
+through the API and works as their session: the browser only holds an `HttpOnly`, `SameSite=Strict` cookie, while the access and refresh
+tokens stay on the server. Every call to the API carries the signed-in administrator's own token, so the audit trail names the person.
+Today it covers sign in/out and applications (list, create, rename, delete); roles, users, clients and audit follow.
+
+```bash
+dotnet run --project src/Gatekeeper.Api                                   # terminal 1: http://localhost:5080
+dotnet run --project src/Gatekeeper.Web                                   # terminal 2: http://localhost:5090
+```
+
+On Quadlet: `systemctl --user start gatekeeper-web.service`, then open http://127.0.0.1:5090 and sign in as an administrator.
+Settings: `Gatekeeper__ApiUrl` (default `http://127.0.0.1:5080`; plain http to a non-loopback host needs `Gatekeeper__AllowPlainApi=true`),
+`Web__IdleMinutes` (30), `Web__AbsoluteHours` (8), `Web__TrustedProxies` (addresses of a TLS proxy in front). Like the API, the UI
+refuses to listen on a non-loopback address unless `Gatekeeper__AllowNonLoopback=true`; it speaks plain HTTP, so publish it on
+loopback or put TLS in front. Sessions live in memory: restarting the UI signs everyone out.
 
 ## CLI
 

@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Installs the Gatekeeper Quadlet units for the current user (rootless Podman) and creates the podman secrets with
-# random passwords. Re-running keeps existing secrets. Usage: deploy/install.sh [image]   (default: units' image)
+# random passwords. Re-running keeps existing secrets. Usage: deploy/install.sh [api-image [web-image]]   (default: the units' images)
 set -euo pipefail
 cd "$(dirname "$0")"
 IMAGE="${1:-}"
+WEB_IMAGE="${2:-}"
 
 conf="$HOME/.config/gatekeeper/postgres-init"
 units="$HOME/.config/containers/systemd"
@@ -12,6 +13,7 @@ install -m 0755 postgres-init/10-roles.sh "$conf/10-roles.sh"
 install -m 0644 ../scripts/db-roles.sql "$conf/db-roles.sql"
 install -m 0644 quadlet/* "$units/"
 if [ -n "$IMAGE" ]; then sed -i "s#^Image=ghcr.io/sookmoo/gatekeeper:.*#Image=$IMAGE#" "$units"/gatekeeper-{api,migrate}.container; fi
+if [ -n "$WEB_IMAGE" ]; then sed -i "s#^Image=ghcr.io/sookmoo/gatekeeper-web:.*#Image=$WEB_IMAGE#" "$units"/gatekeeper-web.container; fi
 
 secret() { # name value
   podman secret exists "$1" || printf '%s' "$2" | podman secret create "$1" - >/dev/null
@@ -37,3 +39,4 @@ secret gatekeeper-retired-keys "# no retired keys"
 systemctl --user daemon-reload
 echo "Installed. Start with: systemctl --user start gatekeeper-api.service"
 echo "Then create the first administrator once: deploy/bootstrap-admin.sh <username> <email>"
+echo "The administration UI: systemctl --user start gatekeeper-web.service, then open http://127.0.0.1:5090"

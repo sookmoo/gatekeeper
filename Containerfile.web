@@ -1,0 +1,17 @@
+# The administration UI. Same approach as Containerfile: build once, promote the same image, pinned base images.
+FROM mcr.microsoft.com/dotnet/sdk:10.0@sha256:0eeb52c76e35a5431ca707ad2bc75e38006a05393045d8532ae44c15d9474523 AS build
+WORKDIR /src
+COPY Directory.Build.props Gatekeeper.slnx ./
+COPY src/ src/
+RUN dotnet publish src/Gatekeeper.Web/Gatekeeper.Web.csproj -c Release -o /out --no-self-contained
+
+# Chiseled runtime: no shell, no package manager, non-root user.
+FROM mcr.microsoft.com/dotnet/aspnet:10.0-noble-chiseled@sha256:8c20ba8cb64c498f2fb98f2aed374b7f144aa5b603270989e7c141545a04d380
+WORKDIR /app
+COPY --from=build /out .
+USER $APP_UID
+# Plain HTTP inside the container; the Quadlet unit sets Gatekeeper__AllowNonLoopback=true and publishes the port on 127.0.0.1 only.
+ENV Urls=http://+:8080 \
+    DOTNET_EnableDiagnostics=0
+EXPOSE 8080
+ENTRYPOINT ["dotnet", "Gatekeeper.Web.dll"]

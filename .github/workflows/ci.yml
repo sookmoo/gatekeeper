@@ -55,6 +55,7 @@ jobs:
       packages: write
     env:
       IMAGE: ghcr.io/sookmoo/gatekeeper
+      WEB_IMAGE: ghcr.io/sookmoo/gatekeeper-web
     steps:
       - uses: actions/checkout@v4
       - name: Build image
@@ -62,6 +63,12 @@ jobs:
       - name: Smoke test (refuses to start without the non-loopback opt-in)
         run: |
           out=$(docker run --rm "$IMAGE:${GITHUB_SHA}" 2>&1 || true)
+          echo "$out" | grep -q "Refusing to listen on non-loopback"
+      - name: Build web image
+        run: docker build -f Containerfile.web -t "$WEB_IMAGE:${GITHUB_SHA}" .
+      - name: Smoke test web (refuses to start without the non-loopback opt-in)
+        run: |
+          out=$(docker run --rm "$WEB_IMAGE:${GITHUB_SHA}" 2>&1 || true)
           echo "$out" | grep -q "Refusing to listen on non-loopback"
       # Build once, promote the same image: only main publishes, tagged with the commit SHA.
       - name: Push to GHCR
@@ -71,3 +78,6 @@ jobs:
           docker tag "$IMAGE:${GITHUB_SHA}" "$IMAGE:latest"
           docker push "$IMAGE:${GITHUB_SHA}"
           docker push "$IMAGE:latest"
+          docker tag "$WEB_IMAGE:${GITHUB_SHA}" "$WEB_IMAGE:latest"
+          docker push "$WEB_IMAGE:${GITHUB_SHA}"
+          docker push "$WEB_IMAGE:latest"

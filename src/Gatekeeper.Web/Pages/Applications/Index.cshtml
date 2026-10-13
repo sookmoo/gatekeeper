@@ -1,0 +1,45 @@
+@page
+@model Gatekeeper.Web.Pages.Applications.IndexModel
+@{
+    ViewData["Title"] = "Applications";
+}
+<h1>Applications</h1>
+@if (Model.Done is not null)
+{
+    <p class="notice">@Model.Done</p>
+}
+<p><a class="button" href="/Applications/Create">New application</a></p>
+@if (Model.Items.Count == 0)
+{
+    <p>No applications.</p>
+}
+else
+{
+    <table>
+        <thead><tr><th>Name</th><th>Id</th><th></th></tr></thead>
+        <tbody>
+        @foreach (var a in Model.Items)
+        {
+            <tr>
+                <td>@a.Name</td>
+                <td><code>@a.Id</code></td>
+                <td>
+                    @if (string.Equals(a.Name, GatekeeperApi.AdminApplication, StringComparison.OrdinalIgnoreCase))
+                    {
+                        <span class="hint">reserved</span>
+                    }
+                    else
+                    {
+                        <a href="/Applications/Edit/@a.Id">Rename</a>
+                        <a href="/Applications/Delete/@a.Id">Delete</a>
+                    }
+                </td>
+            </tr>
+        }
+        </tbody>
+    </table>
+}
+@if (Model.NextCursor is not null)
+{
+    <p><a href="/Applications?cursor=@Uri.EscapeDataString(Model.NextCursor)">Next page</a></p>
+}
