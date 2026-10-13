@@ -161,10 +161,23 @@ dotnet run --project src/Gatekeeper.Web                                   # term
 ```
 
 On Quadlet: `systemctl --user start gatekeeper-web.service`, then open http://127.0.0.1:5090 and sign in as an administrator.
-Settings: `Gatekeeper__ApiUrl` (default `http://127.0.0.1:5080`; plain http to a non-loopback host needs `Gatekeeper__AllowPlainApi=true`),
-`Web__IdleMinutes` (30), `Web__AbsoluteHours` (8), `Web__TrustedProxies` (addresses of a TLS proxy in front). Like the API, the UI
-refuses to listen on a non-loopback address unless `Gatekeeper__AllowNonLoopback=true`; it speaks plain HTTP, so publish it on
-loopback or put TLS in front. Sessions live in memory: restarting the UI signs everyone out.
+Settings: `Gatekeeper__ApiUrl` (default `http://127.0.0.1:5080`, a path prefix is kept; plain http to a non-loopback host needs
+`Gatekeeper__AllowPlainApi=true`), `Web__IdleMinutes` (30), `Web__AbsoluteHours` (8). Like the API, the UI refuses to listen on a
+non-loopback address unless `Gatekeeper__AllowNonLoopback=true`; it speaks plain HTTP, so publish it on loopback or put TLS in front.
+Sessions live in memory: restarting the UI signs everyone out. Bad settings stop startup with a message.
+
+Behind a TLS proxy:
+- Set `Web__TrustedProxies` to the address the **container sees** the proxy connection from (with rootless Podman usually the network
+  gateway or `127.0.0.1`, not the proxy's own address), so that scheme and client address come from `X-Forwarded-*`.
+- Set `Web__SecureCookies=true`: the cookies become `Secure` and `__Host-` prefixed (bound to this exact host). The UI then insists on
+  HTTPS requests and answers 500 over plain HTTP rather than issue weak cookies. Add HSTS at the proxy.
+- Set `AllowedHosts` to the public host name (the default accepts only localhost).
+- Cookies are not isolated by port: on `localhost` another service on the same host name receives them. A dedicated host name over TLS
+  with `Web__SecureCookies` fixes that.
+
+Sign-in is throttled per (address, username) and per address, in the UI and again in the API. From the API's point of view every
+browser comes from the UI's address, so guessing at one account through the UI makes that account wait (15 minutes) in the UI; the
+same account can still sign in with `gk` from another address. Restarting the API clears its counters.
 
 ## CLI
 

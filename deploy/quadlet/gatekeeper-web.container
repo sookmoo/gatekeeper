@@ -1,6 +1,6 @@
 [Unit]
 Description=Gatekeeper administration UI
-Requires=gatekeeper-api.service
+Wants=gatekeeper-api.service
 After=gatekeeper-api.service
 
 [Container]

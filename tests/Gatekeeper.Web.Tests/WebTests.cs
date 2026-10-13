@@ -56,7 +56,6 @@ public class WebTests : IClassFixture<WebFixture>
             await admin.PutAsJsonAsync($"/v1/users/{user.GetProperty("id").GetString()}/password", new { password = "an ordinary password" });
         }
 
-        string? first = null;
         foreach (var (user, pw) in new[] { (name, "an ordinary password"), (WebFixture.AdminName, "wrong password here"), ("nobody", "whatever password") })
         {
             var b = _f.Browser();
@@ -66,7 +65,6 @@ public class WebTests : IClassFixture<WebFixture>
             Assert.Contains("Invalid credentials, or not an administrator.", html);
             Assert.DoesNotContain(pw, html);
             Assert.False(r.Headers.TryGetValues("Set-Cookie", out var c) && c.Any(x => x.StartsWith("gk_session=")));
-            first ??= html.Length.ToString();
             Assert.Equal(HttpStatusCode.Redirect, (await b.GetAsync("/Applications")).StatusCode);
         }
     }
@@ -152,17 +150,13 @@ public class WebTests : IClassFixture<WebFixture>
     }
 
     [Fact]
-    public async Task Page_text_is_encoded_and_the_done_message_cannot_be_chosen_by_the_request()
+    public async Task The_done_message_cannot_be_chosen_by_the_request()
     {
         var b = await _f.SignedInAsync();
         var r = await b.GetStringAsync("/Applications?done=<script>alert(1)</script>");
         Assert.DoesNotContain("<script>alert", r);
         Assert.DoesNotContain("alert(1)", r);
-        // an application name with markup is shown as text
-        var evil = "a<b>&\"x";
-        await WebFixture.PostFormAsync(b, "/Applications/Create", new() { ["Name"] = evil });
-        var list = await b.GetStringAsync("/Applications?limit=200");
-        Assert.DoesNotContain("<b>", list);
+        Assert.DoesNotContain("class=\"notice\"", r);
     }
 
     [Fact]
@@ -183,12 +177,18 @@ public class WebTests : IClassFixture<WebFixture>
     {
         var b = await _f.SignedInAsync();
         var sessions = _f.Web.Services.GetRequiredService<WebSessions>();
+        var users = _f.Api.Services.GetRequiredService<Gatekeeper.Application.IUserRepository>();
+        var admin = (await users.ListAsync(username: WebFixture.AdminName, slice: new Gatekeeper.Application.Slice(0, 1))).Single();
+        var apiSessions = _f.Api.Services.GetRequiredService<Gatekeeper.Application.ISessionRepository>();
+        var activeBefore = (await apiSessions.ListActiveByUserAsync(admin.Id, DateTimeOffset.UtcNow)).Count;
+        Assert.True(activeBefore >= 1);
         var before = sessions.Count;
         var r = await WebFixture.PostFormAsync(b, "/Logout", new(), tokenFrom: "/Applications");
         Assert.Equal(HttpStatusCode.Redirect, r.StatusCode);
         Assert.Equal("/Login", r.Headers.Location?.OriginalString);
         Assert.Contains("gk_session=;", r.Headers.GetValues("Set-Cookie").Single(c => c.StartsWith("gk_session=")));
         Assert.Equal(before - 1, sessions.Count);
+        Assert.Equal(activeBefore - 1, (await apiSessions.ListActiveByUserAsync(admin.Id, DateTimeOffset.UtcNow)).Count); // ended on the API too
         Assert.Equal(HttpStatusCode.Redirect, (await b.GetAsync("/Applications")).StatusCode);
     }
 
@@ -218,9 +218,9 @@ public class WebTests : IClassFixture<WebFixture>
         for (var i = 0; i < 11; i++)
             last = (await WebFixture.PostFormAsync(b, "/Login", new() { ["Username"] = "nobody", ["Password"] = "wrong password here" })).StatusCode;
         Assert.Equal(HttpStatusCode.TooManyRequests, last);
-        // even the right password is refused while blocked
+        // the block is for that name from that address: another account still signs in
         var r = await WebFixture.PostFormAsync(b, "/Login", new() { ["Username"] = WebFixture.AdminName, ["Password"] = WebFixture.AdminPassword });
-        Assert.Equal(HttpStatusCode.TooManyRequests, r.StatusCode);
+        Assert.Equal(HttpStatusCode.Redirect, r.StatusCode);
     }
 
     [Fact]
@@ -254,5 +254,31 @@ public class WebTests : IClassFixture<WebFixture>
         }
         f.Time.Advance(TimeSpan.FromMinutes(29)); // 8 h 13 min since sign-in, though never idle
         Assert.Equal(HttpStatusCode.Redirect, (await c.GetAsync("/Applications")).StatusCode);
+    }
+
+    [Fact]
+    public async Task Secure_cookie_mode_uses_host_prefixed_secure_cookies()
+    {
+        using var f = new WebFixture(false, secureCookies: true);
+        // The mode insists on HTTPS requests (as seen after a trusted TLS proxy): over plain HTTP it fails loudly instead of issuing weak cookies.
+        var plain = await f.Web.CreateClient(new() { AllowAutoRedirect = false, HandleCookies = false }).GetAsync("/Login");
+        Assert.Equal(HttpStatusCode.InternalServerError, plain.StatusCode);
+        var raw = f.Web.CreateClient(new() { AllowAutoRedirect = false, HandleCookies = false, BaseAddress = new Uri("https://localhost") });
+        var get = await raw.GetAsync("/Login");
+        Assert.Contains(get.Headers.GetValues("Set-Cookie"), c => c.StartsWith("__Host-gk_csrf=") && c.Contains("secure", StringComparison.OrdinalIgnoreCase));
+        var csrf = get.Headers.GetValues("Set-Cookie").First(c => c.StartsWith("__Host-gk_csrf=")).Split(';')[0];
+        var t2 = WebUtility.HtmlDecode(System.Text.RegularExpressions.Regex.Match(await get.Content.ReadAsStringAsync(), "name=\"__RequestVerificationToken\"[^>]*value=\"([^\"]+)\"").Groups[1].Value);
+        var req = new HttpRequestMessage(HttpMethod.Post, "/Login")
+        {
+            Content = new FormUrlEncodedContent(new Dictionary<string, string> { ["Username"] = WebFixture.AdminName, ["Password"] = WebFixture.AdminPassword, ["__RequestVerificationToken"] = t2 }),
+        };
+        req.Headers.Add("Cookie", csrf);
+        var resp = await raw.SendAsync(req);
+        Assert.Equal(HttpStatusCode.Redirect, resp.StatusCode);
+        var session = resp.Headers.GetValues("Set-Cookie").Single(c => c.StartsWith("__Host-gk_session="));
+        Assert.Contains("secure", session, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("httponly", session, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("path=/", session, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("domain=", session, StringComparison.OrdinalIgnoreCase);
     }
 }

@@ -61,21 +61,45 @@ public class SessionsTests
     }
 
     [Fact]
-    public void The_failure_throttle_blocks_per_address_expires_and_stays_bounded()
+    public void The_throttle_blocks_a_pair_then_an_address_and_a_success_clears_only_its_own_pair()
     {
         var time = new FakeTimeProvider();
-        var t = new FailureThrottle(time, maxFailures: 3, window: TimeSpan.FromMinutes(10), maxEntries: 5);
-        for (var i = 0; i < 3; i++) t.RecordFailure("1.1.1.1");
-        Assert.True(t.IsBlocked("1.1.1.1", out var wait));
+        var t = new FailureThrottle(time, maxPerPair: 3, maxPerAddress: 8, window: TimeSpan.FromMinutes(10), maxEntries: 50);
+        for (var i = 0; i < 3; i++) t.RecordFailure("1.1.1.1", "Alice");
+        Assert.True(t.IsBlocked("1.1.1.1", "alice", out var wait)); // case-insensitive
         Assert.InRange(wait, TimeSpan.FromMinutes(9), TimeSpan.FromMinutes(10));
-        Assert.False(t.IsBlocked("2.2.2.2", out _));
-        t.RecordSuccess("1.1.1.1");
-        Assert.False(t.IsBlocked("1.1.1.1", out _));
-        for (var i = 0; i < 3; i++) t.RecordFailure("1.1.1.1");
+        Assert.False(t.IsBlocked("1.1.1.1", "bob", out _));          // another account from the same address is fine
+        Assert.False(t.IsBlocked("2.2.2.2", "alice", out _));        // the owner elsewhere is never locked out
+
+        t.RecordSuccess("1.1.1.1", "alice");
+        Assert.False(t.IsBlocked("1.1.1.1", "alice", out _));
+
+        for (var i = 0; i < 8; i++) t.RecordFailure("3.3.3.3", $"user{i}"); // spread over names: the address limit applies
+        Assert.True(t.IsBlocked("3.3.3.3", "someone-new", out _));
+        t.RecordSuccess("3.3.3.3", "user1");
+        Assert.True(t.IsBlocked("3.3.3.3", "someone-new", out _)); // a success never resets the address counter
         time.Advance(TimeSpan.FromMinutes(11));
-        Assert.False(t.IsBlocked("1.1.1.1", out _));
-        for (var i = 0; i < 50; i++) t.RecordFailure($"10.0.0.{i}"); // a flood of addresses cannot grow it past the bound
-        for (var i = 0; i < 3; i++) t.RecordFailure("9.9.9.9");
-        Assert.True(t.IsBlocked("9.9.9.9", out _));
+        Assert.False(t.IsBlocked("3.3.3.3", "someone-new", out _));
+    }
+
+    [Fact]
+    public void The_throttle_buckets_ipv6_by_64_ignores_odd_names_and_stays_bounded()
+    {
+        var time = new FakeTimeProvider();
+        var t = new FailureThrottle(time, maxPerPair: 100, maxPerAddress: 3, maxEntries: 10);
+        t.RecordFailure("2001:db8:1:2:aaaa::1", "a");
+        t.RecordFailure("2001:db8:1:2:bbbb::2", "b");
+        t.RecordFailure("2001:db8:1:2:cccc::3", "c");
+        Assert.True(t.IsBlocked("2001:db8:1:2:dddd::4", "d", out _));
+        Assert.False(t.IsBlocked("2001:db8:1:3::1", "d", out _));
+        for (var i = 0; i < 3; i++) t.RecordFailure("::ffff:198.51.100.7", "x");
+        Assert.True(t.IsBlocked("198.51.100.7", "y", out _)); // mapped IPv4 is the same as IPv4
+
+        var huge = new string('x', 5_000_000);
+        for (var i = 0; i < 3; i++) t.RecordFailure("9.9.9.9", huge); // counts against the address only
+        Assert.True(t.IsBlocked("9.9.9.9", huge, out _));
+        for (var i = 0; i < 200; i++) { time.Advance(TimeSpan.FromMilliseconds(1)); t.RecordFailure($"10.0.{i / 250}.{i % 250}", $"u{i}"); } // a flood cannot grow it past the bound
+        for (var i = 0; i < 3; i++) t.RecordFailure("203.0.113.9", "someone");
+        Assert.True(t.IsBlocked("203.0.113.9", "someone", out _));
     }
 }

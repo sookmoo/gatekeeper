@@ -16,7 +16,7 @@ public class LoginModel(GatekeeperApi api, FailureThrottle throttle, WebSessions
     public async Task<IActionResult> OnPostAsync(CancellationToken ct)
     {
         var address = (HttpContext.Connection.RemoteIpAddress ?? IPAddress.None).ToString();
-        if (throttle.IsBlocked(address, out var wait))
+        if (throttle.IsBlocked(address, Username, out var wait))
         {
             Response.Headers.RetryAfter = ((int)Math.Ceiling(wait.TotalSeconds)).ToString();
             Response.StatusCode = StatusCodes.Status429TooManyRequests;
@@ -32,15 +32,15 @@ public class LoginModel(GatekeeperApi api, FailureThrottle throttle, WebSessions
         try
         {
             var session = await api.LoginAsync(Username.Trim(), Password, ct);
-            throttle.RecordSuccess(address);
+            throttle.RecordSuccess(address, Username);
             // A fresh id at every sign-in: whatever cookie the browser came with is never reused.
-            sessions.Remove(Request.Cookies[SessionAuthHandler.CookieName]);
+            if (sessions.Remove(SessionCookie.Read(HttpContext)) is { } replaced) await api.LogoutAsync(replaced, ct);
             SessionCookie.Set(HttpContext, session);
             return RedirectToPage("/Applications/Index");
         }
         catch (ApiException ex) when (ex.Status == HttpStatusCode.Unauthorized)
         {
-            throttle.RecordFailure(address);
+            throttle.RecordFailure(address, Username);
             // One message for a wrong password, an unknown user and a user without administrator access.
             Error = "Invalid credentials, or not an administrator.";
             Password = null;

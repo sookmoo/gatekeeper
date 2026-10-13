@@ -22,16 +22,21 @@ public sealed class WebFixture : IDisposable
     {
     }
 
-    internal WebFixture(bool fakeTime, Action<IServiceCollection>? configureWeb = null)
+    internal WebFixture(bool fakeTime, Action<IServiceCollection>? configureWeb = null, string? apiUrl = null, bool secureCookies = false)
     {
         Api = new WebApplicationFactory<api::Program>();
         api::Gatekeeper.Api.Bootstrap.CreateAdminAsync(Api.Services, AdminName, "web-admin@example.com", AdminPassword).GetAwaiter().GetResult();
-        Web = new WebApplicationFactory<Program>().WithWebHostBuilder(b => b.ConfigureServices(s =>
+        Web = new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
+        {
+            if (apiUrl is not null) b.UseSetting("Gatekeeper:ApiUrl", apiUrl);
+            if (secureCookies) b.UseSetting("Web:SecureCookies", "true");
+            b.ConfigureServices(s =>
         {
             s.AddHttpClient<GatekeeperApi>().ConfigurePrimaryHttpMessageHandler(() => Api.Server.CreateHandler());
             if (fakeTime) s.AddSingleton<TimeProvider>(Time);
             configureWeb?.Invoke(s);
-        }));
+        });
+        });
     }
 
     /// <summary>A browser: keeps cookies, never follows redirects (so they can be asserted).</summary>

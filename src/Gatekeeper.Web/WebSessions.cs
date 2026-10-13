@@ -70,10 +70,9 @@ public sealed class WebSessions(TimeProvider time, WebOptions? options = null)
         return s;
     }
 
-    public void Remove(string? id)
-    {
-        if (!string.IsNullOrEmpty(id) && id.Length <= 64) _sessions.TryRemove(Key(id), out _);
-    }
+    /// <summary>Drops a session and returns it (null if there was none).</summary>
+    public WebSession? Remove(string? id) =>
+        !string.IsNullOrEmpty(id) && id.Length <= 64 && _sessions.TryRemove(Key(id), out var s) ? s : null;
 
     private bool Expired(WebSession s, DateTimeOffset now) =>
         now - s.LastSeen > _options.IdleTimeout || now - s.CreatedAt > _options.AbsoluteTimeout || s.Tokens.RefreshExpiresAt <= now;

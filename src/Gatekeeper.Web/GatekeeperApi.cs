@@ -32,7 +32,7 @@ public sealed class GatekeeperApi(HttpClient http, WebSessions sessions, TimePro
 
     public async Task<WebSession> LoginAsync(string username, string password, CancellationToken ct)
     {
-        using var request = new HttpRequestMessage(HttpMethod.Post, "/v1/auth/login")
+        using var request = new HttpRequestMessage(HttpMethod.Post, "v1/auth/login")
         {
             Content = JsonContent.Create(new { username, password, application = AdminApplication, refresh = true }),
         };
@@ -44,7 +44,7 @@ public sealed class GatekeeperApi(HttpClient http, WebSessions sessions, TimePro
     {
         try
         {
-            using var request = new HttpRequestMessage(HttpMethod.Post, "/v1/auth/logout")
+            using var request = new HttpRequestMessage(HttpMethod.Post, "v1/auth/logout")
             {
                 Content = JsonContent.Create(new { refreshToken = session.Tokens.Refresh }),
             };
@@ -57,19 +57,19 @@ public sealed class GatekeeperApi(HttpClient http, WebSessions sessions, TimePro
     }
 
     public Task<Page<AppDto>> ListAppsAsync(WebSession s, string? cursor, int limit, CancellationToken ct) =>
-        SendAsync<Page<AppDto>>(s, HttpMethod.Get, $"/v1/applications?limit={limit}" + (cursor is null ? "" : $"&cursor={Uri.EscapeDataString(cursor)}"), null, ct);
+        SendAsync<Page<AppDto>>(s, HttpMethod.Get, $"v1/applications?limit={limit}" + (cursor is null ? "" : $"&cursor={Uri.EscapeDataString(cursor)}"), null, ct);
 
     public Task<AppDto> GetAppAsync(WebSession s, Guid id, CancellationToken ct) =>
-        SendAsync<AppDto>(s, HttpMethod.Get, $"/v1/applications/{id}", null, ct);
+        SendAsync<AppDto>(s, HttpMethod.Get, $"v1/applications/{id}", null, ct);
 
     public Task<AppDto> CreateAppAsync(WebSession s, string name, CancellationToken ct) =>
-        SendAsync<AppDto>(s, HttpMethod.Post, "/v1/applications", new { name }, ct);
+        SendAsync<AppDto>(s, HttpMethod.Post, "v1/applications", new { name }, ct);
 
     public Task<AppDto> RenameAppAsync(WebSession s, Guid id, string name, CancellationToken ct) =>
-        SendAsync<AppDto>(s, HttpMethod.Patch, $"/v1/applications/{id}", new { name }, ct);
+        SendAsync<AppDto>(s, HttpMethod.Patch, $"v1/applications/{id}", new { name }, ct);
 
     public async Task DeleteAppAsync(WebSession s, Guid id, CancellationToken ct) =>
-        await SendAsync<object>(s, HttpMethod.Delete, $"/v1/applications/{id}", null, ct);
+        await SendAsync<object>(s, HttpMethod.Delete, $"v1/applications/{id}", null, ct);
 
     private async Task<T> SendAsync<T>(WebSession s, HttpMethod method, string path, object? body, CancellationToken ct)
     {
@@ -98,7 +98,7 @@ public sealed class GatekeeperApi(HttpClient http, WebSessions sessions, TimePro
         {
             var current = s.Tokens;
             if (current.AccessExpiresAt - RenewBefore > time.GetUtcNow()) return; // a parallel request already renewed it
-            using var request = new HttpRequestMessage(HttpMethod.Post, "/v1/auth/refresh")
+            using var request = new HttpRequestMessage(HttpMethod.Post, "v1/auth/refresh")
             {
                 Content = JsonContent.Create(new { refreshToken = current.Refresh }),
             };
@@ -158,6 +158,8 @@ public sealed class GatekeeperApi(HttpClient http, WebSessions sessions, TimePro
                 HttpStatusCode.Unauthorized => "Not signed in.",
                 HttpStatusCode.Forbidden => "You are not allowed to do that.",
                 HttpStatusCode.TooManyRequests => "Too many attempts. Try again later.",
+                HttpStatusCode.ServiceUnavailable => "The Gatekeeper API is unavailable.",
+                _ when (int)response.StatusCode >= 500 => "The Gatekeeper API reported an error.",
                 _ when (int)response.StatusCode is >= 300 and < 400 => "The API answered with a redirect, which is not followed.",
                 _ => Describe(text) ?? response.ReasonPhrase ?? response.StatusCode.ToString(),
             });
@@ -171,9 +173,9 @@ public sealed class GatekeeperApi(HttpClient http, WebSessions sessions, TimePro
         {
             var root = JsonDocument.Parse(text).RootElement;
             if (root.TryGetProperty("errors", out var errors) && errors.ValueKind == JsonValueKind.Object)
-                return string.Join("; ", errors.EnumerateObject().Select(e => $"{e.Name} {string.Join(' ', e.Value.EnumerateArray().Select(v => v.GetString()))}"));
-            if (root.TryGetProperty("detail", out var detail) && detail.GetString() is { Length: > 0 } d) return d;
-            if (root.TryGetProperty("title", out var title)) return title.GetString();
+                return string.Join("; ", errors.EnumerateObject().Select(e => $"{e.Name} {(e.Value.ValueKind == JsonValueKind.Array ? string.Join(' ', e.Value.EnumerateArray().Select(v => v.ToString())) : e.Value.ToString())}"));
+            if (root.TryGetProperty("detail", out var detail) && detail.ValueKind == JsonValueKind.String && detail.GetString() is { Length: > 0 } d) return d;
+            if (root.TryGetProperty("title", out var title) && title.ValueKind == JsonValueKind.String) return title.GetString();
         }
         catch (JsonException)
         {

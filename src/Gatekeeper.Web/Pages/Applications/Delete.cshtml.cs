@@ -35,8 +35,15 @@ public class DeleteModel(GatekeeperApi api) : PageModel
         }
         catch (ApiException ex) when ((int)ex.Status is >= 400 and < 500 && ex.Status != HttpStatusCode.Unauthorized)
         {
-            Name = (await api.GetAppAsync(HttpContext.Current(), id, ct)).Name;
             Error = ex.Message;
+            try
+            {
+                Name = (await api.GetAppAsync(HttpContext.Current(), id, ct)).Name;
+            }
+            catch (ApiException again) when (again.Status == HttpStatusCode.NotFound)
+            {
+                return NotFound(); // it vanished in the meantime
+            }
             return Page();
         }
     }
