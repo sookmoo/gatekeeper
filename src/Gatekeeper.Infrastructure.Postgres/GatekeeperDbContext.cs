@@ -7,6 +7,22 @@ namespace Gatekeeper.Infrastructure.Postgres;
 /// <summary>Persistence-only join row; the domain models assignments as a repository operation.</summary>
 internal sealed record UserRoleRow(Guid UserId, Guid RoleId);
 
+/// <summary>Session columns including the token hashes (the domain record deliberately has no hashes).</summary>
+internal sealed class SessionRow
+{
+    public Guid Id { get; set; }
+    public Guid UserId { get; set; }
+    public Guid AppId { get; set; }
+    public DateTimeOffset CreatedAt { get; set; }
+    public DateTimeOffset LastUsedAt { get; set; }
+    public DateTimeOffset ExpiresAt { get; set; }
+    public DateTimeOffset? RevokedAt { get; set; }
+    public string TokenHash { get; set; } = "";
+    public string? PreviousTokenHash { get; set; }
+
+    public Session ToDomain() => new(Id, UserId, AppId, CreatedAt, LastUsedAt, ExpiresAt, RevokedAt);
+}
+
 internal sealed record ClientSecretRow(Guid ClientId, string Hash, DateTimeOffset UpdatedAt);
 
 internal sealed record ClientRoleRow(Guid ClientId, Guid RoleId);
@@ -24,6 +40,7 @@ public sealed class GatekeeperDbContext(DbContextOptions<GatekeeperDbContext> op
     public DbSet<Client> Clients => Set<Client>();
     internal DbSet<ClientSecretRow> ClientSecrets => Set<ClientSecretRow>();
     internal DbSet<ClientRoleRow> ClientRoles => Set<ClientRoleRow>();
+    internal DbSet<SessionRow> Sessions => Set<SessionRow>();
     public DbSet<AuditEvent> AuditEvents => Set<AuditEvent>();
 
     protected override void OnModelCreating(ModelBuilder b)
@@ -109,6 +126,19 @@ public sealed class GatekeeperDbContext(DbContextOptions<GatekeeperDbContext> op
                 .OnDelete(DeleteBehavior.Cascade).HasConstraintName(Names.ClientRoleRoleFk);
         });
 
+        b.Entity<SessionRow>(e =>
+        {
+            e.ToTable("sessions");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.TokenHash).IsRequired();
+            e.HasOne<User>().WithMany().HasForeignKey(x => x.UserId)
+                .OnDelete(DeleteBehavior.Cascade).HasConstraintName(Names.SessionUserFk);
+            e.HasOne<App>().WithMany().HasForeignKey(x => x.AppId)
+                .OnDelete(DeleteBehavior.Cascade).HasConstraintName(Names.SessionAppFk);
+            e.HasIndex(x => new { x.UserId, x.CreatedAt }).HasDatabaseName("ix_sessions_user_id_created_at");
+            e.HasIndex(x => x.ExpiresAt).HasDatabaseName("ix_sessions_expires_at");
+        });
+
         b.Entity<AuditEvent>(e =>
         {
             e.ToTable("audit_events");
@@ -138,6 +168,8 @@ internal static class Names
     public const string AssignmentUserFk = "fk_user_roles_users";
     public const string CredentialUserFk = "fk_user_credentials_users";
     public const string AssignmentRoleFk = "fk_user_roles_roles";
+    public const string SessionUserFk = "fk_sessions_users";
+    public const string SessionAppFk = "fk_sessions_apps";
     public const string ClientNameIndex = "ix_clients_name";
     public const string ClientAppFk = "fk_clients_apps";
     public const string ClientSecretFk = "fk_client_secrets_clients";

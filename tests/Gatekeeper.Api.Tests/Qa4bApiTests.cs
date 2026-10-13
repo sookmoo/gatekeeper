@@ -713,7 +713,7 @@ public class Qa4bApiTests
             foreach (var op in p.Value.EnumerateObject())
             {
                 var secured = op.Value.TryGetProperty("security", out var sec) && sec.GetArrayLength() > 0;
-                var shouldBe = p.Name.StartsWith("/v1/") && !p.Name.StartsWith("/v1/auth/");
+                var shouldBe = p.Name.StartsWith("/v1/") && (!p.Name.StartsWith("/v1/auth/") || p.Name == "/v1/auth/introspect"); // introspect: client Basic auth
                 Assert.True(secured == shouldBe, $"{op.Name.ToUpper()} {p.Name}: secured={secured}");
             }
         var paths = doc.GetProperty("paths");

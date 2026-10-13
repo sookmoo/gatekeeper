@@ -16,6 +16,7 @@ public static class PostgresStoreExtensions
         .AddSingleton<IUserRepository, PostgresUserRepository>()
         .AddSingleton<ICredentialRepository, PostgresCredentialRepository>()
         .AddSingleton<IClientRepository, PostgresClientRepository>()
+        .AddSingleton<ISessionRepository, PostgresSessionRepository>()
         .AddSingleton<IAuditRepository, PostgresAuditRepository>()
         .AddSingleton<IReadinessProbe, PostgresReadinessProbe>();
 

@@ -243,6 +243,59 @@ namespace Gatekeeper.Infrastructure.Postgres.Migrations
                     b.ToTable("client_secrets", (string)null);
                 });
 
+            modelBuilder.Entity("Gatekeeper.Infrastructure.Postgres.SessionRow", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("AppId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("app_id");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<DateTimeOffset>("ExpiresAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("expires_at");
+
+                    b.Property<DateTimeOffset>("LastUsedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("last_used_at");
+
+                    b.Property<string>("PreviousTokenHash")
+                        .HasColumnType("text")
+                        .HasColumnName("previous_token_hash");
+
+                    b.Property<DateTimeOffset?>("RevokedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("revoked_at");
+
+                    b.Property<string>("TokenHash")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("token_hash");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("AppId");
+
+                    b.HasIndex("ExpiresAt")
+                        .HasDatabaseName("ix_sessions_expires_at");
+
+                    b.HasIndex("UserId", "CreatedAt")
+                        .HasDatabaseName("ix_sessions_user_id_created_at");
+
+                    b.ToTable("sessions", (string)null);
+                });
+
             modelBuilder.Entity("Gatekeeper.Infrastructure.Postgres.UserCredentialRow", b =>
                 {
                     b.Property<Guid>("UserId")
@@ -325,6 +378,23 @@ namespace Gatekeeper.Infrastructure.Postgres.Migrations
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired()
                         .HasConstraintName("fk_client_secrets_clients");
+                });
+
+            modelBuilder.Entity("Gatekeeper.Infrastructure.Postgres.SessionRow", b =>
+                {
+                    b.HasOne("Gatekeeper.Domain.App", null)
+                        .WithMany()
+                        .HasForeignKey("AppId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_sessions_apps");
+
+                    b.HasOne("Gatekeeper.Domain.User", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_sessions_users");
                 });
 
             modelBuilder.Entity("Gatekeeper.Infrastructure.Postgres.UserCredentialRow", b =>

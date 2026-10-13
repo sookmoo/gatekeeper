@@ -83,6 +83,35 @@ public interface IClientRepository
     Task<IReadOnlyList<Role>> ListRolesAsync(Guid clientId, Slice? slice = null, CancellationToken ct = default);
 }
 
+/// <summary>The hashes of a session's current refresh token and of the one it replaced (kept to detect reuse).</summary>
+public sealed record SessionHashes(string Current, string? Previous);
+
+/// <summary>
+/// Refresh-token sessions. Rows cascade with the user and the application. Revoking keeps the row (so a replayed old token
+/// can still be recognised) until it is purged after it expired.
+/// </summary>
+public interface ISessionRepository
+{
+    /// <summary>Throws NotFoundException if the user or application does not exist.</summary>
+    Task AddAsync(Session session, string tokenHash, CancellationToken ct = default);
+    Task<Session?> GetAsync(Guid id, CancellationToken ct = default);
+    Task<SessionHashes?> GetHashesAsync(Guid id, CancellationToken ct = default);
+    /// <summary>Newest first; only sessions that are neither revoked nor expired at <paramref name="now"/>.</summary>
+    Task<IReadOnlyList<Session>> ListActiveByUserAsync(Guid userId, DateTimeOffset now, Slice? slice = null, CancellationToken ct = default);
+
+    /// <summary>
+    /// Compare-and-set: if the session is active and its current hash equals <paramref name="expectedHash"/>, make
+    /// <paramref name="newHash"/> current (the old one becomes the previous) and record the use. Returns whether it did.
+    /// </summary>
+    Task<bool> RotateAsync(Guid id, string expectedHash, string newHash, DateTimeOffset now, CancellationToken ct = default);
+    /// <summary>Marks the session revoked (idempotent). False if there is no such session.</summary>
+    Task<bool> RevokeAsync(Guid id, DateTimeOffset now, CancellationToken ct = default);
+    /// <summary>Revokes every active session of the user. Returns how many.</summary>
+    Task<int> RevokeAllForUserAsync(Guid userId, DateTimeOffset now, CancellationToken ct = default);
+    /// <summary>Deletes sessions that expired before <paramref name="expiredBefore"/>. Returns how many.</summary>
+    Task<int> PurgeAsync(DateTimeOffset expiredBefore, CancellationToken ct = default);
+}
+
 /// <summary>Append-only: there is deliberately no update or delete. Lists are newest first.</summary>
 public interface IAuditRepository
 {

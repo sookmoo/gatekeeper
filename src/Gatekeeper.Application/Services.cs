@@ -276,7 +276,7 @@ public sealed class AdminGuard(IAppRepository apps, IRoleRepository roles, IUser
     }
 }
 
-public sealed class CredentialService(IUserRepository users, ICredentialRepository credentials, IPasswordHasher hasher, HashLimiter? limiter = null)
+public sealed class CredentialService(IUserRepository users, ICredentialRepository credentials, IPasswordHasher hasher, HashLimiter? limiter = null, ISessionRepository? sessions = null)
 {
     private readonly HashLimiter _limiter = limiter ?? new HashLimiter();
 
@@ -287,6 +287,8 @@ public sealed class CredentialService(IUserRepository users, ICredentialReposito
         // Argon2 is CPU and memory heavy: bounded parallelism, off the request thread.
         var hash = await _limiter.RunAsync(() => hasher.Hash(password!), ct);
         await credentials.SetAsync(userId, hash, Clock.UtcNowMicros(), ct);
+        // A new password ends every existing session: whoever held the old password or a stolen refresh token is out.
+        if (sessions is not null) await sessions.RevokeAllForUserAsync(userId, Clock.UtcNowMicros(), ct);
     }
 }
 
@@ -302,6 +304,29 @@ public sealed class AuthService(
 {
     private readonly HashLimiter _limiter = limiter ?? new HashLimiter();
     private readonly Lazy<string> _dummyHash = new(() => hasher.Hash(Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(24))));
+
+    // All of the user's roles in this application: a silent cut-off would make consumers deny legitimate access.
+    private async Task<List<string>> RoleNamesAsync(Guid userId, Guid appId, CancellationToken ct)
+    {
+        var names = new List<string>();
+        const int pageSize = PageQuery.MaxLimit;
+        while (true)
+        {
+            var batch = await users.ListRolesAsync(userId, appId, new Slice(names.Count, pageSize), ct);
+            names.AddRange(batch.Select(r => r.Name));
+            if (batch.Count < pageSize) break;
+        }
+        return names;
+    }
+
+    /// <summary>Who a user is right now in an application (for refresh and introspection): null if inactive, gone, or without roles there.</summary>
+    public async Task<AuthResult?> ResolveAsync(Guid userId, Guid appId, CancellationToken ct = default)
+    {
+        if (await users.GetAsync(userId, ct) is not { IsActive: true } user) return null;
+        if (await apps.GetAsync(appId, ct) is not { } app) return null;
+        var names = await RoleNamesAsync(user.Id, app.Id, ct);
+        return names.Count == 0 ? null : new AuthResult(user, app, names);
+    }
 
     public async Task<AuthResult?> LoginAsync(string? username, string? password, string? application, CancellationToken ct = default)
     {
@@ -326,15 +351,7 @@ public sealed class AuthService(
 
         if (!wellFormed || user is null || stored is null || app is null || !verified || !user.IsActive) return null;
 
-        // All of the user's roles in this application: a silent cut-off would make consumers deny legitimate access.
-        var names = new List<string>();
-        const int pageSize = PageQuery.MaxLimit;
-        while (true)
-        {
-            var batch = await users.ListRolesAsync(user.Id, app.Id, new Slice(names.Count, pageSize), ct);
-            names.AddRange(batch.Select(r => r.Name));
-            if (batch.Count < pageSize) break;
-        }
+        var names = await RoleNamesAsync(user.Id, app.Id, ct);
         if (names.Count == 0) return null;
 
         if (hasher.NeedsRehash(stored))
@@ -483,7 +500,8 @@ public sealed class ClientAuthService(IClientRepository clients, IAppRepository 
 {
     private static readonly string DummyHash = ClientService.HashSecret("dummy secret for unknown clients");
 
-    public async Task<ClientAuthResult?> LoginAsync(string? clientId, string? secret, CancellationToken ct = default)
+    /// <summary>Checks the client's secret and that it is active. Does not require roles (a verifier-only client has none).</summary>
+    public async Task<(Client Client, App App)?> AuthenticateAsync(string? clientId, string? secret, CancellationToken ct = default)
     {
         var wellFormed = Validation.LooksLikeUsername(clientId) && Validation.IsCleanText(clientId!)
                          && secret is { Length: >= 8 and <= 200 } && Validation.IsCleanText(secret);
@@ -499,15 +517,202 @@ public sealed class ClientAuthService(IClientRepository clients, IAppRepository 
 
         var app = await apps.GetAsync(client.AppId, ct);
         if (app is null || string.Equals(app.Name, Reserved.AdminApp, StringComparison.OrdinalIgnoreCase)) return null;
+        return (client, app);
+    }
 
+    public async Task<ClientAuthResult?> LoginAsync(string? clientId, string? secret, CancellationToken ct = default)
+    {
+        if (await AuthenticateAsync(clientId, secret, ct) is not var (client, app)) return null;
+        var names = await RoleNamesAsync(client.Id, ct);
+        return names.Count == 0 ? null : new ClientAuthResult(client, app, names);
+    }
+
+    /// <summary>Who a client is right now (for introspection): null if it is gone, disabled, in the admin app or has no roles.</summary>
+    public async Task<ClientAuthResult?> ResolveAsync(Guid clientId, CancellationToken ct = default)
+    {
+        if (await clients.GetAsync(clientId, ct) is not { IsActive: true } client) return null;
+        var app = await apps.GetAsync(client.AppId, ct);
+        if (app is null || string.Equals(app.Name, Reserved.AdminApp, StringComparison.OrdinalIgnoreCase)) return null;
+        var names = await RoleNamesAsync(client.Id, ct);
+        return names.Count == 0 ? null : new ClientAuthResult(client, app, names);
+    }
+
+    private async Task<List<string>> RoleNamesAsync(Guid clientId, CancellationToken ct)
+    {
         var names = new List<string>();
         const int pageSize = PageQuery.MaxLimit;
         while (true)
         {
-            var batch = await clients.ListRolesAsync(client.Id, new Slice(names.Count, pageSize), ct);
+            var batch = await clients.ListRolesAsync(clientId, new Slice(names.Count, pageSize), ct);
             names.AddRange(batch.Select(r => r.Name));
             if (batch.Count < pageSize) break;
         }
-        return names.Count == 0 ? null : new ClientAuthResult(client, app, names);
+        return names;
     }
+}
+
+public sealed record RefreshOptions
+{
+    public TimeSpan RefreshLifetime { get; init; } = TimeSpan.FromDays(30);
+    /// <summary>A replaced refresh token presented again within this time of the rotation is a lost race between parallel requests, not reuse.</summary>
+    public TimeSpan ReuseGrace { get; init; } = TimeSpan.FromSeconds(10);
+}
+
+/// <param name="Failure">Null on success; otherwise "invalid", "reuse" (an already-rotated token was replayed: the session is revoked), "inactive" (the user or roles are gone: revoked) or "raced".</param>
+public sealed record RefreshResult(AuthResult? Auth, Session? Session, string? Token, string? Failure, Guid? SessionId = null);
+
+/// <summary>
+/// Refresh-token sessions with rotation. A refresh token is <c>gkr_</c> + the session id + a 256-bit secret; only a SHA-256 of it
+/// is stored (the secret has full entropy, so nothing needs slowing down). Every refresh replaces the token; presenting a token
+/// that was already replaced means it leaked or was replayed, so the whole session is revoked.
+/// </summary>
+public sealed class SessionService(ISessionRepository sessions, AuthService auth, RefreshOptions? options = null)
+{
+    public const string Prefix = "gkr_";
+    private const int MaxTokenLength = 160;
+    private readonly TimeSpan _lifetime = (options ?? new RefreshOptions()).RefreshLifetime;
+    private long _lastPurgeTicks;
+
+    /// <summary>Active sessions per user; starting one more ends the least recently used.</summary>
+    public const int MaxActiveSessionsPerUser = 20;
+
+    public TimeSpan Lifetime => _lifetime;
+
+    /// <summary>See <see cref="RefreshOptions.ReuseGrace"/>. Settable so tests can turn the grace off.</summary>
+    public TimeSpan ReuseGrace { get; set; } = (options ?? new RefreshOptions()).ReuseGrace;
+
+    public async Task<(Session Session, string Token)> StartAsync(AuthResult login, CancellationToken ct = default)
+    {
+        var now = Clock.UtcNowMicros();
+        var id = Guid.NewGuid();
+        var token = NewToken(id);
+        var session = new Session(id, login.User.Id, login.App.Id, now, now, now + _lifetime, null);
+        await sessions.AddAsync(session, HashToken(token), ct);
+        await TrimAsync(login.User.Id, id, now, ct);
+        await PurgeSometimesAsync(now, ct);
+        return (session, token);
+    }
+
+    public async Task<RefreshResult> RefreshAsync(string? token, CancellationToken ct = default)
+    {
+        if (!TryParse(token, out var id)) return new RefreshResult(null, null, null, "invalid");
+        var presented = HashToken(token!);
+        var now = Clock.UtcNowMicros();
+        var session = await sessions.GetAsync(id, ct);
+        var hashes = session is null ? null : await sessions.GetHashesAsync(id, ct);
+        if (session is null || hashes is null) return new RefreshResult(null, null, null, "invalid");
+
+        if (Eq(hashes.Previous, presented))
+        {
+            // Two requests carrying the same token (a retry, two tabs) race: the loser holds the token that was just replaced.
+            // Within a short grace window that is a lost race, not theft; the loser simply fails and the winner's token stays valid.
+            if (now - session.LastUsedAt <= ReuseGrace) return new RefreshResult(null, session, null, "raced", id);
+            // A rotated-away token came back later: either the legitimate client or a thief holds a stale copy. Cut the session.
+            await sessions.RevokeAsync(id, now, ct);
+            return new RefreshResult(null, session, null, "reuse", id);
+        }
+        // Without the current token nothing is proven, so nothing about the session is returned.
+        if (!Eq(hashes.Current, presented)) return new RefreshResult(null, null, null, "invalid");
+        if (!session.IsActive(now)) return new RefreshResult(null, session, null, "invalid", id);
+
+        // Re-resolve who they are now: a deactivated user, a removed role or a deleted application ends the session.
+        if (await auth.ResolveAsync(session.UserId, session.AppId, ct) is not { } resolved)
+        {
+            await sessions.RevokeAsync(id, now, ct);
+            return new RefreshResult(null, session, null, "inactive", id);
+        }
+
+        var next = NewToken(id);
+        if (!await sessions.RotateAsync(id, presented, HashToken(next), now, ct))
+            return new RefreshResult(null, session, null, "raced", id);
+        return new RefreshResult(resolved, session with { LastUsedAt = now }, next, null, id);
+    }
+
+    /// <summary>Ends the session the token belongs to and returns it (null if the token proves nothing). The token must be the session's current or previous one (proof of possession).</summary>
+    public async Task<Session?> LogoutAsync(string? token, CancellationToken ct = default)
+    {
+        if (!TryParse(token, out var id)) return null;
+        var hashes = await sessions.GetHashesAsync(id, ct);
+        var presented = HashToken(token!);
+        if (hashes is null || !(Eq(hashes.Current, presented) || Eq(hashes.Previous, presented))) return null;
+        var session = await sessions.GetAsync(id, ct);
+        await sessions.RevokeAsync(id, Clock.UtcNowMicros(), ct);
+        return session;
+    }
+
+    /// <summary>True while the session exists, is not revoked and has not expired (used for the sid claim of access tokens).</summary>
+    public async Task<bool> IsActiveAsync(Guid sessionId, CancellationToken ct = default) =>
+        await sessions.GetAsync(sessionId, ct) is { } s && s.IsActive(Clock.UtcNowMicros());
+
+    public async Task<Page<Session>> ListAsync(Guid userId, IUserRepository users, PageQuery? page = null, CancellationToken ct = default)
+    {
+        page ??= PageQuery.Default;
+        _ = await users.GetAsync(userId, ct) ?? throw new NotFoundException($"User {userId} not found.");
+        return page.Build(await sessions.ListActiveByUserAsync(userId, Clock.UtcNowMicros(), page.Slice, ct));
+    }
+
+    public async Task RevokeAsync(Guid sessionId, CancellationToken ct = default)
+    {
+        if (!await sessions.RevokeAsync(sessionId, Clock.UtcNowMicros(), ct)) throw new NotFoundException($"Session {sessionId} not found.");
+    }
+
+    public Task<int> RevokeAllAsync(Guid userId, CancellationToken ct = default) =>
+        sessions.RevokeAllForUserAsync(userId, Clock.UtcNowMicros(), ct);
+
+    // A user cannot pile up sessions without bound: past the cap the least recently used ones are ended.
+    private async Task TrimAsync(Guid userId, Guid keep, DateTimeOffset now, CancellationToken ct)
+    {
+        var active = await sessions.ListActiveByUserAsync(userId, now, new Slice(0, PageQuery.MaxLimit), ct);
+        if (active.Count <= MaxActiveSessionsPerUser) return;
+        foreach (var old in active.Where(a => a.Id != keep).OrderBy(a => a.LastUsedAt).ThenBy(a => a.CreatedAt).Take(active.Count - MaxActiveSessionsPerUser))
+            await sessions.RevokeAsync(old.Id, now, ct);
+    }
+
+    // Expired sessions are only kept briefly (so a replayed old token is still recognised), then removed.
+    private async Task PurgeSometimesAsync(DateTimeOffset now, CancellationToken ct)
+    {
+        var last = Interlocked.Read(ref _lastPurgeTicks);
+        if (now.UtcTicks - last < TimeSpan.TicksPerMinute || Interlocked.CompareExchange(ref _lastPurgeTicks, now.UtcTicks, last) != last) return;
+        try
+        {
+            await sessions.PurgeAsync(now - TimeSpan.FromDays(7), ct);
+        }
+        catch (GatekeeperException)
+        {
+            // housekeeping only; the next login tries again
+        }
+    }
+
+    internal static string NewToken(Guid sessionId) =>
+        Prefix + B64(sessionId.ToByteArray()) + "." + B64(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32));
+
+    internal static string HashToken(string token) =>
+        Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(token))).ToLowerInvariant();
+
+    internal static bool TryParse(string? token, out Guid sessionId)
+    {
+        sessionId = default;
+        if (token is null || token.Length is < 20 or > MaxTokenLength || !token.StartsWith(Prefix, StringComparison.Ordinal)) return false;
+        var dot = token.IndexOf('.');
+        if (dot < 0 || token.IndexOf('.', dot + 1) >= 0) return false;
+        try
+        {
+            var text = token[Prefix.Length..dot].Replace('-', '+').Replace('_', '/');
+            if (text.Length != 22) return false; // 16 bytes, unpadded
+            var raw = Convert.FromBase64String(text + "==");
+            if (raw.Length != 16) return false;
+            sessionId = new Guid(raw);
+            return true;
+        }
+        catch (FormatException)
+        {
+            return false;
+        }
+    }
+
+    private static bool Eq(string? stored, string presented) =>
+        stored is not null && System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(
+            System.Text.Encoding.ASCII.GetBytes(stored), System.Text.Encoding.ASCII.GetBytes(presented));
+
+    private static string B64(byte[] bytes) => Convert.ToBase64String(bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_');
 }

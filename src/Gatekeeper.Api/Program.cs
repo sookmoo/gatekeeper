@@ -58,6 +58,10 @@ switch (provider)
         return Fail($"Unknown Store:Provider '{provider}'. Use InMemory or Postgres.");
 }
 
+var refreshDays = builder.Configuration.GetValue("Auth:RefreshTokenDays", 30);
+var graceSeconds = builder.Configuration.GetValue("Auth:RefreshReuseGraceSeconds", 10);
+if (graceSeconds is < 0 or > 60) return Fail("Auth:RefreshReuseGraceSeconds must be between 0 and 60.");
+if (refreshDays is < 1 or > 90) return Fail("Auth:RefreshTokenDays must be between 1 and 90.");
 builder.Services
     .AddSingleton<AppService>()
     .AddSingleton<RoleService>()
@@ -69,9 +73,13 @@ builder.Services
     .AddSingleton<AdminAccessCheck>()
     .AddMemoryCache()
     .AddSingleton<AuthService>()
+    .AddSingleton(new RefreshOptions { RefreshLifetime = TimeSpan.FromDays(refreshDays), ReuseGrace = TimeSpan.FromSeconds(graceSeconds) })
+    .AddSingleton<SessionService>()
+    .AddSingleton<Introspector>()
     .AddSingleton<ClientService>()
     .AddSingleton<ClientAuthService>()
     .AddKeyedSingleton<LoginThrottle>("client", (_, _) => new LoginThrottle())
+    .AddKeyedSingleton<LoginThrottle>("refresh", (_, _) => new LoginThrottle())
     .AddSingleton<AuditService>()
     .AddSingleton<AuditRecorder>()
     .AddSingleton<LoginThrottle>()
@@ -106,6 +114,21 @@ if (!migrateOnly && !bootstrap)
         return Fail($"Invalid signing key configuration: {ex.Message}");
     }
 
+    // Retired keys stay published (and accepted) until the tokens they signed have expired; see README "Key rotation".
+    var retired = new List<ECDsa>();
+    IReadOnlyDictionary<ECDsa, DateTimeOffset> retiredAt = new Dictionary<ECDsa, DateTimeOffset>();
+    var retiredFile = builder.Configuration["Auth:RetiredKeysPemFile"];
+    var retiredPem = builder.Configuration["Auth:RetiredKeysPem"];
+    try
+    {
+        if (!string.IsNullOrWhiteSpace(retiredFile)) retiredPem = File.ReadAllText(retiredFile);
+        if (!string.IsNullOrWhiteSpace(retiredPem)) retired = TokenService.LoadRetiredKeys(retiredPem, out retiredAt);
+    }
+    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or CryptographicException or ArgumentException)
+    {
+        return Fail($"Invalid retired keys configuration: {ex.Message}");
+    }
+
     var minutes = builder.Configuration.GetValue("Auth:AccessTokenMinutes", 15);
     if (minutes is < 1 or > 60) return Fail("Auth:AccessTokenMinutes must be between 1 and 60.");
     TokenService tokenService;
@@ -115,7 +138,7 @@ if (!migrateOnly && !bootstrap)
         {
             Issuer = builder.Configuration["Auth:Issuer"] ?? "gatekeeper",
             AccessTokenLifetime = TimeSpan.FromMinutes(minutes),
-        });
+        }, retired, retiredAt);
     }
     catch (ArgumentException ex)
     {
@@ -143,8 +166,14 @@ if (!migrateOnly && !bootstrap)
                 // The readiness probe must keep answering when the store is down or unmigrated, so it relies on the
                 // signed admin token alone; it only reveals whether the service is ready.
                 if (ctx.Request.Path.StartsWithSegments("/health/ready")) return;
+                Guid? sessionId = null;
+                if (ctx.Principal?.FindFirst(TokenService.SessionClaim)?.Value is { } sidText)
+                {
+                    if (!Guid.TryParse(sidText, out var sid)) { ctx.Fail("Invalid session."); return; }
+                    sessionId = sid;
+                }
                 if (!Guid.TryParse(ctx.Principal?.FindFirst("sub")?.Value, out var userId)
-                    || !await access.IsAdminAsync(userId, ctx.HttpContext.RequestAborted))
+                    || !await access.IsAdminAsync(userId, sessionId, ctx.HttpContext.RequestAborted))
                     ctx.Fail("The user is no longer an active administrator.");
             },
         };
@@ -158,7 +187,8 @@ if (!migrateOnly && !bootstrap)
             RequireExpirationTime = true,
             RequireSignedTokens = true,
             ValidateIssuerSigningKey = true,
-            IssuerSigningKey = tokens.PublicKey,
+            IssuerSigningKeyResolver = (_, _, _, _) => tokens.VerificationKeys, // evaluated per request: retired keys age out
+            LifetimeValidator = tokens.LifetimeValidator(TimeSpan.FromSeconds(30)),
             ValidAlgorithms = [SecurityAlgorithms.EcdsaSha256],
             ValidTypes = [TokenService.TokenType],
             ClockSkew = TimeSpan.FromSeconds(30),

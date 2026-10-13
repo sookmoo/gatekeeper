@@ -4,14 +4,39 @@ using Gatekeeper.Domain;
 
 namespace Gatekeeper.Api;
 
-public sealed record LoginRequest(string? Username, string? Password, string? Application);
+/// <param name="Refresh">Ask for a refresh token (starts a revocable session).</param>
+public sealed record LoginRequest(string? Username, string? Password, string? Application, bool? Refresh = null);
 
 public sealed record ClientTokenRequest(string? ClientId, string? ClientSecret);
 
-public sealed record LoginResponse(string AccessToken, string TokenType, int ExpiresIn);
+public sealed record IntrospectRequest(string? Token);
+
+public sealed record RefreshRequest(string? RefreshToken);
+
+public sealed record LoginResponse(
+    string AccessToken, string TokenType, int ExpiresIn,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] string? RefreshToken = null,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] int? RefreshExpiresIn = null);
 
 public static class AuthEndpoints
 {
+    // "Authorization: Basic base64(clientId:secret)"; anything else yields nulls, which fail authentication like a wrong secret.
+    internal static (string? Id, string? Secret) BasicCredentials(Microsoft.Extensions.Primitives.StringValues header)
+    {
+        if (header.Count != 1 || header[0] is not { Length: < 1024 } value || !value.StartsWith("Basic ", StringComparison.OrdinalIgnoreCase))
+            return (null, null);
+        try
+        {
+            var text = System.Text.Encoding.UTF8.GetString(Convert.FromBase64String(value["Basic ".Length..].Trim()));
+            var colon = text.IndexOf(':');
+            return colon < 0 ? (null, null) : (text[..colon], text[(colon + 1)..]);
+        }
+        catch (FormatException)
+        {
+            return (null, null);
+        }
+    }
+
     private const int SlowDownAfterFailures = 20;
 
     public static void MapAuth(this IEndpointRouteBuilder routes)
@@ -20,7 +45,7 @@ public static class AuthEndpoints
             .AllowAnonymous().WithTags("Auth");
 
         routes.MapPost("/v1/auth/login", async (LoginRequest r, AuthService auth, TokenService tokens, LoginThrottle throttle,
-                HttpContext http, AuditRecorder audit, IUserRepository users, CancellationToken ct) =>
+                HttpContext http, AuditRecorder audit, IUserRepository users, SessionService sessions, CancellationToken ct) =>
             {
                 var address = (http.Connection.RemoteIpAddress ?? IPAddress.None).ToString();
                 if (throttle.IsBlocked(address, r.Username, out var retryAfter))
@@ -46,10 +71,94 @@ public static class AuthEndpoints
 
                 throttle.RecordSuccess(address, r.Username);
                 await audit.RecordAsync(http, result.User.Id.ToString(), "auth.login", result.App.Name, true);
-                var (token, expires) = tokens.Issue(result);
+                (Session Session, string Token)? started = r.Refresh == true ? await sessions.StartAsync(result, ct) : null;
+                var (token, expires) = tokens.Issue(result, sessionId: started?.Session.Id);
                 http.Response.Headers.CacheControl = "no-store";
-                return Results.Ok(new LoginResponse(token, "Bearer", (int)(expires - DateTimeOffset.UtcNow).TotalSeconds));
+                return Results.Ok(new LoginResponse(token, "Bearer", (int)(expires - DateTimeOffset.UtcNow).TotalSeconds,
+                    started?.Token, started is null ? null : (int)(started.Value.Session.ExpiresAt - DateTimeOffset.UtcNow).TotalSeconds));
             })
+            .AllowAnonymous().WithTags("Auth");
+
+        // Trade a refresh token for a new access token and a new refresh token (the old one stops working).
+        routes.MapPost("/v1/auth/refresh", async (RefreshRequest r, SessionService sessions, TokenService tokens, [FromKeyedServices("refresh")] LoginThrottle throttle,
+                HttpContext http, AuditRecorder audit, CancellationToken ct) =>
+            {
+                var address = (http.Connection.RemoteIpAddress ?? IPAddress.None).ToString();
+                if (throttle.IsBlocked(address, null, out var retryAfter))
+                {
+                    http.Response.Headers.RetryAfter = ((int)Math.Ceiling(retryAfter.TotalSeconds)).ToString();
+                    return Results.Problem("Too many failed attempts. Try again later.", statusCode: StatusCodes.Status429TooManyRequests);
+                }
+
+                var result = await sessions.RefreshAsync(r.RefreshToken, ct);
+                if (result.Failure is not null || result.Auth is null || result.Session is null || result.Token is null)
+                {
+                    // Losing a race against a parallel refresh of the same token is not an attack.
+                    if (result.Failure != "raced") throttle.RecordFailure(address, null);
+                    // The session is only named when the caller proved it holds a token of it (the session id itself is public in the sid claim).
+                    await audit.RecordAsync(http, result.Session?.UserId.ToString() ?? "anonymous", "auth.refresh",
+                        result.SessionId?.ToString(), false, result.Failure ?? "invalid");
+                    http.Response.Headers.WWWAuthenticate = "Bearer";
+                    return Results.Problem("Invalid refresh token.", statusCode: StatusCodes.Status401Unauthorized);
+                }
+
+                await audit.RecordAsync(http, result.Auth.User.Id.ToString(), "auth.refresh", result.Auth.App.Name, true, $"session={result.Session.Id}");
+                var (token, expires) = tokens.Issue(result.Auth, sessionId: result.Session.Id);
+                http.Response.Headers.CacheControl = "no-store";
+                return Results.Ok(new LoginResponse(token, "Bearer", (int)(expires - DateTimeOffset.UtcNow).TotalSeconds,
+                    result.Token, (int)(result.Session.ExpiresAt - DateTimeOffset.UtcNow).TotalSeconds));
+            })
+            .Produces<LoginResponse>().ProducesProblem(StatusCodes.Status401Unauthorized).ProducesProblem(StatusCodes.Status429TooManyRequests)
+            .AllowAnonymous().WithTags("Auth");
+
+        // Token introspection for consuming systems. The caller authenticates as a client (HTTP Basic: client id and secret)
+        // and can only ask about tokens issued for its own application. Any problem with the caller is one uniform 401.
+        routes.MapPost("/v1/auth/introspect", async (Introspector introspector, ClientAuthService clients,
+                [FromKeyedServices("client")] LoginThrottle throttle, HttpContext http, AuditRecorder audit, IClientRepository clientRepo, CancellationToken ct) =>
+            {
+                var address = (http.Connection.RemoteIpAddress ?? IPAddress.None).ToString();
+                var (id, secret) = BasicCredentials(http.Request.Headers.Authorization);
+                if (throttle.IsBlocked(address, id, out var retryAfter))
+                {
+                    http.Response.Headers.RetryAfter = ((int)Math.Ceiling(retryAfter.TotalSeconds)).ToString();
+                    return Results.Problem("Too many failed attempts. Try again later.", statusCode: StatusCodes.Status429TooManyRequests);
+                }
+
+                if (await clients.AuthenticateAsync(id, secret, ct) is not var (client, app))
+                {
+                    throttle.RecordFailure(address, id);
+                    var known = Validation.LooksLikeUsername(id) && await clientRepo.GetByNameAsync(id!, ct) is not null;
+                    await audit.RecordAsync(http, "anonymous", "auth.introspect", null, false, AuditRecorder.Attempted("client", id, known));
+                    http.Response.Headers.WWWAuthenticate = "Basic realm=\"gatekeeper\"";
+                    return Results.Problem("Invalid credentials.", statusCode: StatusCodes.Status401Unauthorized);
+                }
+
+                throttle.RecordSuccess(address, id);
+                // The body is read only now, so an unauthenticated caller always gets the 401, never a 400 or 415.
+                IntrospectRequest? body;
+                try
+                {
+                    if (!http.Request.HasJsonContentType()) return Results.Problem("Send application/json.", statusCode: StatusCodes.Status415UnsupportedMediaType);
+                    body = await http.Request.ReadFromJsonAsync<IntrospectRequest>(ct);
+                }
+                catch (System.Text.Json.JsonException)
+                {
+                    return Results.Problem("The request body is not valid JSON.", statusCode: StatusCodes.Status400BadRequest);
+                }
+                http.Response.Headers.CacheControl = "no-store";
+                return Results.Json(await introspector.IntrospectAsync(body?.Token, app, ct));
+            })
+            .Produces(StatusCodes.Status200OK, contentType: "application/json").ProducesProblem(StatusCodes.Status401Unauthorized).ProducesProblem(StatusCodes.Status429TooManyRequests)
+            .AllowAnonymous().WithTags("Auth");
+
+        // Ends the session of a refresh token. Always 204, so it does not reveal whether the token was valid.
+        routes.MapPost("/v1/auth/logout", async (RefreshRequest r, SessionService sessions, HttpContext http, AuditRecorder audit, CancellationToken ct) =>
+            {
+                if (await sessions.LogoutAsync(r.RefreshToken, ct) is { } ended)
+                    await audit.RecordAsync(http, ended.UserId.ToString(), "auth.logout", ended.Id.ToString(), true);
+                return Results.NoContent();
+            })
+            .Produces(StatusCodes.Status204NoContent)
             .AllowAnonymous().WithTags("Auth");
 
         // Client credentials for service identities. Same uniform 401 and throttling as user logins, in a separate counter set.
