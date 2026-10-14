@@ -91,4 +91,4 @@ Escape control characters in CLI output; request body size limit; pagination and
 5. Ideas 1 and 2 analysed (2026-10-13), then paused by the user. Idea 1: option A edge verifier cache (JWKS cache and introspection forwarding) first; option B read replica (change feed, edge signing key, password hashes leave the master, bounded revocation lag) only if offline login is needed. Idea 2: one generic OIDC connector (code + PKCE) covers Entra ID and Keycloak, AD via those, no LDAP bind; tables `identity_providers`, `user_identities` linked on (provider, subject), admin pre-linked users first. Open questions: need for offline login, which provider is in use, pre-created vs auto-created external users, whether password hashes may leave the master.
 
 ## Next action
-Slice 5a: implemented and verified on Quadlet; run independent QA and security reviews, fix, then ask before pushing. Next UI slices: roles, users (with sessions), clients, audit.
+Slice 5a: implemented, verified on Quadlet, QA and security reviews fixed; PR open. Next UI slices: roles, users (with sessions), clients, audit.
