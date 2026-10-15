@@ -159,26 +159,34 @@ public sealed class UserService(IUserRepository users, AdminGuard? guard = null)
         return users.AddAsync(new User(Guid.NewGuid(), username!, email!, displayName ?? "", isActive, now, now, kind, expiresAt), ct);
     }
 
-    /// <summary>Replace: a null isActive or kind is left unchanged. A test user keeps its expiry unless a new one is given.</summary>
-    public async Task<User> UpdateAsync(Guid id, string? username, string? email, string? displayName, bool? isActive,
+    /// <summary>
+    /// Replace: a null isActive or kind is left unchanged. A test user keeps its expiry unless a new one is given.
+    /// Runs under the admin guard and reads the user inside it, so a concurrent role assignment or kind change cannot
+    /// be overwritten with a stale kind (which could leave a non-person holding the admin role).
+    /// </summary>
+    public Task<User> UpdateAsync(Guid id, string? username, string? email, string? displayName, bool? isActive,
         UserKind? kind = null, DateTimeOffset? expiresAt = null, CancellationToken ct = default)
     {
         Validation.UserFields(username, email, displayName);
+        return guard is null
+            ? Apply(id, username, email, displayName, isActive, kind, expiresAt, ct)
+            : guard.ExclusiveAsync(() => Apply(id, username, email, displayName, isActive, kind, expiresAt, ct), ct);
+    }
+
+    private async Task<User> Apply(Guid id, string? username, string? email, string? displayName, bool? isActive,
+        UserKind? kind, DateTimeOffset? expiresAt, CancellationToken ct)
+    {
         var existing = await GetAsync(id, ct);
         var now = Clock.UtcNowMicros();
         var newKind = kind ?? existing.Kind;
         var newExpiry = Truncate(expiresAt);
         if (newKind == UserKind.Test) newExpiry ??= existing.Kind == UserKind.Test ? existing.ExpiresAt : now + Validation.DefaultTestLifetime;
         Validation.UserLifetime(newKind, newExpiry, now, existing.Kind == newKind ? existing.ExpiresAt : null);
-        var deactivating = isActive == false && existing.IsActive;
-        var demoting = newKind != UserKind.Person && existing.Kind == UserKind.Person;
-        if ((deactivating || demoting) && guard is not null)
-            return await guard.ExclusiveAsync(async () =>
-            {
-                if (deactivating) await guard.EnsureNotLastAdminAsync(id, ct);
-                if (demoting) await guard.EnsureNotAdministratorAsync(id, ct);
-                return await Save(existing, username, email, displayName, isActive, newKind, newExpiry, ct);
-            }, ct);
+        if (guard is not null)
+        {
+            if (isActive == false && existing.IsActive) await guard.EnsureNotLastAdminAsync(id, ct);
+            if (newKind != UserKind.Person && existing.Kind == UserKind.Person) await guard.EnsureNotAdministratorAsync(id, ct);
+        }
         return await Save(existing, username, email, displayName, isActive, newKind, newExpiry, ct);
     }
 
@@ -629,7 +637,9 @@ public sealed class SessionService(ISessionRepository sessions, AuthService auth
         var now = Clock.UtcNowMicros();
         var id = Guid.NewGuid();
         var token = NewToken(id);
-        var session = new Session(id, login.User.Id, login.App.Id, now, now, now + _lifetime, null);
+        // A test user's sessions end with the account.
+        var ends = login.User.ExpiresAt is { } accountEnds && accountEnds < now + _lifetime ? accountEnds : now + _lifetime;
+        var session = new Session(id, login.User.Id, login.App.Id, now, now, ends, null);
         await sessions.AddAsync(session, HashToken(token), ct);
         await TrimAsync(login.User.Id, id, now, ct);
         await PurgeSometimesAsync(now, ct);

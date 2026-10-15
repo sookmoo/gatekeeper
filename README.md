@@ -58,7 +58,9 @@ dotnet bin/Debug/net10.0/Gatekeeper.Api.dll           # serve, uses Gatekeeper
   last active administrator cannot be deleted, deactivated or stripped of the role.
 - Users have a `kind`: `person` (default), `test` or `shared`. A test user always expires (`expiresAt`, default 30 days, at most 365);
   an expired test user cannot sign in, refresh or introspect (an administrator can extend the date). Only a person can hold the
-  `admin` role. Tokens and introspection carry `kind`, so a consumer can treat non-personal accounts differently. Service identities
+  `admin` role. Tokens and introspection carry `kind`, so a consumer can treat non-personal accounts differently: require
+  `kind == "person"` explicitly where only people are allowed, because older tokens and client tokens have no `kind`. A test user's
+  tokens and sessions end no later than the account. Give `expiresAt` with an offset or `Z` (the CLI reads a bare date as UTC). Service identities
   are separate (`/v1/clients`). `gk user create <name> --email ... --kind test --expires 2026-12-31`, `gk user list --kind test`.
 - Create the first administrator (password on stdin or `GATEKEEPER_BOOTSTRAP_PASSWORD`, 12-128 characters):
   `echo ... | dotnet Gatekeeper.Api.dll bootstrap-admin <username> <email>` (Postgres store; see `deploy/bootstrap-admin.sh`).

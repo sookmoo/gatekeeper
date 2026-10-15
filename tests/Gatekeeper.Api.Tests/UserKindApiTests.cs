@@ -154,4 +154,57 @@ public class UserKindApiTests : IClassFixture<WebApplicationFactory<Program>>
         Assert.Equal(HttpStatusCode.OK, extended.StatusCode);
         Assert.Equal(HttpStatusCode.OK, (await anon.PostAsJsonAsync("/v1/auth/login", new { username = name, password = Password, application = app })).StatusCode);
     }
+
+    [Fact]
+    public async Task Tokens_and_sessions_of_a_test_user_end_with_the_account()
+    {
+        var name = Unique("sho");
+        var u = await CreateUser(NewUser(name, "test", DateTimeOffset.UtcNow.AddMinutes(5)));
+        var app = await GiveAccess(u.GetProperty("id").GetGuid());
+        var login = await Ok(await _factory.CreateClient().PostAsJsonAsync("/v1/auth/login", new { username = name, password = Password, application = app, refresh = true }));
+        Assert.InRange(login.GetProperty("expiresIn").GetInt32(), 1, 5 * 60);
+        Assert.InRange(login.GetProperty("refreshExpiresIn").GetInt32(), 1, 5 * 60);
+        var exp = Payload(login.GetProperty("accessToken").GetString()!).GetProperty("exp").GetInt64();
+        Assert.True(exp <= DateTimeOffset.UtcNow.AddMinutes(5).ToUnixTimeSeconds());
+    }
+
+    [Fact]
+    public async Task A_non_person_holding_the_admin_role_in_the_store_still_gets_no_management_access()
+    {
+        var gk = (await Ok(await _admin.GetAsync("/v1/applications?limit=200"))).GetProperty("items").EnumerateArray()
+            .First(a => a.GetProperty("name").GetString() == "gatekeeper").GetProperty("id").GetGuid();
+        var adminRole = (await Ok(await _admin.GetAsync($"/v1/applications/{gk}/roles"))).GetProperty("items").EnumerateArray()
+            .First(r => r.GetProperty("name").GetString() == "admin").GetProperty("id").GetGuid();
+        var name = Unique("rog");
+        var u = await CreateUser(NewUser(name, "shared"));
+        var id = u.GetProperty("id").GetGuid();
+        await _admin.PutAsJsonAsync($"/v1/users/{id}/password", new { password = Password });
+        // as if a race or a direct database edit had given it the role
+        await _factory.Services.GetRequiredService<IUserRepository>().AssignRoleAsync(id, adminRole);
+
+        var login = await Ok(await _factory.CreateClient().PostAsJsonAsync("/v1/auth/login", new { username = name, password = Password, application = "gatekeeper" }));
+        var c = _factory.CreateClient();
+        c.DefaultRequestHeaders.Authorization = new("Bearer", login.GetProperty("accessToken").GetString());
+        Assert.True((await c.GetAsync("/v1/users")).StatusCode is HttpStatusCode.Forbidden or HttpStatusCode.Unauthorized);
+    }
+
+    [Fact]
+    public async Task Kind_and_expiry_changes_show_in_the_audit_trail()
+    {
+        var u = await CreateUser(NewUser(Unique("aud"), "shared"));
+        var id = u.GetProperty("id").GetGuid();
+        await _admin.PatchAsync($"/v1/users/{id}", JsonContent.Create(new { kind = "test" }));
+        var audit = await _admin.GetStringAsync("/v1/audit?limit=20");
+        Assert.Contains("kind=test expiresAt=", audit);
+    }
+
+    [Theory]
+    [InlineData("person, test")]
+    [InlineData("1")]
+    [InlineData(" test")]
+    public async Task Only_the_three_names_are_accepted_as_a_kind(string kind)
+    {
+        Assert.Equal(HttpStatusCode.BadRequest, (await _admin.GetAsync($"/v1/users?kind={Uri.EscapeDataString(kind)}")).StatusCode);
+        Assert.False((await _admin.PostAsJsonAsync("/v1/users", NewUser(Unique("kk"), kind))).IsSuccessStatusCode);
+    }
 }

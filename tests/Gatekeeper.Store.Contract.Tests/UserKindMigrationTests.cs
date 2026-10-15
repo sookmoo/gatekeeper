@@ -50,6 +50,13 @@ public class UserKindMigrationTests
         var bad = await Assert.ThrowsAsync<PostgresException>(() =>
             Exec(conn, $"INSERT INTO users (id, username, email, display_name, is_active, created_at, updated_at, kind) VALUES ('{Guid.NewGuid()}', 'x', 'x@example.com', '', true, now(), now(), 'robot')"));
         Assert.Equal("23514", bad.SqlState);
+        // a test user must expire, and nobody else may
+        foreach (var (kind, expires) in new[] { ("test", "NULL"), ("person", "now() + interval '1 day'"), ("shared", "now() + interval '1 day'") })
+        {
+            var wrong = await Assert.ThrowsAsync<PostgresException>(() =>
+                Exec(conn, $"INSERT INTO users (id, username, email, display_name, is_active, created_at, updated_at, kind, expires_at) VALUES ('{Guid.NewGuid()}', 'y', 'y@example.com', '', true, now(), now(), '{kind}', {expires})"));
+            Assert.Equal("23514", wrong.SqlState);
+        }
         await MigrateTo(conn, Before); // and it rolls back
         await MigrateTo(conn, null);
     }

@@ -38,4 +38,15 @@ public class UserKindCliTests : IClassFixture<WebApplicationFactory<Program>>
         Assert.Contains("person", back.Out);
         Assert.NotEqual(0, (await Gk("user", "list", "--kind", "robot")).Code);
     }
+
+    [Fact]
+    public async Task A_date_without_an_offset_means_midnight_utc()
+    {
+        var name = $"utc-{Guid.NewGuid():N}"[..16];
+        var day = DateTime.UtcNow.AddDays(10);
+        var created = await Gk("user", "create", name, "--email", $"{name}@example.com", "--kind", "test", "--expires", day.ToString("yyyy-MM-dd"));
+        Assert.Equal(0, created.Code);
+        Assert.Contains($"{day:yyyy-MM-dd}T00:00:00", created.Out);
+        Assert.NotEqual(0, (await Gk("user", "create", name + "x", "--email", "x@example.com", "--kind", "test", "--expires", "next week")).Code);
+    }
 }

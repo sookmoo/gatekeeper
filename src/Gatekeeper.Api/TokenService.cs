@@ -160,6 +160,8 @@ public sealed class TokenService
     {
         var issued = now ?? DateTimeOffset.UtcNow;
         var expires = issued + _options.AccessTokenLifetime;
+        // A test user's token must not outlive the account: consumers check it offline.
+        if (auth.User.ExpiresAt is { } accountEnds && accountEnds < expires) expires = accountEnds;
         var descriptor = new SecurityTokenDescriptor
         {
             Issuer = _options.Issuer,

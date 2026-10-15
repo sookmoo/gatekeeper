@@ -2184,7 +2184,13 @@
             "format": "date-time"
           },
           "kind": {
-            "$ref": "#/components/schemas/UserKind"
+            "enum": [
+              "person",
+              "test",
+              "shared"
+            ],
+            "type": "string",
+            "default": "person"
           },
           "expiresAt": {
             "type": [
@@ -2194,14 +2200,6 @@
             "format": "date-time"
           }
         }
-      },
-      "UserKind": {
-        "enum": [
-          "person",
-          "test",
-          "shared"
-        ],
-        "default": "person"
       },
       "UserRequest": {
         "required": [
@@ -2237,14 +2235,12 @@
             ]
           },
           "kind": {
-            "oneOf": [
-              {
-                "type": "null"
-              },
-              {
-                "$ref": "#/components/schemas/UserKind"
-              }
-            ]
+            "enum": [
+              "person",
+              "test",
+              "shared"
+            ],
+            "type": "string"
           },
           "expiresAt": {
             "type": [

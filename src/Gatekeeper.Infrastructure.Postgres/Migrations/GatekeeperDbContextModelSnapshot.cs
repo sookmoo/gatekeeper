@@ -218,6 +218,8 @@ namespace Gatekeeper.Infrastructure.Postgres.Migrations
                     b.ToTable("users", null, t =>
                         {
                             t.HasCheckConstraint("ck_users_kind", "kind IN ('person', 'test', 'shared')");
+
+                            t.HasCheckConstraint("ck_users_test_expires", "(kind = 'test') = (expires_at IS NOT NULL)");
                         });
                 });
 

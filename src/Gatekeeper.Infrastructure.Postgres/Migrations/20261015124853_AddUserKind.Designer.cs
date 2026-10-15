@@ -12,7 +12,7 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace Gatekeeper.Infrastructure.Postgres.Migrations
 {
     [DbContext(typeof(GatekeeperDbContext))]
-    [Migration("20261015123143_AddUserKind")]
+    [Migration("20261015124853_AddUserKind")]
     partial class AddUserKind
     {
         /// <inheritdoc />
@@ -221,6 +221,8 @@ namespace Gatekeeper.Infrastructure.Postgres.Migrations
                     b.ToTable("users", null, t =>
                         {
                             t.HasCheckConstraint("ck_users_kind", "kind IN ('person', 'test', 'shared')");
+
+                            t.HasCheckConstraint("ck_users_test_expires", "(kind = 'test') = (expires_at IS NOT NULL)");
                         });
                 });
 

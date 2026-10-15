@@ -329,7 +329,18 @@ public static class CliApp
             var cDisplay = new Option<string?>("--display-name");
             var cInactive = new Option<bool>("--inactive") { Description = "Create the user disabled" };
             Option<string?> KindOpt(string what) { var o = new Option<string?>("--kind") { Description = what }; o.AcceptOnlyFromAmong("person", "test", "shared"); return o; }
-            Option<DateTimeOffset?> ExpiresOpt() => new("--expires") { Description = "When a test user expires (for example 2026-12-31; default 30 days, at most 365)" };
+            // A date or time without an offset means UTC, not the operator's zone, so the same command expires the same instant everywhere.
+            Option<DateTimeOffset?> ExpiresOpt() => new("--expires")
+            {
+                Description = "When a test user expires, in UTC unless an offset is given (for example 2026-12-31 or 2026-12-31T17:00+01:00; default 30 days, at most 365)",
+                CustomParser = r =>
+                {
+                    var text = r.Tokens.Count == 1 ? r.Tokens[0].Value : null;
+                    if (text is not null && DateTimeOffset.TryParse(text, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.AssumeUniversal, out var when)) return when;
+                    r.AddError("--expires must be a date or time such as 2026-12-31 or 2026-12-31T17:00:00Z.");
+                    return null;
+                },
+            };
             var cKind = KindOpt("person (default), test (expires) or shared"); var cExpires = ExpiresOpt();
             cmd.Subcommands.Add(Cmd("create", "Create a user", c => { c.Arguments.Add(cUser); c.Options.Add(cEmail); c.Options.Add(cDisplay); c.Options.Add(cInactive); c.Options.Add(cKind); c.Options.Add(cExpires); }, async x =>
                 x.Print(await x.Api.PostAsync("/v1/users", new

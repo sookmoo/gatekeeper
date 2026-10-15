@@ -29,6 +29,11 @@ namespace Gatekeeper.Infrastructure.Postgres.Migrations
                 name: "ck_users_kind",
                 table: "users",
                 sql: "kind IN ('person', 'test', 'shared')");
+
+            migrationBuilder.AddCheckConstraint(
+                name: "ck_users_test_expires",
+                table: "users",
+                sql: "(kind = 'test') = (expires_at IS NOT NULL)");
         }
 
         /// <inheritdoc />
@@ -36,6 +41,10 @@ namespace Gatekeeper.Infrastructure.Postgres.Migrations
         {
             migrationBuilder.DropCheckConstraint(
                 name: "ck_users_kind",
+                table: "users");
+
+            migrationBuilder.DropCheckConstraint(
+                name: "ck_users_test_expires",
                 table: "users");
 
             migrationBuilder.DropColumn(
