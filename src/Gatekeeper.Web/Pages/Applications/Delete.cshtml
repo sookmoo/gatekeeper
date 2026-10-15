@@ -1,0 +1,15 @@
+@page "{id:guid}"
+@model Gatekeeper.Web.Pages.Applications.DeleteModel
+@{
+    ViewData["Title"] = "Delete application";
+}
+<h1>Delete application</h1>
+@if (Model.Error is not null)
+{
+    <p class="error" role="alert">@Model.Error</p>
+}
+<p>Delete <strong>@Model.Name</strong>? This also removes its roles, service clients and sessions, and cannot be undone.</p>
+<form method="post">
+    <button type="submit" class="danger">Delete</button>
+    <a href="/Applications">Cancel</a>
+</form>

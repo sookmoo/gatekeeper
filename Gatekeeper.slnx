@@ -6,6 +6,7 @@
     <Project Path="src/Gatekeeper.Domain/Gatekeeper.Domain.csproj" />
     <Project Path="src/Gatekeeper.Infrastructure.Postgres/Gatekeeper.Infrastructure.Postgres.csproj" />
     <Project Path="src/Gatekeeper.Infrastructure/Gatekeeper.Infrastructure.csproj" />
+    <Project Path="src/Gatekeeper.Web/Gatekeeper.Web.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/Gatekeeper.Api.Tests/Gatekeeper.Api.Tests.csproj" />
@@ -13,5 +14,6 @@
     <Project Path="tests/Gatekeeper.Cli.Tests/Gatekeeper.Cli.Tests.csproj" />
     <Project Path="tests/Gatekeeper.Domain.Tests/Gatekeeper.Domain.Tests.csproj" />
     <Project Path="tests/Gatekeeper.Store.Contract.Tests/Gatekeeper.Store.Contract.Tests.csproj" />
+    <Project Path="tests/Gatekeeper.Web.Tests/Gatekeeper.Web.Tests.csproj" />
   </Folder>
 </Solution>

@@ -11,6 +11,8 @@ Network=gatekeeper.network
 PublishPort=127.0.0.1:5080:8080
 Environment=Store__Provider=Postgres
 Environment=Gatekeeper__AllowNonLoopback=true
+# The UI calls the API by its container name, so that Host name must be allowed next to the loopback ones.
+Environment="AllowedHosts=localhost;127.0.0.1;[::1];gatekeeper-api"
 # Data-only role: the running service holds no DDL rights.
 Secret=gatekeeper-conn-app,type=env,target=ConnectionStrings__Gatekeeper
 # ES256 private key (PEM) that signs access tokens; the public half is served at /.well-known/jwks.json.

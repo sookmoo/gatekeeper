@@ -1,0 +1,30 @@
+[Unit]
+Description=Gatekeeper administration UI
+Wants=gatekeeper-api.service
+After=gatekeeper-api.service
+
+[Container]
+ContainerName=gatekeeper-web
+Image=ghcr.io/sookmoo/gatekeeper-web:latest
+Network=gatekeeper.network
+# Loopback only on the host: the UI speaks plain HTTP (passwords, a session cookie). Put a TLS proxy in front to expose it.
+PublishPort=127.0.0.1:5090:8080
+Environment=Gatekeeper__AllowNonLoopback=true
+# The API is reached over the private podman network; the UI never sees the database or the signing key.
+Environment=Gatekeeper__ApiUrl=http://gatekeeper-api:8080
+Environment=Gatekeeper__AllowPlainApi=true
+PodmanArgs=--memory=256m
+ReadOnly=true
+DropCapability=ALL
+NoNewPrivileges=true
+# JSON form: the chiseled image has no shell for CMD-SHELL.
+HealthCmd=["dotnet", "Gatekeeper.Web.dll", "healthcheck"]
+HealthInterval=30s
+HealthStartPeriod=10s
+HealthRetries=3
+
+[Service]
+Restart=always
+
+[Install]
+WantedBy=default.target

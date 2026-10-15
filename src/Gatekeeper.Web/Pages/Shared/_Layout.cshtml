@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>@(ViewData["Title"] is string t ? t + " - " : "")Gatekeeper</title>
+    <link rel="stylesheet" href="/site.css">
+</head>
+<body>
+<header>
+    <strong>Gatekeeper</strong>
+    @if (User.Identity?.IsAuthenticated == true)
+    {
+        <nav>
+            <a href="/Applications">Applications</a>
+        </nav>
+        <form method="post" asp-page="/Logout" class="inline">
+            <span>@User.Identity.Name</span>
+            <button type="submit">Sign out</button>
+        </form>
+    }
+</header>
+<main>
+    @RenderBody()
+</main>
+</body>
+</html>
