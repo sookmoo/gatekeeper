@@ -84,6 +84,7 @@ builder.Services
     .AddSingleton<AuditRecorder>()
     .AddSingleton<LoginThrottle>()
     .AddProblemDetails()
+    .ConfigureHttpJsonOptions(o => o.SerializerOptions.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter(System.Text.Json.JsonNamingPolicy.CamelCase)))
     .AddOpenApi(o => o.AddDocumentTransformer<BearerSecurityTransformer>());
 
 if (!migrateOnly && !bootstrap)

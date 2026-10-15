@@ -7,7 +7,7 @@ public sealed record AppRequest(string? Name);
 
 public sealed record RoleRequest(string? Name, string? Description);
 
-public sealed record UserRequest(string? Username, string? Email, string? DisplayName, bool? IsActive);
+public sealed record UserRequest(string? Username, string? Email, string? DisplayName, bool? IsActive, UserKind? Kind = null, DateTimeOffset? ExpiresAt = null);
 
 public sealed record ClientRequest(string? Name, Guid? Application, bool? IsActive);
 
@@ -22,6 +22,11 @@ public sealed record PasswordRequest(string? Password);
 public static class Endpoints
 {
     public const string AdminPolicy = "admin";
+
+    private static UserKind? ParseKind(string? kind) =>
+        string.IsNullOrEmpty(kind) ? null
+        : Enum.TryParse<UserKind>(kind, ignoreCase: true, out var k) && Enum.IsDefined(k) && !char.IsDigit(kind[0]) ? k
+        : throw new ValidationException(new Dictionary<string, string> { ["kind"] = "must be person, test or shared." });
 
     public static void MapApi(this IEndpointRouteBuilder routes)
     {
@@ -62,18 +67,18 @@ public static class Endpoints
         });
 
         var users = v1.MapGroup("/users").WithTags("Users");
-        users.MapGet("/", (UserService s, bool? active, string? username, int? limit, string? cursor, CancellationToken ct) =>
-            s.ListAsync(active, username, PageQuery.Parse(limit, cursor), ct));
+        users.MapGet("/", (UserService s, bool? active, string? username, string? kind, int? limit, string? cursor, CancellationToken ct) =>
+            s.ListAsync(active, username, ParseKind(kind), PageQuery.Parse(limit, cursor), ct));
         users.MapPost("/", async (UserRequest r, UserService s, CancellationToken ct) =>
         {
-            var created = await s.CreateAsync(r.Username, r.Email, r.DisplayName, r.IsActive ?? true, ct);
+            var created = await s.CreateAsync(r.Username, r.Email, r.DisplayName, r.IsActive ?? true, r.Kind ?? UserKind.Person, r.ExpiresAt, ct);
             return Results.Created($"/v1/users/{created.Id}", created);
         });
         users.MapGet("/{id:guid}", (Guid id, UserService s, CancellationToken ct) => s.GetAsync(id, ct));
         users.MapPut("/{id:guid}", (Guid id, UserRequest r, UserService s, CancellationToken ct) =>
-            s.UpdateAsync(id, r.Username, r.Email, r.DisplayName, r.IsActive, ct));
+            s.UpdateAsync(id, r.Username, r.Email, r.DisplayName, r.IsActive, r.Kind, r.ExpiresAt, ct));
         users.MapMethods("/{id:guid}", ["PATCH"], (Guid id, UserRequest r, UserService s, CancellationToken ct) =>
-            s.PatchAsync(id, r.Username, r.Email, r.DisplayName, r.IsActive, ct));
+            s.PatchAsync(id, r.Username, r.Email, r.DisplayName, r.IsActive, r.Kind, r.ExpiresAt, ct));
         users.MapDelete("/{id:guid}", async (Guid id, UserService s, CancellationToken ct) =>
         {
             await s.DeleteAsync(id, ct);

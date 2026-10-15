@@ -56,6 +56,10 @@ dotnet bin/Debug/net10.0/Gatekeeper.Api.dll           # serve, uses Gatekeeper
 - The management API (`/v1/applications`, `/v1/roles`, `/v1/users`, `/v1/clients`, `/v1/audit`) needs a token for the application `gatekeeper`
   with the role `admin`. That application and role are reserved: they cannot be renamed or deleted, no other application can take the name, and the
   last active administrator cannot be deleted, deactivated or stripped of the role.
+- Users have a `kind`: `person` (default), `test` or `shared`. A test user always expires (`expiresAt`, default 30 days, at most 365);
+  an expired test user cannot sign in, refresh or introspect (an administrator can extend the date). Only a person can hold the
+  `admin` role. Tokens and introspection carry `kind`, so a consumer can treat non-personal accounts differently. Service identities
+  are separate (`/v1/clients`). `gk user create <name> --email ... --kind test --expires 2026-12-31`, `gk user list --kind test`.
 - Create the first administrator (password on stdin or `GATEKEEPER_BOOTSTRAP_PASSWORD`, 12-128 characters):
   `echo ... | dotnet Gatekeeper.Api.dll bootstrap-admin <username> <email>` (Postgres store; see `deploy/bootstrap-admin.sh`).
   Running it for an existing user repairs that user (reactivates, resets the password, restores the admin role): the recovery

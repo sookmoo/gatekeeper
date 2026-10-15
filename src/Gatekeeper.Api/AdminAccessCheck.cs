@@ -18,7 +18,7 @@ public sealed class AdminAccessCheck(IUserRepository users, AdminGuard guard, IM
         {
             entry.AbsoluteExpirationRelativeToNow = CacheFor;
             if (sessionId is { } sid && !await sessions.IsActiveAsync(sid, ct)) return false;
-            if (await users.GetAsync(userId, ct) is not { IsActive: true }) return false;
+            if (await users.GetAsync(userId, ct) is not { } user || !user.IsUsable(DateTimeOffset.UtcNow)) return false;
             if (await guard.AdminRoleIdAsync(ct) is not { } adminRole) return false;
             return (await users.ListRolesAsync(userId, slice: new Slice(0, 10_000), ct: ct)).Any(r => r.Id == adminRole);
         })!;

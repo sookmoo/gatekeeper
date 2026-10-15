@@ -27,6 +27,31 @@ public abstract class StoreContract : IDisposable
     private static Role NewRole(App app, string name) => new(Guid.NewGuid(), app.Id, name, "");
 
     [SkippableFact]
+    public async Task User_kind_and_expiry_round_trip_and_can_be_filtered_on()
+    {
+        var (_, _, users) = CreateStore();
+        var now = new DateTimeOffset(2026, 10, 15, 12, 0, 0, TimeSpan.Zero);
+        var expires = now.AddDays(30).AddTicks(10);
+        var person = await users.AddAsync(NewUser("alice"));
+        var test = await users.AddAsync(NewUser("tester") with { Kind = UserKind.Test, ExpiresAt = expires });
+        var shared = await users.AddAsync(NewUser("team") with { Kind = UserKind.Shared });
+
+        Assert.Equal(UserKind.Person, (await users.GetAsync(person.Id))!.Kind);
+        Assert.Null((await users.GetAsync(person.Id))!.ExpiresAt);
+        var got = (await users.GetAsync(test.Id))!;
+        Assert.Equal(UserKind.Test, got.Kind);
+        Assert.Equal(expires, got.ExpiresAt);
+        Assert.Equal(["tester"], (await users.ListAsync(kind: UserKind.Test)).Select(u => u.Username));
+        Assert.Equal(["team"], (await users.ListAsync(kind: UserKind.Shared)).Select(u => u.Username));
+        Assert.Equal(3, (await users.ListAsync()).Count);
+
+        var changed = await users.UpdateAsync(got with { Kind = UserKind.Person, ExpiresAt = null });
+        Assert.Equal(UserKind.Person, changed!.Kind);
+        Assert.Null((await users.GetAsync(test.Id))!.ExpiresAt);
+        Assert.Equal(UserKind.Shared, (await users.GetAsync(shared.Id))!.Kind);
+    }
+
+    [SkippableFact]
     public async Task Lists_are_ordered_and_sliced_consistently()
     {
         var (apps, roles, users) = CreateStore();

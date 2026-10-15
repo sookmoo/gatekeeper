@@ -99,3 +99,54 @@ public class ValidationTests
         Assert.Contains("description",
             Assert.Throws<ValidationException>(() => Validation.RoleFields("admin", new string('x', 257))).Errors.Keys);
 }
+
+public class UserLifetimeTests
+{
+    private static readonly DateTimeOffset Now = new(2026, 10, 15, 12, 0, 0, TimeSpan.Zero);
+
+    [Fact]
+    public void A_test_user_needs_an_expiry_within_a_year() => Validation.UserLifetime(UserKind.Test, Now.AddDays(30), Now);
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData(-1)]
+    [InlineData(0)]
+    [InlineData(366)]
+    public void A_test_user_without_a_valid_expiry_is_refused(int? days) =>
+        Assert.Contains("expiresAt", Assert.Throws<ValidationException>(() =>
+            Validation.UserLifetime(UserKind.Test, days is null ? null : Now.AddDays(days.Value), Now)).Errors.Keys);
+
+    [Fact]
+    public void The_limit_is_inclusive_at_a_year() => Validation.UserLifetime(UserKind.Test, Now.AddDays(365), Now);
+
+    [Fact]
+    public void An_unchanged_expiry_is_accepted_even_if_it_has_passed_or_is_far_ahead()
+    {
+        var old = Now.AddDays(-3);
+        Validation.UserLifetime(UserKind.Test, old, Now, current: old);
+        Assert.Throws<ValidationException>(() => Validation.UserLifetime(UserKind.Test, old, Now));
+    }
+
+    [Theory]
+    [InlineData(UserKind.Person)]
+    [InlineData(UserKind.Shared)]
+    public void Only_test_users_may_have_an_expiry(UserKind kind)
+    {
+        Validation.UserLifetime(kind, null, Now);
+        Assert.Contains("expiresAt", Assert.Throws<ValidationException>(() => Validation.UserLifetime(kind, Now.AddDays(1), Now)).Errors.Keys);
+    }
+
+    [Fact]
+    public void An_undefined_kind_is_refused() =>
+        Assert.Contains("kind", Assert.Throws<ValidationException>(() => Validation.UserLifetime((UserKind)99, null, Now)).Errors.Keys);
+
+    [Fact]
+    public void A_user_is_usable_until_it_is_disabled_or_expired()
+    {
+        var u = new User(Guid.NewGuid(), "t", "t@example.com", "", true, Now, Now, UserKind.Test, Now.AddDays(1));
+        Assert.True(u.IsUsable(Now));
+        Assert.False(u.IsUsable(Now.AddDays(1)));            // the expiry instant itself is already too late
+        Assert.False((u with { IsActive = false }).IsUsable(Now));
+        Assert.True((u with { Kind = UserKind.Person, ExpiresAt = null }).IsUsable(Now.AddYears(10)));
+    }
+}

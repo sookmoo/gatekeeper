@@ -11,7 +11,27 @@ public sealed record User(
     string DisplayName,
     bool IsActive,
     DateTimeOffset CreatedAt,
-    DateTimeOffset UpdatedAt);
+    DateTimeOffset UpdatedAt,
+    UserKind Kind = UserKind.Person,
+    DateTimeOffset? ExpiresAt = null)
+{
+    /// <summary>Whether the account may sign in right now: enabled and, for a test user, not past its expiry.</summary>
+    public bool IsUsable(DateTimeOffset now) => IsActive && (ExpiresAt is null || ExpiresAt > now);
+}
+
+/// <summary>
+/// What a user account stands for. Only a person can be an administrator. A test account must expire.
+/// Service identities are a separate entity (<see cref="Client"/>), not a kind of user.
+/// </summary>
+public enum UserKind
+{
+    /// <summary>A real person.</summary>
+    Person,
+    /// <summary>A non-personal account for testing. Always has an expiry date.</summary>
+    Test,
+    /// <summary>A non-personal account that several people or a team use (for example a shared mailbox login).</summary>
+    Shared,
+}
 
 /// <summary>
 /// A service identity: an external system that authenticates with a secret (no password, no person) and receives a token

@@ -176,13 +176,14 @@ public sealed class InMemoryUserRepository(InMemoryStore s) : IUserRepository
         lock (s.Gate) return Task.FromResult(s.Users.GetValueOrDefault(id));
     }
 
-    public Task<IReadOnlyList<User>> ListAsync(bool? active = null, string? username = null, Slice? slice = null, CancellationToken ct = default)
+    public Task<IReadOnlyList<User>> ListAsync(bool? active = null, string? username = null, UserKind? kind = null, Slice? slice = null, CancellationToken ct = default)
     {
         lock (s.Gate)
             return Task.FromResult<IReadOnlyList<User>>(
                 InMemoryStore.Paged(s.Users.Values
                     .Where(u => active is null || u.IsActive == active)
                     .Where(u => username is null || InMemoryAppRepository.Same(u.Username, username))
+                    .Where(u => kind is null || u.Kind == kind)
                     .OrderBy(u => u.Username), slice));
     }
 

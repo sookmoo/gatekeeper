@@ -36,6 +36,28 @@ public static partial class Validation
             ("email", EmailError(email)),
             ("displayName", Length(displayName, MaxTextLength, required: false))));
 
+    public static readonly TimeSpan DefaultTestLifetime = TimeSpan.FromDays(30);
+    public static readonly TimeSpan MaxTestLifetime = TimeSpan.FromDays(365);
+
+    /// <summary>
+    /// Only test accounts have an expiry; it must lie in the future and at most <see cref="MaxTestLifetime"/> ahead.
+    /// An unchanged expiry (<paramref name="current"/>) is accepted as is, so renaming a user near its expiry still works.
+    /// </summary>
+    public static void UserLifetime(UserKind kind, DateTimeOffset? expiresAt, DateTimeOffset now, DateTimeOffset? current = null) =>
+        Throw(Check(
+            ("kind", Enum.IsDefined(kind) ? null : "is not a valid user kind."),
+            ("expiresAt", Enum.IsDefined(kind) ? LifetimeError(kind, expiresAt, now, current) : null)));
+
+    private static string? LifetimeError(UserKind kind, DateTimeOffset? expiresAt, DateTimeOffset now, DateTimeOffset? current)
+    {
+        if (kind != UserKind.Test) return expiresAt is null ? null : "is only allowed for test users.";
+        if (expiresAt is null) return "is required for test users.";
+        if (expiresAt == current) return null;
+        if (expiresAt <= now) return "must be in the future.";
+        if (expiresAt > now + MaxTestLifetime) return $"must be at most {MaxTestLifetime.Days} days ahead.";
+        return null;
+    }
+
     public const int MinPasswordLength = 12;
     public const int MaxPasswordLength = 128;
 

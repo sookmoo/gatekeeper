@@ -164,11 +164,12 @@ public sealed class PostgresUserRepository(Factory factory) : PostgresRepository
     public Task<User?> GetAsync(Guid id, CancellationToken ct = default) =>
         Run(db => db.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Id == id, ct), ct: ct);
 
-    public Task<IReadOnlyList<User>> ListAsync(bool? active = null, string? username = null, Slice? slice = null, CancellationToken ct = default) => Run<IReadOnlyList<User>>(async db =>
+    public Task<IReadOnlyList<User>> ListAsync(bool? active = null, string? username = null, UserKind? kind = null, Slice? slice = null, CancellationToken ct = default) => Run<IReadOnlyList<User>>(async db =>
     {
         var query = db.Users.AsNoTracking();
         if (active is not null) query = query.Where(u => u.IsActive == active);
         if (username is not null) query = query.Where(u => u.Username == username); // citext: case-insensitive
+        if (kind is not null) query = query.Where(u => u.Kind == kind);
         return await query.OrderBy(u => u.Username).Page(slice).ToListAsync(ct);
     }, ct: ct);
 
