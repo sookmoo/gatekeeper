@@ -76,6 +76,7 @@ public class IntrospectApiTests : IClassFixture<WebApplicationFactory<Program>>
         Assert.True(answer.GetProperty("active").GetBoolean());
         Assert.Equal(w.UserId.ToString(), answer.GetProperty("sub").GetString());
         Assert.Equal(w.User, answer.GetProperty("preferred_username").GetString());
+        Assert.Equal("person", answer.GetProperty("kind").GetString());
         Assert.Equal(w.App, answer.GetProperty("aud").GetString());
         Assert.Equal(["reader", "writer"], answer.GetProperty("roles").EnumerateArray().Select(r => r.GetString()));
         Assert.True(answer.TryGetProperty("sid", out _));
@@ -157,6 +158,7 @@ public class IntrospectApiTests : IClassFixture<WebApplicationFactory<Program>>
         Assert.True(answer.GetProperty("active").GetBoolean());
         Assert.Equal(created.GetProperty("name").GetString(), answer.GetProperty("client_id").GetString());
         Assert.False(answer.TryGetProperty("preferred_username", out _));
+        Assert.False(answer.TryGetProperty("kind", out _));
 
         await _admin.PatchAsJsonAsync($"/v1/clients/{clientId}", new { isActive = false });
         Assert.False((await Ask(w, token)).GetProperty("active").GetBoolean());

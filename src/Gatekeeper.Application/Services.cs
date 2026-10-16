@@ -135,45 +135,74 @@ public sealed class RoleService(IAppRepository apps, IRoleRepository roles)
 
 public sealed class UserService(IUserRepository users, AdminGuard? guard = null)
 {
-    public async Task<Page<User>> ListAsync(bool? active = null, string? username = null, PageQuery? page = null, CancellationToken ct = default)
+    public async Task<Page<User>> ListAsync(bool? active = null, string? username = null, UserKind? kind = null, PageQuery? page = null, CancellationToken ct = default)
     {
         page ??= PageQuery.Default;
         // No valid username contains control characters or malformed Unicode, so such a filter matches nothing.
         if (username is not null && !Validation.IsCleanText(username)) return page.Build<User>([]);
-        return page.Build(await users.ListAsync(active, username, page.Slice, ct));
+        if (kind is { } k && !Enum.IsDefined(k)) return page.Build<User>([]);
+        return page.Build(await users.ListAsync(active, username, kind, page.Slice, ct));
     }
 
     public async Task<User> GetAsync(Guid id, CancellationToken ct = default) =>
         await users.GetAsync(id, ct) ?? throw new NotFoundException($"User {id} not found.");
 
-    public Task<User> CreateAsync(string? username, string? email, string? displayName, bool isActive = true, CancellationToken ct = default)
+    public Task<User> CreateAsync(string? username, string? email, string? displayName, bool isActive = true,
+        UserKind kind = UserKind.Person, DateTimeOffset? expiresAt = null, CancellationToken ct = default)
     {
         Validation.UserFields(username, email, displayName);
         var now = Clock.UtcNowMicros();
-        return users.AddAsync(new User(Guid.NewGuid(), username!, email!, displayName ?? "", isActive, now, now), ct);
+        // A test account always expires: without a date it gets the default lifetime.
+        if (kind == UserKind.Test) expiresAt ??= now + Validation.DefaultTestLifetime;
+        expiresAt = Truncate(expiresAt);
+        Validation.UserLifetime(kind, expiresAt, now);
+        return users.AddAsync(new User(Guid.NewGuid(), username!, email!, displayName ?? "", isActive, now, now, kind, expiresAt), ct);
     }
 
-    public async Task<User> UpdateAsync(Guid id, string? username, string? email, string? displayName, bool? isActive, CancellationToken ct = default)
+    /// <summary>
+    /// Replace: a null isActive or kind is left unchanged. A test user keeps its expiry unless a new one is given.
+    /// Runs under the admin guard and reads the user inside it, so a concurrent role assignment or kind change cannot
+    /// be overwritten with a stale kind (which could leave a non-person holding the admin role).
+    /// </summary>
+    public Task<User> UpdateAsync(Guid id, string? username, string? email, string? displayName, bool? isActive,
+        UserKind? kind = null, DateTimeOffset? expiresAt = null, CancellationToken ct = default)
     {
         Validation.UserFields(username, email, displayName);
+        return guard is null
+            ? Apply(id, username, email, displayName, isActive, kind, expiresAt, ct)
+            : guard.ExclusiveAsync(() => Apply(id, username, email, displayName, isActive, kind, expiresAt, ct), ct);
+    }
+
+    private async Task<User> Apply(Guid id, string? username, string? email, string? displayName, bool? isActive,
+        UserKind? kind, DateTimeOffset? expiresAt, CancellationToken ct)
+    {
         var existing = await GetAsync(id, ct);
-        if (isActive == false && existing.IsActive && guard is not null)
-            return await guard.ExclusiveAsync(async () =>
-            {
-                await guard.EnsureNotLastAdminAsync(id, ct);
-                return await Save(existing, username, email, displayName, isActive, ct);
-            }, ct);
-        return await Save(existing, username, email, displayName, isActive, ct);
+        var now = Clock.UtcNowMicros();
+        var newKind = kind ?? existing.Kind;
+        var newExpiry = Truncate(expiresAt);
+        if (newKind == UserKind.Test) newExpiry ??= existing.Kind == UserKind.Test ? existing.ExpiresAt : now + Validation.DefaultTestLifetime;
+        Validation.UserLifetime(newKind, newExpiry, now, existing.Kind == newKind ? existing.ExpiresAt : null);
+        if (guard is not null)
+        {
+            if (isActive == false && existing.IsActive) await guard.EnsureNotLastAdminAsync(id, ct);
+            if (newKind != UserKind.Person && existing.Kind == UserKind.Person) await guard.EnsureNotAdministratorAsync(id, ct);
+        }
+        return await Save(existing, username, email, displayName, isActive, newKind, newExpiry, ct);
     }
 
     /// <summary>Partial update: a null field is left unchanged (use an empty display name to clear it).</summary>
-    public Task<User> PatchAsync(Guid id, string? username, string? email, string? displayName, bool? isActive, CancellationToken ct = default) => PatchGate.RunAsync(async () =>
+    public Task<User> PatchAsync(Guid id, string? username, string? email, string? displayName, bool? isActive,
+        UserKind? kind = null, DateTimeOffset? expiresAt = null, CancellationToken ct = default) => PatchGate.RunAsync(async () =>
     {
         var e = await GetAsync(id, ct);
-        return await UpdateAsync(id, username ?? e.Username, email ?? e.Email, displayName ?? e.DisplayName, isActive, ct);
+        return await UpdateAsync(id, username ?? e.Username, email ?? e.Email, displayName ?? e.DisplayName, isActive, kind, expiresAt, ct);
     }, ct);
 
-    private async Task<User> Save(User existing, string? username, string? email, string? displayName, bool? isActive, CancellationToken ct)
+    private static DateTimeOffset? Truncate(DateTimeOffset? value) =>
+        value is { } v ? new DateTimeOffset(v.UtcTicks - v.UtcTicks % 10, TimeSpan.Zero) : null;
+
+    private async Task<User> Save(User existing, string? username, string? email, string? displayName, bool? isActive,
+        UserKind kind, DateTimeOffset? expiresAt, CancellationToken ct)
     {
         var id = existing.Id;
         var updated = existing with
@@ -182,6 +211,8 @@ public sealed class UserService(IUserRepository users, AdminGuard? guard = null)
             Email = email!,
             DisplayName = displayName ?? "",
             IsActive = isActive ?? existing.IsActive,
+            Kind = kind,
+            ExpiresAt = expiresAt,
             UpdatedAt = Clock.UtcNowMicros(),
         };
         return await users.UpdateAsync(updated, ct) ?? throw new NotFoundException($"User {id} not found.");
@@ -212,6 +243,18 @@ public sealed class UserService(IUserRepository users, AdminGuard? guard = null)
 
     public async Task AssignRoleAsync(Guid userId, Guid roleId, CancellationToken ct = default)
     {
+        // The admin role is for people only. Checked under the guard so it cannot race with a change of kind.
+        if (guard is not null && await guard.AdminRoleIdAsync(ct) == roleId)
+        {
+            await guard.ExclusiveAsync(async () =>
+            {
+                if ((await GetAsync(userId, ct)).Kind != UserKind.Person)
+                    throw new ConflictException("Only a person can hold the admin role.");
+                await users.AssignRoleAsync(userId, roleId, ct);
+                return 0;
+            }, ct);
+            return;
+        }
         await users.AssignRoleAsync(userId, roleId, ct); // store verifies user and role atomically
     }
 
@@ -263,6 +306,14 @@ public sealed class AdminGuard(IAppRepository apps, IRoleRepository roles, IUser
         var role = (await roles.ListByAppAsync(app.Id, ct: ct)).FirstOrDefault(r =>
             string.Equals(r.Name, Reserved.AdminRole, StringComparison.OrdinalIgnoreCase));
         return role?.Id;
+    }
+
+    /// <summary>Throws Conflict if the user holds the admin role (such a user must stay a person).</summary>
+    public async Task EnsureNotAdministratorAsync(Guid userId, CancellationToken ct)
+    {
+        if (await AdminRoleIdAsync(ct) is not { } adminRole) return;
+        if ((await users.ListRolesAsync(userId, slice: new Slice(0, 10_000), ct: ct)).Any(r => r.Id == adminRole))
+            throw new ConflictException("A user who holds the admin role must be a person. Revoke the role first.");
     }
 
     /// <summary>Throws Conflict if the user is an active administrator and nobody else active holds the admin role.</summary>
@@ -322,7 +373,7 @@ public sealed class AuthService(
     /// <summary>Who a user is right now in an application (for refresh and introspection): null if inactive, gone, or without roles there.</summary>
     public async Task<AuthResult?> ResolveAsync(Guid userId, Guid appId, CancellationToken ct = default)
     {
-        if (await users.GetAsync(userId, ct) is not { IsActive: true } user) return null;
+        if (await users.GetAsync(userId, ct) is not { } user || !user.IsUsable(Clock.UtcNowMicros())) return null;
         if (await apps.GetAsync(appId, ct) is not { } app) return null;
         var names = await RoleNamesAsync(user.Id, app.Id, ct);
         return names.Count == 0 ? null : new AuthResult(user, app, names);
@@ -349,7 +400,7 @@ public sealed class AuthService(
         var candidate = wellFormed ? password! : "dummy password for malformed input";
         var verified = await _limiter.RunAsync(() => hasher.Verify(hash, candidate), ct);
 
-        if (!wellFormed || user is null || stored is null || app is null || !verified || !user.IsActive) return null;
+        if (!wellFormed || user is null || stored is null || app is null || !verified || !user.IsUsable(Clock.UtcNowMicros())) return null;
 
         var names = await RoleNamesAsync(user.Id, app.Id, ct);
         if (names.Count == 0) return null;
@@ -586,7 +637,9 @@ public sealed class SessionService(ISessionRepository sessions, AuthService auth
         var now = Clock.UtcNowMicros();
         var id = Guid.NewGuid();
         var token = NewToken(id);
-        var session = new Session(id, login.User.Id, login.App.Id, now, now, now + _lifetime, null);
+        // A test user's sessions end with the account.
+        var ends = login.User.ExpiresAt is { } accountEnds && accountEnds < now + _lifetime ? accountEnds : now + _lifetime;
+        var session = new Session(id, login.User.Id, login.App.Id, now, now, ends, null);
         await sessions.AddAsync(session, HashToken(token), ct);
         await TrimAsync(login.User.Id, id, now, ct);
         await PurgeSometimesAsync(now, ct);

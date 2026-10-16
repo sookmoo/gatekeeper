@@ -84,7 +84,21 @@ builder.Services
     .AddSingleton<AuditRecorder>()
     .AddSingleton<LoginThrottle>()
     .AddProblemDetails()
-    .AddOpenApi(o => o.AddDocumentTransformer<BearerSecurityTransformer>());
+    .ConfigureHttpJsonOptions(o => o.SerializerOptions.Converters.Add(new UserKindConverter()))
+    .AddOpenApi(o =>
+    {
+        o.AddDocumentTransformer<BearerSecurityTransformer>();
+        // The kind has its own converter, so describe it here: exactly one of three words.
+        o.AddSchemaTransformer((schema, context, _) =>
+        {
+            if ((Nullable.GetUnderlyingType(context.JsonTypeInfo.Type) ?? context.JsonTypeInfo.Type) == typeof(Gatekeeper.Domain.UserKind))
+            {
+                schema.Type = Microsoft.OpenApi.JsonSchemaType.String;
+                schema.Enum = ["person", "test", "shared"];
+            }
+            return Task.CompletedTask;
+        });
+    });
 
 if (!migrateOnly && !bootstrap)
 {

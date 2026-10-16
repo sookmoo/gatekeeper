@@ -71,7 +71,11 @@ public sealed class Introspector(TokenService tokens, AuthService users, ClientA
             ["roles"] = new JsonArray((user?.Roles ?? client!.Roles).Order(StringComparer.Ordinal).Select(r => (JsonNode)JsonValue.Create(r)!).ToArray()),
         };
         if (jwt.Id is { } jti) response["jti"] = jti;
-        if (user is not null) response["preferred_username"] = user.User.Username;
+        if (user is not null)
+        {
+            response["preferred_username"] = user.User.Username;
+            response["kind"] = user.User.Kind.ToString().ToLowerInvariant();
+        }
         if (client is not null) response["client_id"] = client.Client.Name;
         if (jwt.TryGetClaim(TokenService.SessionClaim, out var s)) response["sid"] = s.Value;
         return response;

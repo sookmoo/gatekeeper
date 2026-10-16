@@ -19,6 +19,9 @@ public static class Bootstrap
         var role = (await roles.ListByAppAsync(app.Id)).FirstOrDefault(r => r.Name == Reserved.AdminRole)
                    ?? await roles.AddAsync(new Role(Guid.NewGuid(), app.Id, Reserved.AdminRole, "Manages Gatekeeper"));
         var existing = (await services.GetRequiredService<IUserRepository>().ListAsync(username: username, slice: new Slice(0, 1))).FirstOrDefault();
+        // Refuse before changing anything: the admin role is for people only.
+        if (existing is { Kind: not UserKind.Person })
+            throw new ConflictException($"User '{username}' is a {existing.Kind.ToString().ToLowerInvariant()} account and cannot be an administrator. Change its kind to person first, or pick another name.");
         var user = existing ?? await users.CreateAsync(username, email, username);
         if (existing is { IsActive: false })
             await users.UpdateAsync(existing.Id, existing.Username, existing.Email, existing.DisplayName, true);

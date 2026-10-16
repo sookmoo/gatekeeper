@@ -23,6 +23,8 @@ public sealed class TokenService
     public const string RolesClaim = "roles";
     public const string UsernameClaim = "preferred_username";
     public const string SessionClaim = "sid";
+    /// <summary>"person", "test" or "shared": lets a consumer treat non-personal accounts differently.</summary>
+    public const string KindClaim = "kind";
 
     private readonly ECDsaSecurityKey _key;
     private readonly AuthOptions _options;
@@ -158,6 +160,8 @@ public sealed class TokenService
     {
         var issued = now ?? DateTimeOffset.UtcNow;
         var expires = issued + _options.AccessTokenLifetime;
+        // A test user's token must not outlive the account: consumers check it offline.
+        if (auth.User.ExpiresAt is { } accountEnds && accountEnds < expires) expires = accountEnds;
         var descriptor = new SecurityTokenDescriptor
         {
             Issuer = _options.Issuer,
@@ -172,6 +176,7 @@ public sealed class TokenService
                 new Claim(JwtRegisteredClaimNames.Sub, auth.User.Id.ToString()),
                 new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString()),
                 new Claim(UsernameClaim, auth.User.Username),
+                new Claim(KindClaim, auth.User.Kind.ToString().ToLowerInvariant()),
                 .. sessionId is { } sid ? [new Claim(SessionClaim, sid.ToString())] : Array.Empty<Claim>(),
             ]),
             Claims = new Dictionary<string, object> { [RolesClaim] = auth.Roles.Order(StringComparer.Ordinal).ToArray() },

@@ -33,7 +33,7 @@ public interface IUserRepository
 {
     Task<User> AddAsync(User user, CancellationToken ct = default);
     Task<User?> GetAsync(Guid id, CancellationToken ct = default);
-    Task<IReadOnlyList<User>> ListAsync(bool? active = null, string? username = null, Slice? slice = null, CancellationToken ct = default);
+    Task<IReadOnlyList<User>> ListAsync(bool? active = null, string? username = null, UserKind? kind = null, Slice? slice = null, CancellationToken ct = default);
     Task<User?> UpdateAsync(User user, CancellationToken ct = default);
     Task<bool> DeleteAsync(Guid id, CancellationToken ct = default);
 

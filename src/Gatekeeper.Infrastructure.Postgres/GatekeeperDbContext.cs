@@ -69,11 +69,17 @@ public sealed class GatekeeperDbContext(DbContextOptions<GatekeeperDbContext> op
 
         b.Entity<User>(e =>
         {
-            e.ToTable("users");
+            e.ToTable("users", t =>
+            {
+                t.HasCheckConstraint("ck_users_kind", "kind IN ('person', 'test', 'shared')");
+                t.HasCheckConstraint("ck_users_test_expires", "(kind = 'test') = (expires_at IS NOT NULL)"); // only test users expire, and they always do
+            });
             e.HasKey(x => x.Id);
             e.Property(x => x.Username).HasColumnType("citext").IsRequired();
             e.Property(x => x.Email).HasColumnType("citext").IsRequired();
             e.Property(x => x.DisplayName).IsRequired();
+            e.Property(x => x.Kind).HasConversion(k => k.ToString().ToLowerInvariant(), v => Enum.Parse<UserKind>(v, true))
+                .HasMaxLength(16).HasDefaultValue(UserKind.Person).IsRequired();
             e.HasIndex(x => x.Username).IsUnique().HasDatabaseName(Names.UsernameIndex);
             e.HasIndex(x => x.Email).IsUnique().HasDatabaseName(Names.EmailIndex);
         });

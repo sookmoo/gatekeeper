@@ -664,6 +664,13 @@
             }
           },
           {
+            "name": "kind",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "limit",
             "in": "query",
             "schema": {
@@ -2175,6 +2182,22 @@
           "updatedAt": {
             "type": "string",
             "format": "date-time"
+          },
+          "kind": {
+            "enum": [
+              "person",
+              "test",
+              "shared"
+            ],
+            "type": "string",
+            "default": "person"
+          },
+          "expiresAt": {
+            "type": [
+              "null",
+              "string"
+            ],
+            "format": "date-time"
           }
         }
       },
@@ -2210,6 +2233,21 @@
               "null",
               "boolean"
             ]
+          },
+          "kind": {
+            "enum": [
+              "person",
+              "test",
+              "shared"
+            ],
+            "type": "string"
+          },
+          "expiresAt": {
+            "type": [
+              "null",
+              "string"
+            ],
+            "format": "date-time"
           }
         }
       }

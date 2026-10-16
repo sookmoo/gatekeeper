@@ -43,6 +43,9 @@ public sealed class AuditRecorder(AuditService audit, ILogger<AuditRecorder> log
 /// </summary>
 public sealed partial class AuditMiddleware(RequestDelegate next)
 {
+    /// <summary>An endpoint can leave a short note here (HttpContext.Items) that is appended to the audit detail.</summary>
+    public const string NoteKey = "audit.note";
+
     [System.Text.RegularExpressions.GeneratedRegex(@"\{([^{}:]+):[^{}]*\}")]
     private static partial System.Text.RegularExpressions.Regex RouteConstraint();
 
@@ -78,6 +81,7 @@ public sealed partial class AuditMiddleware(RequestDelegate next)
             throw;
         }
         var status = http.Response.StatusCode;
-        await recorder.RecordAsync(http, actor, action, target, status is >= 200 and < 300, $"status {status}");
+        await recorder.RecordAsync(http, actor, action, target, status is >= 200 and < 300,
+            http.Items[NoteKey] is string note ? $"status {status}; {note}" : $"status {status}");
     }
 }

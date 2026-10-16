@@ -180,9 +180,21 @@ namespace Gatekeeper.Infrastructure.Postgres.Migrations
                         .HasColumnType("citext")
                         .HasColumnName("email");
 
+                    b.Property<DateTimeOffset?>("ExpiresAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("expires_at");
+
                     b.Property<bool>("IsActive")
                         .HasColumnType("boolean")
                         .HasColumnName("is_active");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasDefaultValue("person")
+                        .HasColumnName("kind");
 
                     b.Property<DateTimeOffset>("UpdatedAt")
                         .HasColumnType("timestamp with time zone")
@@ -203,7 +215,12 @@ namespace Gatekeeper.Infrastructure.Postgres.Migrations
                         .IsUnique()
                         .HasDatabaseName("ix_users_username");
 
-                    b.ToTable("users", (string)null);
+                    b.ToTable("users", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_users_kind", "kind IN ('person', 'test', 'shared')");
+
+                            t.HasCheckConstraint("ck_users_test_expires", "(kind = 'test') = (expires_at IS NOT NULL)");
+                        });
                 });
 
             modelBuilder.Entity("Gatekeeper.Infrastructure.Postgres.ClientRoleRow", b =>

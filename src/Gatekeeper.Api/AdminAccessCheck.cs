@@ -1,3 +1,4 @@
+using Gatekeeper.Domain;
 using Gatekeeper.Application;
 using Microsoft.Extensions.Caching.Memory;
 
@@ -18,7 +19,8 @@ public sealed class AdminAccessCheck(IUserRepository users, AdminGuard guard, IM
         {
             entry.AbsoluteExpirationRelativeToNow = CacheFor;
             if (sessionId is { } sid && !await sessions.IsActiveAsync(sid, ct)) return false;
-            if (await users.GetAsync(userId, ct) is not { IsActive: true }) return false;
+            // Only a person administers Gatekeeper, whatever the role table says.
+            if (await users.GetAsync(userId, ct) is not { Kind: UserKind.Person } user || !user.IsUsable(Clock.UtcNowMicros())) return false;
             if (await guard.AdminRoleIdAsync(ct) is not { } adminRole) return false;
             return (await users.ListRolesAsync(userId, slice: new Slice(0, 10_000), ct: ct)).Any(r => r.Id == adminRole);
         })!;

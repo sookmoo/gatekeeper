@@ -19,7 +19,7 @@ public static class CliApp
     private static readonly string[] SessionFields = ["id", "appId", "createdAt", "lastUsedAt", "expiresAt"];
     private static readonly string[] ClientFields = ["id", "name", "appId", "isActive"];
     private static readonly string[] AuditFields = ["at", "outcome", "actor", "action", "target", "detail"];
-    private static readonly string[] UserFields = ["id", "username", "email", "isActive", "displayName"];
+    private static readonly string[] UserFields = ["id", "username", "email", "kind", "isActive", "expiresAt", "displayName"];
 
     /// <param name="tokens">Where the login token is kept (default: a private file in the user's state directory).</param>
     /// <param name="readSecret">Reads a password without echo (prompt text, whether to ask twice; null at end of input).</param>
@@ -328,20 +328,39 @@ public static class CliApp
             var cEmail = new Option<string>("--email") { Required = true };
             var cDisplay = new Option<string?>("--display-name");
             var cInactive = new Option<bool>("--inactive") { Description = "Create the user disabled" };
-            cmd.Subcommands.Add(Cmd("create", "Create a user", c => { c.Arguments.Add(cUser); c.Options.Add(cEmail); c.Options.Add(cDisplay); c.Options.Add(cInactive); }, async x =>
+            Option<string?> KindOpt(string what) { var o = new Option<string?>("--kind") { Description = what }; o.AcceptOnlyFromAmong("person", "test", "shared"); return o; }
+            // A date or time without an offset means UTC, not the operator's zone, so the same command expires the same instant everywhere.
+            Option<DateTimeOffset?> ExpiresOpt() => new("--expires")
+            {
+                Description = "When a test user expires, in UTC unless an offset is given (for example 2026-12-31 or 2026-12-31T17:00+01:00; default 30 days, at most 365)",
+                CustomParser = r =>
+                {
+                    var text = r.Tokens.Count == 1 ? r.Tokens[0].Value : null;
+                    if (text is not null && DateTimeOffset.TryParse(text, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.AssumeUniversal, out var when)) return when;
+                    r.AddError("--expires must be a date or time such as 2026-12-31 or 2026-12-31T17:00:00Z.");
+                    return null;
+                },
+            };
+            var cKind = KindOpt("person (default), test (expires) or shared"); var cExpires = ExpiresOpt();
+            cmd.Subcommands.Add(Cmd("create", "Create a user", c => { c.Arguments.Add(cUser); c.Options.Add(cEmail); c.Options.Add(cDisplay); c.Options.Add(cInactive); c.Options.Add(cKind); c.Options.Add(cExpires); }, async x =>
                 x.Print(await x.Api.PostAsync("/v1/users", new
                 {
                     username = x.Get(cUser),
                     email = x.Get(cEmail),
                     displayName = x.Get(cDisplay),
                     isActive = !x.Get(cInactive),
+                    kind = x.Get(cKind),
+                    expiresAt = x.Get(cExpires),
                 }), UserFields, single: true)));
 
             var lActive = new Option<bool?>("--active") { Description = "Filter by active state (true/false)" };
-            cmd.Subcommands.Add(Cmd("list", "List users", c => c.Options.Add(lActive), async x =>
+            var lKind = KindOpt("Only this kind: person, test or shared");
+            cmd.Subcommands.Add(Cmd("list", "List users", c => { c.Options.Add(lActive); c.Options.Add(lKind); }, async x =>
             {
-                var active = x.Get(lActive);
-                x.Print(await x.Api.GetListAsync(active is null ? "/v1/users" : $"/v1/users?active={active.ToString()!.ToLowerInvariant()}"), UserFields);
+                var query = new List<string>();
+                if (x.Get(lActive) is { } active) query.Add($"active={active.ToString().ToLowerInvariant()}");
+                if (x.Get(lKind) is { } kind) query.Add($"kind={kind}");
+                x.Print(await x.Api.GetListAsync(query.Count == 0 ? "/v1/users" : $"/v1/users?{string.Join('&', query)}"), UserFields);
             }));
 
             var gUser = UserArg();
@@ -351,10 +370,11 @@ public static class CliApp
             var uUser = UserArg();
             var uName = new Option<string?>("--username"); var uEmail = new Option<string?>("--email");
             var uDisplay = new Option<string?>("--display-name"); var uActive = new Option<bool?>("--active");
-            cmd.Subcommands.Add(Cmd("update", "Update a user", c => { c.Arguments.Add(uUser); c.Options.Add(uName); c.Options.Add(uEmail); c.Options.Add(uDisplay); c.Options.Add(uActive); }, async x =>
+            var uKind = KindOpt("Change the kind (a user with the admin role must stay a person)"); var uExpires = ExpiresOpt();
+            cmd.Subcommands.Add(Cmd("update", "Update a user", c => { c.Arguments.Add(uUser); c.Options.Add(uName); c.Options.Add(uEmail); c.Options.Add(uDisplay); c.Options.Add(uActive); c.Options.Add(uKind); c.Options.Add(uExpires); }, async x =>
             {
                 var id = await x.ResolveUser(x.Get(uUser)!);
-                var body = new { username = x.Get(uName), email = x.Get(uEmail), displayName = x.Get(uDisplay), isActive = x.Get(uActive) };
+                var body = new { username = x.Get(uName), email = x.Get(uEmail), displayName = x.Get(uDisplay), isActive = x.Get(uActive), kind = x.Get(uKind), expiresAt = x.Get(uExpires) };
                 x.Print(await x.Api.PatchAsync($"/v1/users/{id}", body), UserFields, single: true);
             }));
 
