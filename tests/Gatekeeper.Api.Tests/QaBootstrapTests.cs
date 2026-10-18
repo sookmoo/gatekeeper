@@ -94,6 +94,28 @@ public class QaBootstrapTests
     }
 
     [SkippableFact]
+    public async Task Bootstrap_repairs_an_admin_role_stored_with_other_casing()
+    {
+        using var pg = new Pg();
+        var anon = pg.Factory.CreateClient();
+        var apps = pg.Factory.Services.GetRequiredService<Gatekeeper.Application.IAppRepository>();
+        var roleRepo = pg.Factory.Services.GetRequiredService<Gatekeeper.Application.IRoleRepository>();
+        var app = await apps.AddAsync(new Gatekeeper.Domain.App(Guid.NewGuid(), "gatekeeper"));
+        await roleRepo.AddAsync(new Gatekeeper.Domain.Role(Guid.NewGuid(), app.Id, "ADMIN", "old"));
+
+        var r = RunApi(["bootstrap-admin", "root3", "root3@example.com"], pg.Env, Pw + "\n");
+        Assert.True(r.Code == 0, r.Err);
+        var stored = await roleRepo.ListByAppAsync(app.Id);
+        Assert.Equal("admin", Assert.Single(stored).Name);
+
+        var login = await anon.PostAsJsonAsync("/v1/auth/login", new { username = "root3", password = Pw, application = "gatekeeper" });
+        Assert.Equal(HttpStatusCode.OK, login.StatusCode);
+        var admin = pg.Factory.CreateClient();
+        admin.DefaultRequestHeaders.Authorization = new("Bearer", (await login.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("accessToken").GetString()!);
+        Assert.Equal(HttpStatusCode.OK, (await admin.GetAsync("/v1/applications")).StatusCode);
+    }
+
+    [SkippableFact]
     public async Task Bootstrap_rejects_bad_input_without_leaving_a_half_created_admin()
     {
         using var pg = new Pg();
@@ -195,6 +217,14 @@ public class QaBootstrapTests
             var apps = await c.GetFromJsonAsync<JsonElement>("/v1/applications");
             var id = apps.GetProperty("items").EnumerateArray().Single(a => a.GetProperty("name").GetString() == "gatekeeper").GetProperty("id").GetGuid();
             Assert.Equal(HttpStatusCode.Conflict, (await c.DeleteAsync($"/v1/applications/{id}")).StatusCode);
+            // and so are its roles: no create, no change (not even the description), no delete
+            Assert.Equal(HttpStatusCode.Conflict, (await c.PostAsJsonAsync($"/v1/applications/{id}/roles", new { name = "extra" })).StatusCode);
+            var role = (await c.GetFromJsonAsync<JsonElement>($"/v1/applications/{id}/roles")).GetProperty("items").EnumerateArray().Single();
+            var rid = role.GetProperty("id").GetGuid();
+            Assert.Equal(HttpStatusCode.Conflict, (await c.PutAsJsonAsync($"/v1/roles/{rid}", new { name = "admin", description = "tampered" })).StatusCode);
+            Assert.Equal(HttpStatusCode.Conflict, (await c.SendAsync(new HttpRequestMessage(HttpMethod.Patch, $"/v1/roles/{rid}") { Content = JsonContent.Create(new { description = "tampered" }) })).StatusCode);
+            Assert.Equal(HttpStatusCode.Conflict, (await c.DeleteAsync($"/v1/roles/{rid}")).StatusCode);
+            Assert.Equal(role.GetProperty("description").GetString(), (await c.GetFromJsonAsync<JsonElement>($"/v1/roles/{rid}")).GetProperty("description").GetString());
         }
         Assert.NotEqual(passwords[0], passwords[1]);
     }

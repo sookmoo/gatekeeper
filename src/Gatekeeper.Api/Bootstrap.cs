@@ -16,8 +16,11 @@ public static class Bootstrap
         var roles = services.GetRequiredService<IRoleRepository>();
         var users = services.GetRequiredService<UserService>();
         var app = await apps.GetByNameAsync(Reserved.AdminApp) ?? await apps.AddAsync(new App(Guid.NewGuid(), Reserved.AdminApp));
-        var role = (await roles.ListByAppAsync(app.Id)).FirstOrDefault(r => r.Name == Reserved.AdminRole)
+        var role = (await roles.ListByAppAsync(app.Id)).FirstOrDefault(r => Reserved.IsAdminRole(r.Name))
                    ?? await roles.AddAsync(new Role(Guid.NewGuid(), app.Id, Reserved.AdminRole, "Manages Gatekeeper"));
+        // Older code may have stored "ADMIN"; the policy matches exactly, so repair the name.
+        if (role.Name != Reserved.AdminRole)
+            role = await roles.UpdateAsync(role with { Name = Reserved.AdminRole }) ?? throw new NotFoundException("The admin role disappeared.");
         var existing = (await services.GetRequiredService<IUserRepository>().ListAsync(username: username, slice: new Slice(0, 1))).FirstOrDefault();
         // Refuse before changing anything: the admin role is for people only.
         if (existing is { Kind: not UserKind.Person })

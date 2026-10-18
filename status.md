@@ -83,12 +83,77 @@ Escape control characters in CLI output; request body size limit; pagination and
 - 5a review fixes (QA + security, 2026-10-13): `LoopbackGuard` now runs after `StartAsync` (it never fired before, so the UI listened on any interface and the CI smoke test would have hung); sign-in throttle is per (address, username) plus per address, a success clears only its own pair, IPv6 /64 buckets; error handling no longer clears headers/cookies (headers are set in `OnStarting`), API errors map to honest statuses (403/404/429/502/503/504) with fixed texts (nothing the API said is echoed), status-code pages for 400/403/404/429 instead of blank bodies, a bad cursor restarts at page 1, 64-character name limit in the forms; `Gatekeeper:ApiUrl` path prefix kept; config values are validated (no crash on `abc`, shorthand proxy addresses refused); `Web__SecureCookies` (`__Host-` prefix, always `Secure`); signing in again ends the previous API session; web unit `Wants=` (not `Requires=`) the API so an API restart does not sign admins out; `Cross-Origin-Resource-Policy`; test quality fixes (vacuous markup test, sign-out now checks the API, config/guard tests).
 - Known limits: sessions are per process and lost on restart; web sessions that idle out or are evicted are not ended on the API (their refresh tokens live only in the UI's memory and expire there); the API sees only the UI's address, so guessing at one account through the UI makes that account wait in the UI and at the API (15 min; `gk` from another address still works; forwarding the client address needs a fixed container address and `Auth__TrustedProxies`, deferred); cookies are not port-isolated on localhost (use a host name over TLS with `Web__SecureCookies`); a refresh response lost in transit makes the next renewal look like reuse and ends the session (sign in again); no way back to a previous page of the list; no HTTPS in the container; roles, users, clients, sessions and audit screens come in later slices.
 
-## Slice 5b: user kinds and test-user expiry (branch `feat/slice-5b-user-kind`)
+## Slice 5b: user kinds and test-user expiry (done, PR #9 merged 2026-10-16)
 - Decisions (user, 2026-10-15): add a `kind` field to users with an expiry for test users, before the users UI. Service identities stay a separate entity (clients).
 - Design: `kind` is `person` (default), `test` or `shared`. `expiresAt` exists only for `test` users: omitted on create it defaults to 30 days, at most 365 days ahead, must be in the future when set (an unchanged date is accepted, so renaming near the expiry works); turning a test user into another kind clears it, turning a person into a test user gives the default. Only a `person` may hold the `admin` role (assigning it to another kind, or changing an administrator's kind, is a 409; checked under the `AdminGuard` so the two cannot race). An expired test user is unusable like a disabled one: no sign-in, refresh or introspection, and no management access; the row and its data stay, and an admin can extend the date. Access tokens already issued live until `exp` (as for disabling). The access token and introspection response carry `kind`. `GET /v1/users?kind=`, `gk user create/update --kind --expires`, `gk user list --kind`. Migration `AddUserKind` (`kind` text with a check constraint, default `person`; nullable `expires_at`); existing users become persons.
 - 5b review fixes (QA + security, 2026-10-15): user updates now run under the `AdminGuard` and read the user inside it (a stale read could overwrite a kind changed meanwhile and leave a non-person holding `admin`); `AdminAccessCheck` also requires `kind=person` (defence in depth); access tokens and refresh sessions of a test user end no later than the account; `bootstrap-admin` refuses a non-person user before changing anything; the kind is exactly person/test/shared in JSON and query (the built-in enum parsers accepted numbers and comma lists like `person, test`; a strict converter plus an OpenAPI schema transformer); `gk --expires` without an offset means UTC; audit detail of user create/update/patch lists `kind`, `expiresAt` and `active` after the change; migration also checks `(kind = 'test') = (expires_at IS NOT NULL)`.
 - Accepted: the `kind` claim in an access token can be up to 15 minutes stale after a change of kind (introspection is current); client tokens and tokens issued before 5b have no `kind`, so consumers should require `kind == "person"` explicitly and treat a missing claim as not a person; the admin cache (10 s) can keep access for that long after a demotion; the guard is per process (several API instances would need a database-level rule); a rejected sign-in of an expired user looks like any other failure (by design, no reason is given to the caller).
 - Not done: automatic deletion of expired test users (they stay, disabled by time); `active=true` in the list still means only the enabled flag, so it includes expired test users.
+
+## Admin UI plan: slices 5c-5i (proposed by planner 2026-10-16; approved by user 2026-10-16 with the recommended choices: order as listed, expiry entered in UTC, exact username lookup, one-time secret shown on the answering page)
+Shared rules for every slice (the 5a patterns): Razor Pages, no JavaScript, plain forms with `asp-page` (antiforgery), PRG redirect after a change (except the one-time secret in 5g/5h, see there), a confirmation page before every delete or revoke, fixed error texts mapped by `GatekeeperApi` (409/400 detail from the API's problem body as today), "next page" via the API cursor, the reserved app `gatekeeper` read-only where 5a made it so, every call carries the signed-in admin's token. New calls go into `GatekeeperApi` with small DTOs. A top navigation in `_Layout` grows by one entry per slice. Tests in `tests/Gatekeeper.Web.Tests` for each slice: page needs a session, POST without antiforgery refused, CRUD round trip against the API test host, HTML encoding of hostile names, API error mapping (404/409/503), confirmation page before destructive actions; Quadlet check that the audit row names the admin. No API changes are needed for 5c-5i; gaps are listed below and are optional.
+
+### Slice 5c: roles of an application (implemented and reviewed 2026-10-17, branch `feat/slice-5c-roles`, not yet pushed)
+- Result: `/Applications/{id}/Roles` (list, create, edit, delete with confirmation; paging), role calls in `GatekeeperApi`, `Roles5cTests` + `Roles5cExtraTests`. The reserved app's roles are read-only in the UI. Deviation from the plan, found by the developer: the API did not protect roles of `gatekeeper` other than `admin`, so the API now does (decision: user, 2026-10-17): `RoleService` returns 409 for create/update/patch/delete of any role in the reserved app (reserved check before validation); leftover non-admin roles there (made by older code) can still be deleted, and only the `admin` role of that app can be assigned to users; `Reserved.IsAdminRole` (ignoring case) is the one comparison; `bootstrap-admin` repairs an admin role stored with other casing (old code allowed a case-only rename). The Web pages forward reserved-app POSTs to the API (409 + audit row naming the admin).
+- Reviews (QA + security, two rounds): no High; fixed the reserved-app gap, 200-vs-409 on refusal, bootstrap repair, helper, audit of refused attempts, comments (antiforgery token is valid for the whole session cookie).
+- Tests (Postgres): Domain 45, Application 50, Store.Contract 118 (+1 skipped), Cli 86, Web 82, Api 317. Web tests run on the in-memory store only.
+- Known limits: Web tests do not run against Postgres; no previous-page link.
+
+(Original plan text:)
+- Scope: from the applications list, a "Roles" link per app opens `/Applications/{id}/Roles`: list (name, description), create, edit name/description, delete with confirmation. Roles of the reserved app are listed read-only (no create/edit/delete on `gatekeeper`).
+- API: `GET/POST /v1/applications/{id}/roles`, `GET/PATCH/DELETE /v1/roles/{id}`, `GET /v1/applications/{id}` (header).
+- Acceptance: an admin can create, rename, re-describe and delete a role in a normal app; duplicate name shows the API's 409 text; deleting asks first; reserved app shows no change controls and a crafted POST to it is refused by the API and shown as an error; unknown app/role id gives the 404 page; names/descriptions are encoded; form limits match the API (name 64, description limit as in the API).
+
+### Slice 5d: users list and edit (kind, expiry, enable/disable)
+- Scope: `/Users` list (username, display name, kind, active, expiry with an "expired" marker computed from `expiresAt`), filters kind and active (query string, GET form), exact username lookup; create (username, email, display name, kind, expiry for test users); edit the same fields plus enable/disable; delete with confirmation.
+- API: `GET /v1/users?kind=&active=&username=`, `POST /v1/users`, `GET/PATCH/DELETE /v1/users/{id}`.
+- Acceptance: kind is a select of person/test/shared; expiry only applies to test users (empty means the API default of 30 days); the API's 409 texts (last admin, admin must be a person, duplicate username/email) and 400 texts (expiry in the past or over 365 days) are shown on the form; an expired test user is visibly marked; disabling/deleting oneself is governed by the API's `AdminGuard` (UI adds nothing).
+
+### Slice 5e: a user's roles and password
+- Scope: on the user page, list the user's roles (role name + application name), add a role in two steps without JavaScript (GET form: pick application, then pick role of that app), remove a role with confirmation; set a password (`autocomplete="new-password"`, never re-rendered after an error).
+- API: `GET /v1/users/{id}/roles`, `PUT/DELETE /v1/users/{id}/roles/{roleId}`, `GET /v1/applications`, `GET /v1/applications/{id}/roles`, `GET /v1/applications/{id}` (to show app names, since the role list carries only `appId`), `PUT /v1/users/{id}/password`.
+- Acceptance: assign and remove work; giving `admin` to a non-person shows the 409; removing the last admin's role shows the 409; removing one's own admin role ends the UI session (`/Login?ended=1`); the password never appears in a response, log or audit row (test).
+
+### Slice 5f: a user's sessions
+- Scope: on the user page, list sessions (application, created, last used, expires, revoked/expired state), revoke one (confirmation), revoke all (confirmation, shows the count).
+- API: `GET /v1/users/{id}/sessions`, `DELETE /v1/sessions/{id}`, `DELETE /v1/users/{id}/sessions`.
+- Acceptance: revoked sessions show as such; revoking one's own UI session or "revoke all" on oneself ends the UI session cleanly (redirect to sign-in, no error page); the page states that already issued access tokens live until `exp`.
+
+### Slice 5g: clients (service identities) and secrets
+- Scope: `/Clients` list (name, application, active), filter by application; create (name, application, active) and show the one-time secret; rename, enable/disable; rotate secret (confirmation, then one-time display); delete with confirmation. Clients cannot be created in the reserved app (API rule; the select omits it).
+- API: `GET /v1/clients?application=`, `POST /v1/clients`, `GET/PATCH/DELETE /v1/clients/{id}`, `POST /v1/clients/{id}/secret`, `GET /v1/applications`.
+- Design: the secret is rendered directly in the POST response (no redirect, never in TempData, cookies, query strings or logs), with `Cache-Control: no-store` (already global) and a clear "copy it now, it is shown once" text.
+- Acceptance: secret shown exactly once, not reachable again by reload/back (reload shows the browser's resubmit warning; resubmitting creates a duplicate-name 409 or rotates again, which is accepted and documented); secret absent from logs and audit (test).
+
+### Slice 5h: a client's roles
+- Scope: on the client page, list roles, add a role (select from the client's own application only, one step), remove with confirmation.
+- API: `GET /v1/clients/{id}/roles`, `PUT/DELETE /v1/clients/{id}/roles/{roleId}`, `GET /v1/applications/{id}/roles`.
+- Acceptance: only roles of the client's app are offered; the API's refusal for other apps is shown if forced.
+
+### Slice 5i: audit trail (read-only)
+- Scope: `/Audit` list, newest first (time UTC, actor, action, target, outcome, detail, address), filters actor and action (exact match, as the API), next page.
+- API: `GET /v1/audit?actor=&action=`.
+- Acceptance: hostile text in audit fields is encoded (the API sanitises, the UI encodes anyway); empty filter results show "no events"; no write controls. Independent of the others: can be moved earlier if wanted.
+
+### API gaps (optional, none blocks 5c-5i)
+1. User role list returns `appId` only: the UI resolves app names with extra GETs (fine at current scale).
+2. User search is exact username only; no prefix/email search.
+3. `active=true` still includes expired test users; there is no "usable" filter (UI marks expired rows itself).
+4. Audit: exact-match filters only, no time range or target filter; the offset cursor on a newest-first list shifts as new rows arrive (next page can repeat rows). A keyset cursor for audit would fix it.
+5. No way to tell which listed session is the UI's own other than the `sid` in the admin's token (the UI can read it from its own token).
+
+### Risks
+- One-time secret display breaks the PRG pattern (5g/5h); needs careful tests that it never lands in logs, TempData or the audit.
+- Self-lockout paths (removing one's own admin role, revoking one's own sessions, disabling oneself) must end the UI session cleanly rather than showing an error.
+- Expiry entry without JavaScript: `datetime-local` has no time zone; proposal is to treat it as UTC and label it so (open question).
+- Role assignment without JavaScript needs a two-step form (5e); acceptable but clunky.
+- Offset paging and no "previous page" (known 5a limit) become more visible on users and audit.
+
+### Open questions for the user (plan)
+1. Approve the order 5c roles, 5d users, 5e user roles/password, 5f sessions, 5g clients, 5h client roles, 5i audit? Audit could go earlier as an easy read-only screen.
+2. Expiry input in UTC (proposed) or the admin's local time?
+3. Is exact-username lookup enough on the users list, or should the API get a prefix/email search (gap 2) first?
+4. Is showing the client secret on the POST response page (no redirect, reload may resubmit) acceptable?
 
 ## Planner backlog (user ideas, not analysed yet)
 1. Local Gatekeeper instances for systems that implement Gatekeeper, with a central master Gatekeeper remaining the source of truth (federated/edge deployment, replication or caching).
@@ -98,4 +163,4 @@ Escape control characters in CLI output; request body size limit; pagination and
 5. Ideas 1 and 2 analysed (2026-10-13), then paused by the user. Idea 1: option A edge verifier cache (JWKS cache and introspection forwarding) first; option B read replica (change feed, edge signing key, password hashes leave the master, bounded revocation lag) only if offline login is needed. Idea 2: one generic OIDC connector (code + PKCE) covers Entra ID and Keycloak, AD via those, no LDAP bind; tables `identity_providers`, `user_identities` linked on (provider, subject), admin pre-linked users first. Open questions: need for offline login, which provider is in use, pre-created vs auto-created external users, whether password hashes may leave the master.
 
 ## Next action
-Slice 5b (user kinds and test-user expiry): implemented and tested; run independent QA and security reviews, fix, then ask before pushing. Next UI slices: roles, users (with sessions and kind), clients, audit.
+Slice 5c is implemented, tested and reviewed, but not committed. Ask the user before committing and pushing (branch `feat/slice-5c-roles`, PR to `main`, squash). Then start slice 5d (users list and edit) on a new branch. Other open options: backlog items 1, 2 (paused) and 4 (self-service).

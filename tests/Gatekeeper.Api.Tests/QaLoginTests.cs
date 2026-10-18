@@ -336,22 +336,20 @@ public class QaLoginTests
         var apps = await QaEnv.Json(await e.Admin.GetAsync("/v1/applications?limit=200"));
         var gk = apps.GetProperty("items").EnumerateArray().Single(a => a.GetProperty("name").GetString() == "gatekeeper").GetProperty("id").GetGuid();
         var admin = (await QaEnv.Json(await e.Admin.GetAsync($"/v1/applications/{gk}/roles"))).GetProperty("items")[0].GetProperty("id").GetGuid();
-        var viewer = await e.Role(gk, "viewer");
         var other = await e.App("other"); var otherAdmin = await e.Role(other, "admin");
 
         // upper-case names are rejected by slug validation, so no case variant can sneak in
         Assert.Equal(HttpStatusCode.BadRequest, (await e.Admin.PostAsJsonAsync("/v1/applications", new { name = "Gatekeeper" })).StatusCode);
         Assert.Equal(HttpStatusCode.Conflict, (await e.Admin.PostAsJsonAsync("/v1/applications", new { name = "gatekeeper" })).StatusCode);
-        Assert.Equal(HttpStatusCode.BadRequest, (await e.Admin.PostAsJsonAsync($"/v1/applications/{gk}/roles", new { name = "ADMIN" })).StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, (await e.Admin.PostAsJsonAsync($"/v1/applications/{gk}/roles", new { name = "ADMIN" })).StatusCode); // reserved check comes before validation
 
         // no-op rename of the reserved app/role is not a rename
         var noop = await e.Admin.PutAsJsonAsync($"/v1/applications/{gk}", new { name = "gatekeeper" });
         Assert.True(noop.StatusCode is HttpStatusCode.OK or HttpStatusCode.Conflict, "no-op PUT of reserved app -> " + (int)noop.StatusCode); // observed: 409 (spec gap)
-        // renaming another role to admin in the reserved app collides; renaming admin elsewhere is free
-        Assert.Equal(HttpStatusCode.Conflict, (await e.Admin.PutAsJsonAsync($"/v1/roles/{viewer}", new { name = "admin" })).StatusCode);
+        // no role can be added to the reserved app; renaming admin elsewhere is free
+        Assert.Equal(HttpStatusCode.Conflict, (await e.Admin.PostAsJsonAsync($"/v1/applications/{gk}/roles", new { name = "viewer" })).StatusCode);
         var rn = await e.Admin.PutAsJsonAsync($"/v1/roles/{otherAdmin}", new { name = "owner" });
         Assert.True(rn.StatusCode == HttpStatusCode.OK, "rename admin role in non-reserved app -> " + (int)rn.StatusCode + await rn.Content.ReadAsStringAsync());
-        Assert.Equal(HttpStatusCode.NoContent, (await e.Admin.DeleteAsync($"/v1/roles/{viewer}")).StatusCode);
         // renaming another app to the reserved name collides
         Assert.Equal(HttpStatusCode.Conflict, (await e.Admin.PutAsJsonAsync($"/v1/applications/{other}", new { name = "gatekeeper" })).StatusCode);
         // deleting a non-admin app or its admin role is allowed
