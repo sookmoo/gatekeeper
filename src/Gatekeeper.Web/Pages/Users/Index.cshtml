@@ -1,0 +1,77 @@
+@page
+@model Gatekeeper.Web.Pages.Users.IndexModel
+@{
+    ViewData["Title"] = "Users";
+}
+<h1>Users</h1>
+@if (Model.Done is not null)
+{
+    <p class="notice">@Model.Done</p>
+}
+@if (Model.Error is not null)
+{
+    <p class="error" role="alert">@Model.Error</p>
+}
+<p><a class="button" href="/Users/Create">New user</a></p>
+<form method="get" action="/Users" class="filter">
+    <label>Kind
+        <select name="kind">
+            <option value="">Any</option>
+            @foreach (var k in UserForm.Kinds)
+            {
+                <option value="@k" selected="@(Model.Kind == k)">@k</option>
+            }
+        </select>
+    </label>
+    <label>Active
+        <select name="active">
+            <option value="">Any</option>
+            <option value="true" selected="@(Model.Active == "true")">Yes</option>
+            <option value="false" selected="@(Model.Active == "false")">No</option>
+        </select>
+    </label>
+    <label>Username (exact)
+        <input name="username" value="@Model.Username" maxlength="64">
+    </label>
+    <button type="submit">Filter</button>
+    <a href="/Users">Clear</a>
+</form>
+@if (Model.Items.Count == 0)
+{
+    <p>No users.</p>
+}
+else
+{
+    <table>
+        <thead><tr><th>Username</th><th>Display name</th><th>Kind</th><th>Active</th><th>Expires</th><th></th></tr></thead>
+        <tbody>
+        @foreach (var u in Model.Items)
+        {
+            <tr>
+                <td>@u.Username</td>
+                <td>@u.DisplayName</td>
+                <td>@u.Kind</td>
+                <td>@(u.IsActive ? "yes" : "no")</td>
+                <td>
+                    @if (u.ExpiresAt is { } e)
+                    {
+                        @UserForm.DisplayExpiry(e)
+                        @if (Model.IsExpired(u))
+                        {
+                            <span class="expired">expired</span>
+                        }
+                    }
+                </td>
+                <td>
+                    <a href="/Users/Edit/@u.Id">Edit</a>
+                    <a href="/Users/Delete/@u.Id">Delete</a>
+                </td>
+            </tr>
+        }
+        </tbody>
+    </table>
+}
+@if (Model.NextCursor is not null)
+{
+    <p><a href="@Model.NextHref()">Next page</a></p>
+}

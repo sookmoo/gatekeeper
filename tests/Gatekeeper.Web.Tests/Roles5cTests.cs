@@ -209,8 +209,8 @@ public class Roles5cTests : IClassFixture<WebFixture>
 
     [Theory]
     [InlineData("503", HttpStatusCode.ServiceUnavailable, "unavailable")]
-    [InlineData("down", HttpStatusCode.ServiceUnavailable, "Cannot reach")]
-    [InlineData("500", HttpStatusCode.BadGateway, "reported an error")]
+    [InlineData("down", HttpStatusCode.ServiceUnavailable, "unavailable")]
+    [InlineData("500", HttpStatusCode.BadGateway, "could not complete")]
     public async Task Api_outages_on_the_role_pages_get_an_honest_status_without_leaking_detail(string mode, HttpStatusCode expected, string text)
     {
         var armed = false;

@@ -126,18 +126,22 @@ app.Use(async (http, next) =>
     }
     catch (ApiException ex) when (!http.Response.HasStarted)
     {
-        var (status, retry) = ex.Status switch
+        var (status, retry, text) = ex.Status switch
         {
-            System.Net.HttpStatusCode.TooManyRequests => (StatusCodes.Status429TooManyRequests, true),
-            System.Net.HttpStatusCode.Forbidden => (StatusCodes.Status403Forbidden, false),
-            System.Net.HttpStatusCode.NotFound => (StatusCodes.Status404NotFound, false),
-            System.Net.HttpStatusCode.GatewayTimeout => (StatusCodes.Status504GatewayTimeout, true),
-            System.Net.HttpStatusCode.ServiceUnavailable => (StatusCodes.Status503ServiceUnavailable, true),
-            _ => (StatusCodes.Status502BadGateway, true),
+            System.Net.HttpStatusCode.TooManyRequests => (StatusCodes.Status429TooManyRequests, true, "Too many attempts. Try again later."),
+            System.Net.HttpStatusCode.Forbidden => (StatusCodes.Status403Forbidden, false, "You are not allowed to do that."),
+            System.Net.HttpStatusCode.NotFound => (StatusCodes.Status404NotFound, false, "This item does not exist (it may already have been deleted)."),
+            System.Net.HttpStatusCode.GatewayTimeout => (StatusCodes.Status504GatewayTimeout, true, "The Gatekeeper API did not answer in time."),
+            System.Net.HttpStatusCode.ServiceUnavailable => (StatusCodes.Status503ServiceUnavailable, true, "The Gatekeeper API is unavailable right now."),
+            _ => (StatusCodes.Status502BadGateway, true, "The Gatekeeper API could not complete the request."),
         };
+        // The API's own wording stays in the log: it is not shown to the browser.
+        var detail = new string(ex.Message.Where(c => !char.IsControl(c)).Take(200).ToArray());
+        app.Logger.LogWarning("API error {Status} on {Method} {Path}: {Detail}", (int)ex.Status, http.Request.Method, http.Request.Path, detail);
+        var back = http.Request.Path.StartsWithSegments("/Users") ? "/Users" : http.Request.Path.StartsWithSegments("/Applications") ? "/Applications" : "/";
         http.Response.StatusCode = status;
         http.Response.ContentType = "text/html; charset=utf-8";
-        await http.Response.WriteAsync($"<!doctype html><meta charset=\"utf-8\"><link rel=\"stylesheet\" href=\"/site.css\"><title>Gatekeeper</title><main><p>{HtmlEncoder.Default.Encode(ex.Message)}</p>{(retry ? "<p><a href=\"/Applications\">Try again</a></p>" : "<p><a href=\"/Applications\">Back to the applications</a></p>")}</main>");
+        await http.Response.WriteAsync($"<!doctype html><meta charset=\"utf-8\"><link rel=\"stylesheet\" href=\"/site.css\"><title>Gatekeeper</title><main><p>{HtmlEncoder.Default.Encode(text)}</p>{(retry ? $"<p><a href=\"{back}\">Try again</a></p>" : $"<p><a href=\"{back}\">Back</a></p>")}</main>");
     }
 });
 
