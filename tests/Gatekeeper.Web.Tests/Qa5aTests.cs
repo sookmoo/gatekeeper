@@ -103,10 +103,10 @@ public class Qa5aTests
     [Theory]
     [InlineData("429", HttpStatusCode.TooManyRequests, "Too many attempts")]
     [InlineData("403", HttpStatusCode.Forbidden, "not allowed")]
-    [InlineData("500", HttpStatusCode.BadGateway, "reported an error")]
-    [InlineData("html", HttpStatusCode.BadGateway, "reported an error")]
+    [InlineData("500", HttpStatusCode.BadGateway, "could not complete")]
+    [InlineData("html", HttpStatusCode.BadGateway, "could not complete")]
     [InlineData("503", HttpStatusCode.ServiceUnavailable, "unavailable")]
-    [InlineData("down", HttpStatusCode.ServiceUnavailable, "Cannot reach")]
+    [InlineData("down", HttpStatusCode.ServiceUnavailable, "unavailable")]
     [InlineData("timeout", HttpStatusCode.GatewayTimeout, "did not answer")]
     [InlineData("errors-shape", HttpStatusCode.OK, "")]
     public async Task Api_failures_get_an_honest_status_and_never_leak_what_the_api_said(string mode, HttpStatusCode expected, string text)

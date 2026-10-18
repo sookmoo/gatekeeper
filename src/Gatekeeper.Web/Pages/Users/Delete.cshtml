@@ -1,0 +1,19 @@
+@page "{id:guid}"
+@model Gatekeeper.Web.Pages.Users.DeleteModel
+@{
+    ViewData["Title"] = "Delete user";
+}
+<h1>Delete user</h1>
+@if (Model.Error is not null)
+{
+    <p class="error" role="alert">@Model.Error</p>
+}
+@if (Model.IsSelf)
+{
+    <p class="error" role="alert">This is your own account. Deleting it signs you out at once.</p>
+}
+<p>Delete user <strong>@Model.Target.Username</strong>? Its role assignments, password and sessions are removed as well, and this cannot be undone.</p>
+<form method="post">
+    <button type="submit" class="danger">Delete</button>
+    <a href="/Users">Cancel</a>
+</form>

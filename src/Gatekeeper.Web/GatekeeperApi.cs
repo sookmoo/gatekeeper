@@ -9,6 +9,8 @@ public sealed record AppDto(Guid Id, string Name);
 
 public sealed record RoleDto(Guid Id, Guid AppId, string Name, string Description);
 
+public sealed record UserDto(Guid Id, string Username, string Email, string DisplayName, bool IsActive, string Kind, DateTimeOffset? ExpiresAt);
+
 public sealed record Page<T>(List<T> Items, string? NextCursor);
 
 /// <summary>An error answered by the Gatekeeper API (or its absence): the status and a readable message.</summary>
@@ -89,6 +91,29 @@ public sealed class GatekeeperApi(HttpClient http, WebSessions sessions, TimePro
 
     public async Task DeleteRoleAsync(WebSession s, Guid id, CancellationToken ct) =>
         await SendAsync<object>(s, HttpMethod.Delete, $"v1/roles/{id}", null, ct);
+
+    public Task<Page<UserDto>> ListUsersAsync(WebSession s, string? kind, bool? active, string? username, string? cursor, int limit, CancellationToken ct)
+    {
+        var path = $"v1/users?limit={limit}";
+        if (kind is not null) path += $"&kind={Uri.EscapeDataString(kind)}";
+        if (active is { } a) path += $"&active={(a ? "true" : "false")}";
+        if (!string.IsNullOrEmpty(username)) path += $"&username={Uri.EscapeDataString(username)}";
+        if (cursor is not null) path += $"&cursor={Uri.EscapeDataString(cursor)}";
+        return SendAsync<Page<UserDto>>(s, HttpMethod.Get, path, null, ct);
+    }
+
+    public Task<UserDto> GetUserAsync(WebSession s, Guid id, CancellationToken ct) =>
+        SendAsync<UserDto>(s, HttpMethod.Get, $"v1/users/{id}", null, ct);
+
+    public Task<UserDto> CreateUserAsync(WebSession s, string username, string email, string displayName, string kind, DateTimeOffset? expiresAt, CancellationToken ct) =>
+        SendAsync<UserDto>(s, HttpMethod.Post, "v1/users", new { username, email, displayName, kind, expiresAt }, ct);
+
+    /// <summary>A null <paramref name="expiresAt"/> leaves the expiry unchanged (a test user) or gives the default (a person made a test user).</summary>
+    public Task<UserDto> UpdateUserAsync(WebSession s, Guid id, string? username, string? email, string? displayName, bool? isActive, string? kind, DateTimeOffset? expiresAt, CancellationToken ct) =>
+        SendAsync<UserDto>(s, HttpMethod.Patch, $"v1/users/{id}", new { username, email, displayName, isActive, kind, expiresAt }, ct);
+
+    public async Task DeleteUserAsync(WebSession s, Guid id, CancellationToken ct) =>
+        await SendAsync<object>(s, HttpMethod.Delete, $"v1/users/{id}", null, ct);
 
     private async Task<T> SendAsync<T>(WebSession s, HttpMethod method, string path, object? body, CancellationToken ct)
     {

@@ -1,0 +1,35 @@
+@page
+@model Gatekeeper.Web.Pages.Users.CreateModel
+@{
+    ViewData["Title"] = "New user";
+}
+<h1>New user</h1>
+@if (Model.Error is not null)
+{
+    <p class="error" role="alert">@Model.Error</p>
+}
+<form method="post">
+    <label>Username
+        <input name="Username" value="@Model.Username" maxlength="64" required autofocus>
+    </label>
+    <label>Email
+        <input name="Email" type="email" value="@Model.Email" maxlength="256" required>
+    </label>
+    <label>Display name
+        <input name="DisplayName" value="@Model.DisplayName" maxlength="256">
+    </label>
+    <label>Kind
+        <select name="Kind">
+            @foreach (var k in UserForm.Kinds)
+            {
+                <option value="@k" selected="@(Model.Kind == k)">@k</option>
+            }
+        </select>
+    </label>
+    <label>Expiry (UTC, test users only)
+        <input name="Expiry" type="datetime-local" step="1" value="@Model.Expiry">
+    </label>
+    <p class="hint">A test user without an expiry expires after 30 days; at most 365 days ahead.</p>
+    <button type="submit">Create</button>
+    <a href="/Users">Cancel</a>
+</form>

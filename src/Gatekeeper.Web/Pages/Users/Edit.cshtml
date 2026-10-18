@@ -1,0 +1,49 @@
+@page "{id:guid}"
+@model Gatekeeper.Web.Pages.Users.EditModel
+@{
+    ViewData["Title"] = "Edit user";
+}
+<h1>Edit user @Model.Current.Username</h1>
+@if (Model.Error is not null)
+{
+    <p class="error" role="alert">@Model.Error</p>
+}
+@if (Model.IsSelf)
+{
+    <p class="error" role="alert">This is your own account. Deactivating it signs you out at once.</p>
+}
+<form method="post">
+    <input type="hidden" name="OrigUsername" value="@Model.OrigUsername">
+    <input type="hidden" name="OrigEmail" value="@Model.OrigEmail">
+    <input type="hidden" name="OrigDisplayName" value="@Model.OrigDisplayName">
+    <input type="hidden" name="OrigKind" value="@Model.OrigKind">
+    <input type="hidden" name="OrigExpiry" value="@Model.OrigExpiry">
+    <input type="hidden" name="OrigIsActive" value="@Model.OrigIsActive">
+    <label>Username
+        <input name="Username" value="@Model.Username" maxlength="64" required autofocus>
+    </label>
+    <label>Email
+        <input name="Email" type="email" value="@Model.Email" maxlength="256" required>
+    </label>
+    <label>Display name
+        <input name="DisplayName" value="@Model.DisplayName" maxlength="256">
+    </label>
+    <label>Kind
+        <select name="Kind">
+            @foreach (var k in UserForm.Kinds)
+            {
+                <option value="@k" selected="@(Model.Kind == k)">@k</option>
+            }
+        </select>
+    </label>
+    <label>Expiry (UTC, test users only)
+        <input name="Expiry" type="datetime-local" step="1" value="@Model.Expiry">
+    </label>
+    <p class="hint">Empty keeps the current expiry (a person made a test user gets 30 days); at most 365 days ahead. Ignored for other kinds.</p>
+    <label>
+        <input type="hidden" name="IsActive" value="false">
+        <input type="checkbox" name="IsActive" value="true" checked="@Model.IsActive">Active
+    </label>
+    <button type="submit">Save</button>
+    <a href="/Users">Cancel</a>
+</form>

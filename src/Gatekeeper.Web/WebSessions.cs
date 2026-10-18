@@ -27,11 +27,30 @@ public sealed class WebSession(string id, string username, Tokens tokens, DateTi
 
     public string Id { get; } = id;
     public string Username { get; } = username;
+    /// <summary>The signed-in user's id: the <c>sub</c> claim of the current access token (null if it cannot be read). Unlike the username it survives a rename.</summary>
+    public Guid? UserId => SubjectOf(Tokens.Access);
     public DateTimeOffset CreatedAt { get; } = createdAt;
     public DateTimeOffset LastSeen => new(Interlocked.Read(ref _lastSeenTicks), TimeSpan.Zero);
     public Tokens Tokens { get => Volatile.Read(ref _tokens); set => Volatile.Write(ref _tokens, value); }
     /// <summary>Held while the tokens are refreshed: refresh tokens rotate, so two parallel refreshes would look like theft.</summary>
     public SemaphoreSlim RefreshLock { get; } = new(1, 1);
+
+    private static Guid? SubjectOf(string jwt)
+    {
+        try
+        {
+            var parts = jwt.Split('.');
+            if (parts.Length != 3) return null;
+            var payload = parts[1].Replace('-', '+').Replace('_', '/');
+            payload = payload.PadRight(payload.Length + (4 - payload.Length % 4) % 4, '=');
+            using var doc = System.Text.Json.JsonDocument.Parse(Convert.FromBase64String(payload));
+            return doc.RootElement.TryGetProperty("sub", out var sub) && Guid.TryParse(sub.GetString(), out var id) ? id : null;
+        }
+        catch (Exception ex) when (ex is FormatException or System.Text.Json.JsonException or InvalidOperationException)
+        {
+            return null;
+        }
+    }
 
     internal void Touch(DateTimeOffset now) => Interlocked.Exchange(ref _lastSeenTicks, now.UtcTicks);
 }
