@@ -94,15 +94,16 @@ public sealed class RoleService(IAppRepository apps, IRoleRepository roles)
 
     public async Task<Role> CreateAsync(Guid appId, string? name, string? description, CancellationToken ct = default)
     {
+        await RejectReservedApp(appId, "have roles added", ct);
         Validation.RoleFields(name, description);
         return await roles.AddAsync(new Role(Guid.NewGuid(), appId, name!, description ?? ""), ct);
     }
 
     public async Task<Role> UpdateAsync(Guid id, string? name, string? description, CancellationToken ct = default)
     {
-        Validation.RoleFields(name, description);
         var existing = await GetAsync(id, ct);
-        if (!string.Equals(existing.Name, name, StringComparison.OrdinalIgnoreCase)) await RejectReserved(existing, "renamed", ct);
+        await RejectReservedApp(existing.AppId, "have roles changed", ct);
+        Validation.RoleFields(name, description);
         return await roles.UpdateAsync(existing with { Name = name!, Description = description ?? "" }, ct)
             ?? throw new NotFoundException($"Role {id} not found.");
     }
@@ -116,15 +117,16 @@ public sealed class RoleService(IAppRepository apps, IRoleRepository roles)
 
     public async Task DeleteAsync(Guid id, CancellationToken ct = default)
     {
-        if (await roles.GetAsync(id, ct) is { } existing) await RejectReserved(existing, "deleted", ct);
+        // Other roles in the reserved app (left by older code) may be removed; the admin role may not.
+        if (await roles.GetAsync(id, ct) is { } existing && Reserved.IsAdminRole(existing.Name))
+            await RejectReservedApp(existing.AppId, "have roles deleted", ct);
         if (!await roles.DeleteAsync(id, ct)) throw new NotFoundException($"Role {id} not found.");
     }
 
-    private async Task RejectReserved(Role role, string action, CancellationToken ct)
+    private async Task RejectReservedApp(Guid appId, string action, CancellationToken ct)
     {
-        if (!string.Equals(role.Name, Reserved.AdminRole, StringComparison.OrdinalIgnoreCase)) return;
-        if (await apps.GetAsync(role.AppId, ct) is { } app && string.Equals(app.Name, Reserved.AdminApp, StringComparison.OrdinalIgnoreCase))
-            throw new ConflictException($"Role '{role.Name}' of application '{app.Name}' is reserved and cannot be {action}.");
+        if (await apps.GetAsync(appId, ct) is { } app && string.Equals(app.Name, Reserved.AdminApp, StringComparison.OrdinalIgnoreCase))
+            throw new ConflictException($"Application '{app.Name}' is reserved and cannot {action}.");
     }
 
     private async Task RequireApp(Guid appId, CancellationToken ct)
@@ -244,6 +246,7 @@ public sealed class UserService(IUserRepository users, AdminGuard? guard = null)
     public async Task AssignRoleAsync(Guid userId, Guid roleId, CancellationToken ct = default)
     {
         // The admin role is for people only. Checked under the guard so it cannot race with a change of kind.
+        if (guard is not null) await guard.EnsureAssignableAsync(roleId, ct);
         if (guard is not null && await guard.AdminRoleIdAsync(ct) == roleId)
         {
             await guard.ExclusiveAsync(async () =>
@@ -303,9 +306,17 @@ public sealed class AdminGuard(IAppRepository apps, IRoleRepository roles, IUser
     {
         var app = await apps.GetByNameAsync(Reserved.AdminApp, ct);
         if (app is null) return null;
-        var role = (await roles.ListByAppAsync(app.Id, ct: ct)).FirstOrDefault(r =>
-            string.Equals(r.Name, Reserved.AdminRole, StringComparison.OrdinalIgnoreCase));
+        var role = (await roles.ListByAppAsync(app.Id, ct: ct)).FirstOrDefault(r => Reserved.IsAdminRole(r.Name));
         return role?.Id;
+    }
+
+    /// <summary>Throws Conflict for a role of the reserved application other than the admin role (an unknown role is left to the store).</summary>
+    public async Task EnsureAssignableAsync(Guid roleId, CancellationToken ct)
+    {
+        if (await roles.GetAsync(roleId, ct) is not { } role) return;
+        if (!Reserved.IsAdminRole(role.Name) && await apps.GetAsync(role.AppId, ct) is { } app
+            && string.Equals(app.Name, Reserved.AdminApp, StringComparison.OrdinalIgnoreCase))
+            throw new ConflictException($"Application '{app.Name}' is reserved: only its admin role can be assigned.");
     }
 
     /// <summary>Throws Conflict if the user holds the admin role (such a user must stay a person).</summary>

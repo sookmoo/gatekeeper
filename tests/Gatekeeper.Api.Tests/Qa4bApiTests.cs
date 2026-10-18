@@ -368,10 +368,9 @@ public class Qa4bApiTests
         var roles = (await e.Walk($"/v1/applications/{gk}/roles", 200)).Items;
         var adminRole = roles.Single(r => r.GetProperty("name").GetString() == "admin").GetProperty("id").GetGuid();
         Assert.Equal(HttpStatusCode.Conflict, (await Patch(e, $"/v1/roles/{adminRole}", new { name = "root" })).StatusCode);
-        Assert.Equal(HttpStatusCode.OK, (await Patch(e, $"/v1/roles/{adminRole}", new { description = "all powerful" })).StatusCode);
-        // another role cannot be renamed INTO the reserved name inside the reserved app
-        var extra = await e.Role(gk, "extra");
-        Assert.Equal(HttpStatusCode.Conflict, (await Patch(e, $"/v1/roles/{extra}", new { name = "admin" })).StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, (await Patch(e, $"/v1/roles/{adminRole}", new { description = "all powerful" })).StatusCode);
+        // no role can be added to the reserved app
+        Assert.Equal(HttpStatusCode.Conflict, (await e.Admin.PostAsJsonAsync($"/v1/applications/{gk}/roles", new { name = "extra" })).StatusCode);
         // a role in a normal app may be called admin
         var other = await e.App("pc3-" + QaEnv.Slug()); var orole = await e.Role(other, "x");
         Assert.Equal(HttpStatusCode.OK, (await Patch(e, $"/v1/roles/{orole}", new { name = "admin" })).StatusCode);

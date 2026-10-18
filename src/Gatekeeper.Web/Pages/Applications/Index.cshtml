@@ -24,7 +24,8 @@ else
                 <td>@a.Name</td>
                 <td><code>@a.Id</code></td>
                 <td>
-                    @if (string.Equals(a.Name, GatekeeperApi.AdminApplication, StringComparison.OrdinalIgnoreCase))
+                    <a href="/Applications/@a.Id/Roles">Roles</a>
+                    @if (GatekeeperApi.IsReserved(a))
                     {
                         <span class="hint">reserved</span>
                     }

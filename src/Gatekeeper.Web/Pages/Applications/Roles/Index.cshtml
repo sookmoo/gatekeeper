@@ -1,0 +1,49 @@
+@page "/Applications/{appId:guid}/Roles"
+@model Gatekeeper.Web.Pages.Applications.Roles.IndexModel
+@{
+    ViewData["Title"] = "Roles";
+}
+<h1>Roles of @Model.App.Name</h1>
+<p><a href="/Applications">Back to applications</a></p>
+@if (Model.Done is not null)
+{
+    <p class="notice">@Model.Done</p>
+}
+@if (Model.ReadOnly)
+{
+    <p class="hint">This application is reserved: its roles are read-only.</p>
+}
+else
+{
+    <p><a class="button" href="/Applications/@Model.App.Id/Roles/Create">New role</a></p>
+}
+@if (Model.Items.Count == 0)
+{
+    <p>No roles.</p>
+}
+else
+{
+    <table>
+        <thead><tr><th>Name</th><th>Description</th><th></th></tr></thead>
+        <tbody>
+        @foreach (var r in Model.Items)
+        {
+            <tr>
+                <td>@r.Name</td>
+                <td>@r.Description</td>
+                <td>
+                    @if (!Model.ReadOnly)
+                    {
+                        <a href="/Applications/@Model.App.Id/Roles/Edit/@r.Id">Edit</a>
+                        <a href="/Applications/@Model.App.Id/Roles/Delete/@r.Id">Delete</a>
+                    }
+                </td>
+            </tr>
+        }
+        </tbody>
+    </table>
+}
+@if (Model.NextCursor is not null)
+{
+    <p><a href="/Applications/@Model.App.Id/Roles?cursor=@Uri.EscapeDataString(Model.NextCursor)">Next page</a></p>
+}

@@ -43,7 +43,7 @@ builder.Services
     })
     .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { AllowAutoRedirect = false, UseCookies = false });
 
-// Antiforgery tokens need no keys that outlive the process: they are only valid for the page they were issued with.
+// Antiforgery tokens need no keys that outlive the process: a token is valid for the whole session cookie (not per page), and only within this process.
 builder.Services.AddSingleton<Microsoft.AspNetCore.DataProtection.IDataProtectionProvider>(_ => new Microsoft.AspNetCore.DataProtection.EphemeralDataProtectionProvider());
 builder.Services.AddAntiforgery(o =>
 {

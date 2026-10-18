@@ -7,6 +7,8 @@ namespace Gatekeeper.Web;
 
 public sealed record AppDto(Guid Id, string Name);
 
+public sealed record RoleDto(Guid Id, Guid AppId, string Name, string Description);
+
 public sealed record Page<T>(List<T> Items, string? NextCursor);
 
 /// <summary>An error answered by the Gatekeeper API (or its absence): the status and a readable message.</summary>
@@ -70,6 +72,23 @@ public sealed class GatekeeperApi(HttpClient http, WebSessions sessions, TimePro
 
     public async Task DeleteAppAsync(WebSession s, Guid id, CancellationToken ct) =>
         await SendAsync<object>(s, HttpMethod.Delete, $"v1/applications/{id}", null, ct);
+
+    public static bool IsReserved(AppDto app) => string.Equals(app.Name, AdminApplication, StringComparison.OrdinalIgnoreCase);
+
+    public Task<Page<RoleDto>> ListRolesAsync(WebSession s, Guid appId, string? cursor, int limit, CancellationToken ct) =>
+        SendAsync<Page<RoleDto>>(s, HttpMethod.Get, $"v1/applications/{appId}/roles?limit={limit}" + (cursor is null ? "" : $"&cursor={Uri.EscapeDataString(cursor)}"), null, ct);
+
+    public Task<RoleDto> GetRoleAsync(WebSession s, Guid id, CancellationToken ct) =>
+        SendAsync<RoleDto>(s, HttpMethod.Get, $"v1/roles/{id}", null, ct);
+
+    public Task<RoleDto> CreateRoleAsync(WebSession s, Guid appId, string name, string description, CancellationToken ct) =>
+        SendAsync<RoleDto>(s, HttpMethod.Post, $"v1/applications/{appId}/roles", new { name, description }, ct);
+
+    public Task<RoleDto> UpdateRoleAsync(WebSession s, Guid id, string name, string description, CancellationToken ct) =>
+        SendAsync<RoleDto>(s, HttpMethod.Patch, $"v1/roles/{id}", new { name, description }, ct);
+
+    public async Task DeleteRoleAsync(WebSession s, Guid id, CancellationToken ct) =>
+        await SendAsync<object>(s, HttpMethod.Delete, $"v1/roles/{id}", null, ct);
 
     private async Task<T> SendAsync<T>(WebSession s, HttpMethod method, string path, object? body, CancellationToken ct)
     {

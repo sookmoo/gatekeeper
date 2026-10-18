@@ -54,7 +54,8 @@ dotnet bin/Debug/net10.0/Gatekeeper.Api.dll           # serve, uses Gatekeeper
   active administrator (cached for 10 s), so demoting or deactivating an admin takes effect almost immediately; tokens for
   other applications stay valid until `exp`, so keep consumers' acceptance windows short.
 - The management API (`/v1/applications`, `/v1/roles`, `/v1/users`, `/v1/clients`, `/v1/audit`) needs a token for the application `gatekeeper`
-  with the role `admin`. That application and role are reserved: they cannot be renamed or deleted, no other application can take the name, and the
+  with the role `admin`. That application and role are reserved: they cannot be renamed or deleted, no other application can take the name, the role API refuses (409) every create, change or
+  delete of a role in `gatekeeper` (`bootstrap-admin` and the dev seed set up `admin` directly), and the
   last active administrator cannot be deleted, deactivated or stripped of the role.
 - Users have a `kind`: `person` (default), `test` or `shared`. A test user always expires (`expiresAt`, default 30 days, at most 365);
   an expired test user cannot sign in, refresh or introspect (an administrator can extend the date). Only a person can hold the
@@ -159,7 +160,7 @@ Concurrent PATCHes run one at a time in a process (so one cannot silently undo a
 `src/Gatekeeper.Web` is a small server-rendered web UI (Razor Pages, no JavaScript) in its own container. It signs administrators in
 through the API and works as their session: the browser only holds an `HttpOnly`, `SameSite=Strict` cookie, while the access and refresh
 tokens stay on the server. Every call to the API carries the signed-in administrator's own token, so the audit trail names the person.
-Today it covers sign in/out and applications (list, create, rename, delete); roles, users, clients and audit follow.
+Today it covers sign in/out, applications (list, create, rename, delete) and roles (the reserved application's roles are shown read-only); users, clients and audit follow.
 
 ```bash
 dotnet run --project src/Gatekeeper.Api                                   # terminal 1: http://localhost:5080

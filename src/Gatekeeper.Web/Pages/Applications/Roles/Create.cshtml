@@ -1,0 +1,28 @@
+@page "/Applications/{appId:guid}/Roles/Create"
+@model Gatekeeper.Web.Pages.Applications.Roles.CreateModel
+@{
+    ViewData["Title"] = "New role";
+}
+<h1>New role in @Model.App.Name</h1>
+@if (Model.Error is not null)
+{
+    <p class="error" role="alert">@Model.Error</p>
+}
+@if (Model.ReadOnly)
+{
+    <p class="hint">This application is reserved: its roles are read-only.</p>
+    <p><a href="/Applications/@Model.App.Id/Roles">Back</a></p>
+}
+else
+{
+    <form method="post">
+        <label>Name
+            <input name="Name" value="@Model.Name" maxlength="64" required autofocus>
+        </label>
+        <label>Description
+            <input name="Description" value="@Model.Description" maxlength="256">
+        </label>
+        <button type="submit">Create</button>
+        <a href="/Applications/@Model.App.Id/Roles">Cancel</a>
+    </form>
+}

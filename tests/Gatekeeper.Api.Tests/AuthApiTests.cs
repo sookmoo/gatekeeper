@@ -270,11 +270,25 @@ public class AuthApiTests
         Assert.Equal(HttpStatusCode.Conflict, (await admin.PutAsJsonAsync($"/v1/applications/{app}", new { name = "renamed" })).StatusCode);
         Assert.Equal(HttpStatusCode.Conflict, (await admin.DeleteAsync($"/v1/roles/{role}")).StatusCode);
         Assert.Equal(HttpStatusCode.Conflict, (await admin.PutAsJsonAsync($"/v1/roles/{role}", new { name = "boss" })).StatusCode);
-        Assert.Equal(HttpStatusCode.OK, (await admin.PutAsJsonAsync($"/v1/roles/{role}", new { name = "admin", description = "fine" })).StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, (await admin.PutAsJsonAsync($"/v1/roles/{role}", new { name = "admin", description = "fine" })).StatusCode);
         // nobody else can claim the name
         Assert.Equal(HttpStatusCode.Conflict, (await admin.PostAsJsonAsync("/v1/applications", new { name = "gatekeeper" })).StatusCode);
         var other = await Post(admin, "/v1/applications", new { name = "other" });
         Assert.Equal(HttpStatusCode.Conflict, (await admin.PutAsJsonAsync($"/v1/applications/{other}", new { name = "gatekeeper" })).StatusCode);
+    }
+
+    [Fact]
+    public async Task Stray_roles_of_the_reserved_app_can_be_deleted_but_not_assigned()
+    {
+        using var f = NewFactory();
+        var admin = f.CreateAdminClient();
+        var app = await FindId(admin, "/v1/applications?limit=200", "gatekeeper");
+        var stray = (await f.Services.GetRequiredService<Gatekeeper.Application.IRoleRepository>().AddAsync(new Gatekeeper.Domain.Role(Guid.NewGuid(), app, "stray", ""))).Id;
+        var user = await Post(admin, "/v1/users", new { username = "strayuser", email = "strayuser@example.com" });
+        Assert.Equal(HttpStatusCode.Conflict, (await admin.PutAsJsonAsync($"/v1/roles/{stray}", new { name = "stray", description = "x" })).StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, (await admin.PutAsync($"/v1/users/{user}/roles/{stray}", null)).StatusCode);
+        Assert.Equal(HttpStatusCode.NoContent, (await admin.DeleteAsync($"/v1/roles/{stray}")).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await admin.GetAsync($"/v1/roles/{stray}")).StatusCode);
     }
 
     [Fact]

@@ -41,6 +41,45 @@ public class ServiceTests
         await Assert.ThrowsAsync<NotFoundException>(() => _roles.CreateAsync(Guid.NewGuid(), "admin", null));
 
     [Fact]
+    public async Task Roles_of_the_reserved_app_cannot_be_created_changed_or_deleted()
+    {
+        var s = new InMemoryStore();
+        var appRepo = new InMemoryAppRepository(s);
+        var roleRepo = new InMemoryRoleRepository(s);
+        var roles = new RoleService(appRepo, roleRepo);
+        var gk = await appRepo.AddAsync(new App(Guid.NewGuid(), Reserved.AdminApp));
+        var admin = await roleRepo.AddAsync(new Role(Guid.NewGuid(), gk.Id, Reserved.AdminRole, "Manages Gatekeeper")); // seeding goes through the store
+        await Assert.ThrowsAsync<ConflictException>(() => roles.CreateAsync(gk.Id, "extra", null));
+        await Assert.ThrowsAsync<ConflictException>(() => roles.UpdateAsync(admin.Id, "admin", "tampered"));
+        await Assert.ThrowsAsync<ConflictException>(() => roles.PatchAsync(admin.Id, null, "tampered"));
+        await Assert.ThrowsAsync<ConflictException>(() => roles.DeleteAsync(admin.Id));
+        Assert.Equal("Manages Gatekeeper", (await roles.GetAsync(admin.Id)).Description);
+    }
+
+    [Fact]
+    public async Task Other_roles_of_the_reserved_app_can_be_deleted_but_not_assigned_and_checks_come_before_validation()
+    {
+        var s = new InMemoryStore();
+        var appRepo = new InMemoryAppRepository(s);
+        var roleRepo = new InMemoryRoleRepository(s);
+        var userRepo = new InMemoryUserRepository(s);
+        var roles = new RoleService(appRepo, roleRepo);
+        var users = new UserService(userRepo, new AdminGuard(appRepo, roleRepo, userRepo));
+        var gk = await appRepo.AddAsync(new App(Guid.NewGuid(), Reserved.AdminApp));
+        var upper = await roleRepo.AddAsync(new Role(Guid.NewGuid(), gk.Id, "ADMIN", ""));
+        var stray = await roleRepo.AddAsync(new Role(Guid.NewGuid(), gk.Id, "stray", ""));
+        var user = await users.CreateAsync("alice", "alice@example.com", null);
+        await Assert.ThrowsAsync<ConflictException>(() => users.AssignRoleAsync(user.Id, stray.Id));
+        // invalid input to a reserved role is a 409, not a 400
+        await Assert.ThrowsAsync<ConflictException>(() => roles.CreateAsync(gk.Id, "", null));
+        await Assert.ThrowsAsync<ConflictException>(() => roles.UpdateAsync(stray.Id, "", null));
+        await Assert.ThrowsAsync<ConflictException>(() => roles.UpdateAsync(stray.Id, "x", null));
+        await Assert.ThrowsAsync<ConflictException>(() => roles.DeleteAsync(upper.Id)); // admin, ignoring case
+        await roles.DeleteAsync(stray.Id);
+        await Assert.ThrowsAsync<NotFoundException>(() => roles.GetAsync(stray.Id));
+    }
+
+    [Fact]
     public async Task Assign_requires_existing_user_and_role()
     {
         var app = await _apps.CreateAsync("a");
