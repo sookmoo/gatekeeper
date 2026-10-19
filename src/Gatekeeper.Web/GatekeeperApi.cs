@@ -11,6 +11,10 @@ public sealed record RoleDto(Guid Id, Guid AppId, string Name, string Descriptio
 
 public sealed record UserDto(Guid Id, string Username, string Email, string DisplayName, bool IsActive, string Kind, DateTimeOffset? ExpiresAt);
 
+public sealed record SessionDto(Guid Id, Guid UserId, Guid AppId, DateTimeOffset CreatedAt, DateTimeOffset LastUsedAt, DateTimeOffset ExpiresAt, DateTimeOffset? RevokedAt);
+
+public sealed record RevokedDto(int Revoked);
+
 public sealed record Page<T>(List<T> Items, string? NextCursor);
 
 /// <summary>An error answered by the Gatekeeper API (or its absence): the status and a readable message.</summary>
@@ -128,6 +132,17 @@ public sealed class GatekeeperApi(HttpClient http, WebSessions sessions, TimePro
     /// <summary>Sets a user's password. The password only travels in the request body: it is never part of a URL, log line or exception text.</summary>
     public async Task SetPasswordAsync(WebSession s, Guid userId, string password, CancellationToken ct) =>
         await SendAsync<object>(s, HttpMethod.Put, $"v1/users/{userId}/password", new { password }, ct);
+
+    /// <summary>A user's sessions as the API lists them (refresh tokens are never part of them).</summary>
+    public Task<Page<SessionDto>> ListUserSessionsAsync(WebSession s, Guid userId, string? cursor, int limit, CancellationToken ct) =>
+        SendAsync<Page<SessionDto>>(s, HttpMethod.Get, $"v1/users/{userId}/sessions?limit={limit}" + (cursor is null ? "" : $"&cursor={Uri.EscapeDataString(cursor)}"), null, ct);
+
+    public async Task RevokeSessionAsync(WebSession s, Guid sessionId, CancellationToken ct) =>
+        await SendAsync<object>(s, HttpMethod.Delete, $"v1/sessions/{sessionId}", null, ct);
+
+    /// <summary>Revokes all sessions of a user and returns how many the API ended.</summary>
+    public async Task<int> RevokeUserSessionsAsync(WebSession s, Guid userId, CancellationToken ct) =>
+        (await SendAsync<RevokedDto>(s, HttpMethod.Delete, $"v1/users/{userId}/sessions", null, ct)).Revoked;
 
     /// <summary>The "admin" role of the reserved application: the one that grants access to this UI.</summary>
     public static bool IsAdminRole(AppDto app, RoleDto role) =>

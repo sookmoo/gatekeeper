@@ -1,0 +1,52 @@
+@page "/Users/{id:guid}/Sessions"
+@model Gatekeeper.Web.Pages.Users.Sessions.IndexModel
+@using Gatekeeper.Web.Pages.Users.Sessions
+@{
+    ViewData["Title"] = "Active sessions";
+}
+<h1>Active sessions of @Model.Target.Username</h1>
+<p><a href="/Users">Back to users</a> <a href="/Users/Edit/@Model.Target.Id">Edit user</a> <a href="/Users/@Model.Target.Id/Roles">Roles</a> <a href="/Users/@Model.Target.Id/Password">Set password</a></p>
+@if (Model.Done is not null)
+{
+    <p class="notice">@Model.Done</p>
+}
+<p>@SessionAccess.LifetimeNote(Model.Lifetime)</p>
+@if (Model.Items.Count == 0)
+{
+    <p>No active sessions.</p>
+}
+else
+{
+    <p><a class="button" href="/Users/@Model.Target.Id/Sessions/RevokeAll">Revoke all sessions</a></p>
+    <table>
+        <thead><tr><th>Application</th><th>Created</th><th>Last used</th><th>Expires</th><th>State</th><th></th></tr></thead>
+        <tbody>
+        @foreach (var r in Model.Items)
+        {
+            <tr>
+                <td>@(r.AppName ?? "(unknown)") <code>@r.Session.AppId</code></td>
+                <td>@SessionAccess.Time(r.Session.CreatedAt)</td>
+                <td>@SessionAccess.Time(r.Session.LastUsedAt)</td>
+                <td>@SessionAccess.Time(r.Session.ExpiresAt)</td>
+                <td>
+                    @r.State
+                    @if (r.IsOwn)
+                    {
+                        <span>(your current session)</span>
+                    }
+                </td>
+                <td>
+                    @if (r.State == "active")
+                    {
+                        <a href="/Users/@Model.Target.Id/Sessions/Revoke/@r.Session.Id">Revoke</a>
+                    }
+                </td>
+            </tr>
+        }
+        </tbody>
+    </table>
+}
+@if (Model.NextCursor is not null)
+{
+    <p><a href="/Users/@Model.Target.Id/Sessions?cursor=@Uri.EscapeDataString(Model.NextCursor)">Next page</a></p>
+}

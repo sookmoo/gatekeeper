@@ -1,0 +1,29 @@
+@page "/Users/{id:guid}/Sessions/RevokeAll"
+@model Gatekeeper.Web.Pages.Users.Sessions.RevokeAllModel
+@using Gatekeeper.Web.Pages.Users.Sessions
+@{
+    ViewData["Title"] = "Revoke all sessions";
+}
+<h1>Revoke all sessions</h1>
+@if (Model.Error is not null)
+{
+    <p class="error" role="alert">@Model.Error</p>
+}
+@if (Model.IsSelf)
+{
+    <p class="error" role="alert">This is your own account. Revoking all sessions includes your current one and signs you out at once.</p>
+}
+@if (Model.Count == 0)
+{
+    <p>User <strong>@Model.Target.Username</strong> has no active sessions.</p>
+    <p><a href="/Users/@Model.Target.Id/Sessions">Back to sessions</a></p>
+}
+else
+{
+    <p>Revoke all @Model.Count@(Model.CountIsLowerBound ? " or more" : "") active @(Model.Count == 1 && !Model.CountIsLowerBound ? "session" : "sessions") of user <strong>@Model.Target.Username</strong>?</p>
+    <p>@SessionAccess.LifetimeNote(Model.Lifetime)</p>
+    <form method="post">
+        <button type="submit" class="danger">Revoke all</button>
+        <a href="/Users/@Model.Target.Id/Sessions">Cancel</a>
+    </form>
+}

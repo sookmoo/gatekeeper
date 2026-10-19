@@ -13,11 +13,12 @@ public class PasswordModel(GatekeeperApi api, WebSessions sessions) : PageModel
     public UserDto Target { get; private set; } = null!;
     public string? Error { get; private set; }
     public string? Done { get; private set; }
+    public TimeSpan? Lifetime => HttpContext.Current().AccessLifetime;
     public bool IsSelf => HttpContext.Current().UserId is { } me && me == Target.Id;
 
     public async Task<IActionResult> OnGetAsync(Guid id, string? done, CancellationToken ct)
     {
-        Done = done == "set" ? "Password set. The user's sign-in sessions were ended; access tokens already issued stay valid until they expire (up to 15 minutes) unless the receiving application checks with the API." : null;
+        Done = done == "set" ? "Password set. The user's sign-in sessions were ended. " + Sessions.SessionAccess.LifetimeNote(HttpContext.Current().AccessLifetime, false) : null;
         return await LoadAsync(id, ct) ? Page() : NotFound();
     }
 

@@ -4,7 +4,7 @@
     ViewData["Title"] = "Roles of a user";
 }
 <h1>Roles of @Model.Target.Username</h1>
-<p><a href="/Users">Back to users</a> <a href="/Users/Edit/@Model.Target.Id">Edit user</a> <a href="/Users/@Model.Target.Id/Password">Set password</a></p>
+<p><a href="/Users">Back to users</a> <a href="/Users/Edit/@Model.Target.Id">Edit user</a> <a href="/Users/@Model.Target.Id/Password">Set password</a> <a href="/Users/@Model.Target.Id/Sessions">Sessions</a></p>
 @if (Model.Done is not null)
 {
     <p class="notice">@Model.Done</p>
