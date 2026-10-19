@@ -108,7 +108,7 @@ public class Users5dQaTests : IClassFixture<WebFixture>
 
         // A new past value is refused.
         var bad = await WebFixture.PostFormAsync(b, $"/Users/Edit/{id}", Form(name, "test", Sec(DateTime.UtcNow.AddHours(-1))));
-        Assert.Equal(HttpStatusCode.OK, bad.StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, bad.StatusCode);
     }
 
     [Fact]
@@ -374,7 +374,8 @@ public class Users5dQaTests : IClassFixture<WebFixture>
         var html = await resp.Content.ReadAsStringAsync();
         var hidden = Regex.Matches(html, "<input type=\"hidden\" name=\"([^\"]+)\"").Select(m => m.Groups[1].Value).Where(h => h.StartsWith("Orig")).ToArray();
         Assert.Equal(new[] { "OrigUsername", "OrigEmail", "OrigDisplayName", "OrigKind", "OrigExpiry", "OrigIsActive" }, hidden);
-        Assert.DoesNotMatch("(?i)password|hash|secret", html);
+        Assert.DoesNotMatch("(?i)hash|secret|type=\"password\"|name=\"Password\"", html);
+        Assert.Contains($"<a href=\"/Users/{id}/Password\">Set password</a>", html);
     }
 
     private async Task<(HttpClient Browser, Guid Id, string Name)> AdminAsync()

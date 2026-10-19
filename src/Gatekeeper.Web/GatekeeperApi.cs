@@ -115,6 +115,24 @@ public sealed class GatekeeperApi(HttpClient http, WebSessions sessions, TimePro
     public async Task DeleteUserAsync(WebSession s, Guid id, CancellationToken ct) =>
         await SendAsync<object>(s, HttpMethod.Delete, $"v1/users/{id}", null, ct);
 
+    /// <summary>The roles a user holds (optionally only those of one application).</summary>
+    public Task<Page<RoleDto>> ListUserRolesAsync(WebSession s, Guid userId, Guid? appId, string? cursor, int limit, CancellationToken ct) =>
+        SendAsync<Page<RoleDto>>(s, HttpMethod.Get, $"v1/users/{userId}/roles?limit={limit}" + (appId is { } a ? $"&application={a}" : "") + (cursor is null ? "" : $"&cursor={Uri.EscapeDataString(cursor)}"), null, ct);
+
+    public async Task AssignUserRoleAsync(WebSession s, Guid userId, Guid roleId, CancellationToken ct) =>
+        await SendAsync<object>(s, HttpMethod.Put, $"v1/users/{userId}/roles/{roleId}", null, ct);
+
+    public async Task RevokeUserRoleAsync(WebSession s, Guid userId, Guid roleId, CancellationToken ct) =>
+        await SendAsync<object>(s, HttpMethod.Delete, $"v1/users/{userId}/roles/{roleId}", null, ct);
+
+    /// <summary>Sets a user's password. The password only travels in the request body: it is never part of a URL, log line or exception text.</summary>
+    public async Task SetPasswordAsync(WebSession s, Guid userId, string password, CancellationToken ct) =>
+        await SendAsync<object>(s, HttpMethod.Put, $"v1/users/{userId}/password", new { password }, ct);
+
+    /// <summary>The "admin" role of the reserved application: the one that grants access to this UI.</summary>
+    public static bool IsAdminRole(AppDto app, RoleDto role) =>
+        IsReserved(app) && string.Equals(role.Name, "admin", StringComparison.OrdinalIgnoreCase);
+
     private async Task<T> SendAsync<T>(WebSession s, HttpMethod method, string path, object? body, CancellationToken ct)
     {
         await EnsureFreshAsync(s, ct);

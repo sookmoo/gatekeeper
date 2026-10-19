@@ -1,0 +1,19 @@
+@page "/Users/{id:guid}/Roles/Remove/{roleId:guid}"
+@model Gatekeeper.Web.Pages.Users.Roles.RemoveModel
+@{
+    ViewData["Title"] = "Remove a role";
+}
+<h1>Remove a role</h1>
+@if (Model.Error is not null)
+{
+    <p class="error" role="alert">@Model.Error</p>
+}
+@if (Model.IsSelf && Model.IsAdminRole)
+{
+    <p class="error" role="alert">This is your own admin role. Removing it signs you out at once.</p>
+}
+<p>Remove role <strong>@Model.Role.Name</strong> of application <strong>@Model.App.Name</strong> from user <strong>@Model.Target.Username</strong>?</p>
+<form method="post">
+    <button type="submit" class="danger">Remove</button>
+    <a href="/Users/@Model.Target.Id/Roles">Cancel</a>
+</form>

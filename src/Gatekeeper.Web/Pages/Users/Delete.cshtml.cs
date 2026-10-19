@@ -31,6 +31,7 @@ public class DeleteModel(GatekeeperApi api, WebSessions sessions) : PageModel
         catch (ApiException ex) when ((int)ex.Status is >= 400 and < 500 && ex.Status != HttpStatusCode.Unauthorized)
         {
             Error = ex.Message;
+            Response.StatusCode = (int)ex.Status;
             return Page();
         }
     }

@@ -1,0 +1,71 @@
+@page "/Users/{id:guid}/Roles/Add"
+@model Gatekeeper.Web.Pages.Users.Roles.AddModel
+@{
+    ViewData["Title"] = "Add a role";
+}
+<h1>Add a role to @Model.Target.Username</h1>
+@if (Model.Error is not null)
+{
+    <p class="error" role="alert">@Model.Error</p>
+}
+@if (Model.App is null)
+{
+    <p>Step 1 of 2: choose the application.</p>
+    @if (Model.Apps.Count == 0)
+    {
+        <p>No applications.</p>
+    }
+    else
+    {
+        <form method="get" action="/Users/@Model.Target.Id/Roles/Add">
+            <label>Application
+                <select name="app">
+                    @foreach (var a in Model.Apps)
+                    {
+                        <option value="@a.Id">@a.Name</option>
+                    }
+                </select>
+            </label>
+            <button type="submit">Next</button>
+            <a href="/Users/@Model.Target.Id/Roles">Cancel</a>
+        </form>
+    }
+}
+else
+{
+    <p>Step 2 of 2: choose a role of <strong>@Model.App.Name</strong>.</p>
+    @if (Model.Reserved)
+    {
+        <p class="hint">This application is reserved: only its admin role can be assigned, and only to a person.</p>
+    }
+    @if (Model.Reserved && Model.Target.Kind != "person")
+    {
+        <p class="hint">@Model.Target.Username is not a person: only a person can hold the admin role.</p>
+    }
+    @if (Model.Roles.Count == 0)
+    {
+        <p>No roles to choose from.</p>
+        <p><a href="/Users/@Model.Target.Id/Roles/Add">Choose another application</a></p>
+    }
+    else
+    {
+        <form method="post">
+            <input type="hidden" name="app" value="@Model.App.Id">
+            <label>Role
+                <select name="RoleId">
+                    @foreach (var r in Model.Roles)
+                    {
+                        <option value="@r.Id">@r.Name</option>
+                    }
+                </select>
+            </label>
+            <button type="submit">Add role</button>
+            <a href="/Users/@Model.Target.Id/Roles/Add">Choose another application</a>
+            <a href="/Users/@Model.Target.Id/Roles">Cancel</a>
+        </form>
+    }
+}
+@if (Model.NextCursor is not null)
+{
+    <p><a href="@Model.NextHref()">More</a></p>
+}

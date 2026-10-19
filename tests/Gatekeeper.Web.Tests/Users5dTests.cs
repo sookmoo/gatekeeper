@@ -345,7 +345,7 @@ public class Users5dTests : IClassFixture<WebFixture>
         Assert.Equal(later, (await ApiUserAsync(api, id)).GetProperty("expiresAt").GetDateTimeOffset().UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm"));
 
         var far = await WebFixture.PostFormAsync(b, $"/Users/Edit/{id}", new() { ["Username"] = name, ["Email"] = name + "@example.com", ["Kind"] = "test", ["Expiry"] = Minute(DateTime.UtcNow.AddDays(500)), ["IsActive"] = "true" });
-        Assert.Equal(HttpStatusCode.OK, far.StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, far.StatusCode);
         Assert.Contains("at most 365 days", Alert(await far.Content.ReadAsStringAsync()));
         var past = await WebFixture.PostFormAsync(b, $"/Users/Edit/{id}", new() { ["Username"] = name, ["Email"] = name + "@example.com", ["Kind"] = "test", ["Expiry"] = Minute(DateTime.UtcNow.AddDays(-2)), ["IsActive"] = "true" });
         Assert.Contains("in the future", Alert(await past.Content.ReadAsStringAsync()));
@@ -427,6 +427,7 @@ public class Users5dTests : IClassFixture<WebFixture>
         var dupMail = await WebFixture.PostFormAsync(b, "/Users/Create", new() { ["Username"] = "new-" + a, ["Email"] = a + "@example.com", ["Kind"] = "person" });
         Assert.Contains("already", Alert(await dupMail.Content.ReadAsStringAsync()), StringComparison.OrdinalIgnoreCase);
         var dupEdit = await WebFixture.PostFormAsync(b, $"/Users/Edit/{otherId}", new() { ["Username"] = a, ["Email"] = other + "@example.com", ["Kind"] = "person", ["IsActive"] = "true" });
+        Assert.Equal(HttpStatusCode.Conflict, dupEdit.StatusCode);
         Assert.Contains("already", Alert(await dupEdit.Content.ReadAsStringAsync()), StringComparison.OrdinalIgnoreCase);
         Assert.Equal(other, (await ApiUserAsync(api, otherId)).GetProperty("username").GetString());
     }
@@ -446,7 +447,7 @@ public class Users5dTests : IClassFixture<WebFixture>
         off["IsActive"] = "false";
         Assert.Contains("without an active administrator", Alert(await (await WebFixture.PostFormAsync(b, $"/Users/Edit/{adminId}", off)).Content.ReadAsStringAsync()));
         var del = await WebFixture.PostFormAsync(b, $"/Users/Delete/{adminId}", new());
-        Assert.Equal(HttpStatusCode.OK, del.StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, del.StatusCode);
         Assert.Contains("without an active administrator", Alert(await del.Content.ReadAsStringAsync()));
         // still signed in, nothing changed
         Assert.Equal(HttpStatusCode.OK, (await b.GetAsync("/Users")).StatusCode);
@@ -550,7 +551,7 @@ public class Users5dTests : IClassFixture<WebFixture>
     {
         var (b, id, name) = await SecondAdminAsync();
         var r = await WebFixture.PostFormAsync(b, $"/Users/Edit/{id}", new() { ["Username"] = name, ["Email"] = name + "@example.com", ["Kind"] = "shared", ["IsActive"] = "true" });
-        Assert.Equal(HttpStatusCode.OK, r.StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, r.StatusCode);
         Assert.Contains("must be a person", Alert(await r.Content.ReadAsStringAsync()));
         ForgetAdminCache(_f);
         Assert.Equal(HttpStatusCode.OK, (await b.GetAsync("/Users")).StatusCode);
