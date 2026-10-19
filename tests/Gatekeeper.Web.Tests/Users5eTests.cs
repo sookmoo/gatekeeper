@@ -664,7 +664,7 @@ public class Users5eTests : IClassFixture<WebFixture>
         var id = await CreateUserAsync(await ApiAdminAsync(), Unique("txt"));
         var html = await b.GetStringAsync($"/Users/{id}/Password");
         Assert.Contains("sign-in (refresh) sessions", html);
-        Assert.Contains("up to 15 minutes", html);
+        Assert.Contains("administration access ends immediately", html);
         Assert.DoesNotContain("ends all of the user", html);
     }
 }

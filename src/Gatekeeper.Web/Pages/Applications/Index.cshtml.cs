@@ -19,6 +19,9 @@ public class IndexModel(GatekeeperApi api) : PageModel
     public string? NextCursor { get; private set; }
     public string? Done { get; private set; }
 
+    // The list has no form: a crafted POST is a plain 404, not a page without data.
+    public IActionResult OnPost() => NotFound();
+
     public async Task<IActionResult> OnGetAsync(string? cursor, string? done, CancellationToken ct)
     {
         Done = done is not null && Messages.TryGetValue(done, out var message) ? message : null;
