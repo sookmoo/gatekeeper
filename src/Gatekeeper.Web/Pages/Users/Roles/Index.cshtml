@@ -1,0 +1,36 @@
+@page "/Users/{id:guid}/Roles"
+@model Gatekeeper.Web.Pages.Users.Roles.IndexModel
+@{
+    ViewData["Title"] = "Roles of a user";
+}
+<h1>Roles of @Model.Target.Username</h1>
+<p><a href="/Users">Back to users</a> <a href="/Users/Edit/@Model.Target.Id">Edit user</a> <a href="/Users/@Model.Target.Id/Password">Set password</a></p>
+@if (Model.Done is not null)
+{
+    <p class="notice">@Model.Done</p>
+}
+<p><a class="button" href="/Users/@Model.Target.Id/Roles/Add">Add a role</a></p>
+@if (Model.Items.Count == 0)
+{
+    <p>No roles.</p>
+}
+else
+{
+    <table>
+        <thead><tr><th>Role</th><th>Application</th><th></th></tr></thead>
+        <tbody>
+        @foreach (var r in Model.Items)
+        {
+            <tr>
+                <td>@r.Role.Name</td>
+                <td>@(r.AppName ?? "(unknown)")</td>
+                <td><a href="/Users/@Model.Target.Id/Roles/Remove/@r.Role.Id">Remove</a></td>
+            </tr>
+        }
+        </tbody>
+    </table>
+}
+@if (Model.NextCursor is not null)
+{
+    <p><a href="/Users/@Model.Target.Id/Roles?cursor=@Uri.EscapeDataString(Model.NextCursor)">Next page</a></p>
+}

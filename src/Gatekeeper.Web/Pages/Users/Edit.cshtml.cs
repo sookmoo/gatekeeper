@@ -89,13 +89,14 @@ public class EditModel(GatekeeperApi api, WebSessions sessions) : PageModel
         }
         catch (ApiException ex) when ((int)ex.Status is >= 400 and < 500 && ex.Status != HttpStatusCode.Unauthorized)
         {
-            return Fail(ex.Message);
+            return Fail(ex.Message, ex.Status);
         }
     }
 
-    private IActionResult Fail(string error)
+    private IActionResult Fail(string error, HttpStatusCode? apiStatus = null)
     {
         Error = error;
+        if (apiStatus is { } status) Response.StatusCode = (int)status;
         return Page();
     }
 
