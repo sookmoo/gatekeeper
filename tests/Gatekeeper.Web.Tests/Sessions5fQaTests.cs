@@ -210,9 +210,17 @@ public class Sessions5fQaTests : IClassFixture<WebFixture>
     {
         var b = await _f.SignedInAsync();
         var api = await ApiAdminAsync(_f);
-        var (user, name, appName) = await UserWithAppAsync(api, TimeSpan.FromSeconds(2));
-        await StartSessionAsync(_f, name, appName);
-        await Task.Delay(TimeSpan.FromSeconds(3));
+        var (user, name, appName) = await UserWithAppAsync(api, TimeSpan.FromHours(1));
+        var sid = await StartSessionAsync(_f, name, appName);
+        // Expire the account and its session without waiting: the API runs on the real clock, so move both ends into the past in the store.
+        var sessions = _f.Api.Services.GetRequiredService<Gatekeeper.Application.ISessionRepository>();
+        var started = (await sessions.GetAsync(sid))!;
+        Assert.Equal(HttpStatusCode.NoContent, (await api.DeleteAsync($"/v1/sessions/{sid}")).StatusCode);
+        var past = DateTimeOffset.UtcNow.AddMinutes(-1);
+        await sessions.AddAsync(started with { Id = Guid.NewGuid(), CreatedAt = past.AddHours(-1), LastUsedAt = past.AddHours(-1), ExpiresAt = past, RevokedAt = null }, "unused-hash");
+        var users = _f.Api.Services.GetRequiredService<Gatekeeper.Application.IUserRepository>();
+        await users.UpdateAsync((await users.GetAsync(user))! with { ExpiresAt = past });
+        Assert.Empty(await ApiSessionsAsync(api, user));
         var list = await b.GetAsync($"/Users/{user}/Sessions");
         Assert.Equal(HttpStatusCode.OK, list.StatusCode);
         Assert.Contains("No active sessions.", await list.Content.ReadAsStringAsync());
