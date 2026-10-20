@@ -1,0 +1,29 @@
+@page "{id:guid}"
+@model Gatekeeper.Web.Pages.Clients.RotateModel
+@{
+    ViewData["Title"] = Model.Rotated is null ? "Rotate secret" : "New secret";
+}
+@if (Model.Rotated is { } rotated)
+{
+    <partial name="_Secret" model="rotated" />
+}
+else
+{
+<h1>Rotate the secret of @Model.Target.Name</h1>
+@if (Model.Error is not null)
+{
+    <p class="error" role="alert">@Model.Error</p>
+}
+<p>Application: <strong>@Model.AppName</strong>. Active: <strong>@(Model.Target.IsActive ? "yes" : "no")</strong>.</p>
+@if (Model.Target.IsActive)
+{
+    <p class="error" role="alert">This client is active: its current secret stops working the moment you confirm, and every service that signs in with it fails until it is given the new secret.</p>
+}
+<p>A new secret replaces the current one, which stops working at once: services that use it must be given the new one. Access tokens already issued stay valid until they expire: they keep passing introspection while the client is active, and services that validate tokens locally accept them until they expire.</p>
+<p class="hint">If the secret has leaked: rotate it, and keep the client disabled until the access-token lifetime has passed (disabling stops introspection only while the client stays disabled; enabling it again revives the tokens until they expire). The new secret is shown once, on the next page. Confirm only once.</p>
+<form method="post">
+    <input type="hidden" name="Nonce" value="@Model.FormNonce">
+    <button type="submit" class="danger">Rotate secret</button>
+    <a href="/Clients">Cancel</a>
+</form>
+}

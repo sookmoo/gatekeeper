@@ -160,7 +160,23 @@ Concurrent PATCHes run one at a time in a process (so one cannot silently undo a
 `src/Gatekeeper.Web` is a small server-rendered web UI (Razor Pages, no JavaScript) in its own container. It signs administrators in
 through the API and works as their session: the browser only holds an `HttpOnly`, `SameSite=Strict` cookie, while the access and refresh
 tokens stay on the server. Every call to the API carries the signed-in administrator's own token, so the audit trail names the person.
-Today it covers sign in/out, applications (list, create, rename, delete) and roles (the reserved application's roles are shown read-only); users, clients and audit follow.
+Today it covers sign in/out, applications (list, create, rename, delete), roles (the reserved application's roles are shown read-only),
+users (list, create, edit, delete, their roles, password and sessions) and clients (service identities: list with application filter,
+create, rename, enable/disable, rotate secret, delete); a client's roles (use `gk client`) and the audit trail follow.
+
+A client's secret is shown once, on the page that answers the create or rotate request (no redirect, `Cache-Control: no-store`,
+never in a URL, cookie, log or audit row). Reloading or going back makes the browser offer to resend the form, so the create form and the
+rotate confirmation carry a random one-time value that the server remembers per web session (at most 32, not a cookie) and consumes on the
+first submit: a resend, a double click or a parallel submit does not call the API again and shows "This was already done" instead (the
+secret is not shown a second time). Create and rotate call the API without the browser's cancellation, so a committed change always returns
+its secret to the web server; if the API fails or times out on these two actions the page says the change may have taken effect.
+Residual risk: the browser's back/forward cache may keep a copy of the secret page for the life of the tab even though the page is
+`no-store`. The secret page therefore also sends `Clear-Site-Data: "cache"` (never `"cookies"` or `"storage"`, which would end the
+session), but this is best effort and browser dependent: close the tab after copying the secret. Disabling a client stops its tokens
+passing introspection only while it stays disabled (enabling it again revives them until they expire), and services that validate tokens
+locally accept them until they expire: after a leak, rotate the secret and keep the client disabled until the access-token lifetime has passed.
+Known limits of the client screens: the client list reuses its application list for a few seconds per web session; the application list for the create form and the filter reads at most 1000 applications; there is no previous-page link;
+the edit form is a best-effort snapshot (the API has no concurrency token), so two administrators saving at the same moment can still overwrite each other.
 
 ```bash
 dotnet run --project src/Gatekeeper.Api                                   # terminal 1: http://localhost:5080

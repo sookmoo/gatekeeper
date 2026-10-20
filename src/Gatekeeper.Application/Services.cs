@@ -464,7 +464,15 @@ public sealed class AuditService(IAuditRepository audit)
     }
 }
 
-public sealed record ClientCreated(Client Client, string Secret);
+/// <summary>A new client with its one-time secret. ToString never prints the secret.</summary>
+public sealed record ClientCreated(Client Client, string Secret)
+{
+    private bool PrintMembers(System.Text.StringBuilder builder)
+    {
+        builder.Append("Client = ").Append(Client);
+        return true;
+    }
+}
 
 /// <summary>
 /// Service identities. Secrets are 256 random bits, so a plain SHA-256 is enough to store them (there is nothing to

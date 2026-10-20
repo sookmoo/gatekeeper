@@ -1,0 +1,27 @@
+@page "{id:guid}"
+@model Gatekeeper.Web.Pages.Clients.EditModel
+@{
+    ViewData["Title"] = "Edit client";
+}
+<h1>Edit client @Model.Current.Name</h1>
+@if (Model.Error is not null)
+{
+    <p class="error" role="alert">@Model.Error</p>
+}
+<p>Application: <strong>@Model.AppName</strong> (cannot be changed)</p>
+<p><a href="/Clients/Rotate/@Model.Current.Id">Rotate secret</a> <a href="/Clients/Delete/@Model.Current.Id">Delete</a></p>
+<form method="post">
+    <input type="hidden" name="OrigName" value="@Model.OrigName">
+    <input type="hidden" name="OrigIsActive" value="@Model.OrigIsActive">
+    <label>Name
+        <input name="Name" value="@Model.Name" maxlength="64" required autofocus>
+    </label>
+    <p class="hint">A client signs in with its name: renaming it breaks services that still use the old name.</p>
+    <label>
+        <input type="hidden" name="IsActive" value="false">
+        <input type="checkbox" name="IsActive" value="true" checked="@(Model.IsActive ?? Model.Current.IsActive)">Active
+    </label>
+    <p class="hint">A disabled client cannot get tokens, and tokens it already holds stop passing introspection only while it stays disabled: enabling it again revives them until they expire. Services that validate tokens locally accept them until they expire anyway.</p>
+    <button type="submit">Save</button>
+    <a href="/Clients">Cancel</a>
+</form>

@@ -11,11 +11,23 @@ public sealed record UserRequest(string? Username, string? Email, string? Displa
 
 public sealed record ClientRequest(string? Name, Guid? Application, bool? IsActive);
 
-public sealed record ClientCreatedResponse(Guid Id, string Name, Guid AppId, bool IsActive, DateTimeOffset CreatedAt, DateTimeOffset UpdatedAt, string Secret);
+/// <summary>A new client with its one-time secret. ToString never prints the secret, so logging the object cannot leak it.</summary>
+public sealed record ClientCreatedResponse(Guid Id, string Name, Guid AppId, bool IsActive, DateTimeOffset CreatedAt, DateTimeOffset UpdatedAt, string Secret)
+{
+    private bool PrintMembers(System.Text.StringBuilder builder)
+    {
+        builder.Append("Id = ").Append(Id).Append(", Name = ").Append(Name);
+        return true;
+    }
+}
 
 public sealed record RevokedResponse(int Revoked);
 
-public sealed record SecretResponse(string Secret);
+/// <summary>A rotated secret. ToString never prints it.</summary>
+public sealed record SecretResponse(string Secret)
+{
+    private bool PrintMembers(System.Text.StringBuilder builder) => false;
+}
 
 public sealed record PasswordRequest(string? Password);
 
@@ -135,6 +147,7 @@ public static class Endpoints
             var created = await s.CreateAsync(r.Name, r.Application.Value, r.IsActive ?? true, ct);
             http.Response.Headers.CacheControl = "no-store"; // the body carries the one-time secret
             var c = created.Client;
+            http.Items[AuditMiddleware.NoteKey] = $"client={c.Id} name={c.Name} application={c.AppId}"; // never the secret
             return Results.Created($"/v1/clients/{c.Id}",
                 new ClientCreatedResponse(c.Id, c.Name, c.AppId, c.IsActive, c.CreatedAt, c.UpdatedAt, created.Secret));
         });

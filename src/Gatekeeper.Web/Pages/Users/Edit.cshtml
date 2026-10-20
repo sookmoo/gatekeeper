@@ -43,7 +43,7 @@
     <p class="hint">Empty keeps the current expiry (a person made a test user gets 30 days); at most 365 days ahead. Ignored for other kinds.</p>
     <label>
         <input type="hidden" name="IsActive" value="false">
-        <input type="checkbox" name="IsActive" value="true" checked="@Model.IsActive">Active
+        <input type="checkbox" name="IsActive" value="true" checked="@(Model.IsActive ?? Model.Current.IsActive)">Active
     </label>
     <button type="submit">Save</button>
     <a href="/Users">Cancel</a>

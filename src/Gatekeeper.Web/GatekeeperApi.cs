@@ -15,6 +15,24 @@ public sealed record SessionDto(Guid Id, Guid UserId, Guid AppId, DateTimeOffset
 
 public sealed record RevokedDto(int Revoked);
 
+public sealed record ClientDto(Guid Id, string Name, Guid AppId, bool IsActive, DateTimeOffset CreatedAt, DateTimeOffset UpdatedAt);
+
+/// <summary>A new client with its one-time secret. ToString never prints the secret, so logging the object cannot leak it.</summary>
+public sealed record ClientCreatedDto(Guid Id, string Name, Guid AppId, bool IsActive, string Secret)
+{
+    private bool PrintMembers(System.Text.StringBuilder builder)
+    {
+        builder.Append("Id = ").Append(Id).Append(", Name = ").Append(Name);
+        return true;
+    }
+}
+
+/// <summary>A rotated secret. ToString never prints it.</summary>
+public sealed record SecretDto(string Secret)
+{
+    private bool PrintMembers(System.Text.StringBuilder builder) => false;
+}
+
 public sealed record Page<T>(List<T> Items, string? NextCursor);
 
 /// <summary>An error answered by the Gatekeeper API (or its absence): the status and a readable message.</summary>
@@ -143,6 +161,27 @@ public sealed class GatekeeperApi(HttpClient http, WebSessions sessions, TimePro
     /// <summary>Revokes all sessions of a user and returns how many the API ended.</summary>
     public async Task<int> RevokeUserSessionsAsync(WebSession s, Guid userId, CancellationToken ct) =>
         (await SendAsync<RevokedDto>(s, HttpMethod.Delete, $"v1/users/{userId}/sessions", null, ct)).Revoked;
+
+    public Task<Page<ClientDto>> ListClientsAsync(WebSession s, Guid? appId, string? cursor, int limit, CancellationToken ct) =>
+        SendAsync<Page<ClientDto>>(s, HttpMethod.Get, $"v1/clients?limit={limit}" + (appId is { } a ? $"&application={a}" : "") + (cursor is null ? "" : $"&cursor={Uri.EscapeDataString(cursor)}"), null, ct);
+
+    public Task<ClientDto> GetClientAsync(WebSession s, Guid id, CancellationToken ct) =>
+        SendAsync<ClientDto>(s, HttpMethod.Get, $"v1/clients/{id}", null, ct);
+
+    /// <summary>Creates a client; the answer carries its one-time secret, which the caller must not store or log.</summary>
+    public Task<ClientCreatedDto> CreateClientAsync(WebSession s, string name, Guid appId, bool isActive, CancellationToken ct) =>
+        SendAsync<ClientCreatedDto>(s, HttpMethod.Post, "v1/clients", new { name, application = appId, isActive }, ct);
+
+    /// <summary>A null field is left unchanged.</summary>
+    public Task<ClientDto> UpdateClientAsync(WebSession s, Guid id, string? name, bool? isActive, CancellationToken ct) =>
+        SendAsync<ClientDto>(s, HttpMethod.Patch, $"v1/clients/{id}", new { name, isActive }, ct);
+
+    public async Task DeleteClientAsync(WebSession s, Guid id, CancellationToken ct) =>
+        await SendAsync<object>(s, HttpMethod.Delete, $"v1/clients/{id}", null, ct);
+
+    /// <summary>Replaces a client's secret and returns the new one (shown once; never store or log it).</summary>
+    public async Task<string> RotateClientSecretAsync(WebSession s, Guid id, CancellationToken ct) =>
+        (await SendAsync<SecretDto>(s, HttpMethod.Post, $"v1/clients/{id}/secret", null, ct)).Secret;
 
     /// <summary>The "admin" role of the reserved application: the one that grants access to this UI.</summary>
     public static bool IsAdminRole(AppDto app, RoleDto role) =>

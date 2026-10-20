@@ -188,4 +188,39 @@ public class ClientApiTests : IClassFixture<WebApplicationFactory<Program>>
             last = (await c.PostAsJsonAsync("/v1/auth/client-token", new { clientId = "throttled-one", clientSecret = "wrong secret value" })).StatusCode;
         Assert.Equal(HttpStatusCode.TooManyRequests, last);
     }
+
+    [Fact]
+    public void Records_that_carry_a_secret_never_print_it()
+    {
+        const string secret = "gks_do-not-print-this-secret-value-0123456789";
+        var now = DateTimeOffset.UtcNow;
+        var client = new Gatekeeper.Domain.Client(Guid.NewGuid(), "printable", Guid.NewGuid(), true, now, now);
+        var texts = new[]
+        {
+            new ClientCreatedResponse(client.Id, client.Name, client.AppId, true, now, now, secret).ToString(),
+            new SecretResponse(secret).ToString(),
+            new Gatekeeper.Application.ClientCreated(client, secret).ToString(),
+        };
+        Assert.All(texts, t => Assert.DoesNotContain(secret, t));
+        Assert.Contains("printable", texts[0]);
+    }
+
+    [Fact]
+    public async Task Creating_a_client_leaves_an_audit_note_with_id_name_and_application_but_never_the_secret()
+    {
+        var appName = Unique("app");
+        var app = (await Post("/v1/applications", new { name = appName })).GetProperty("id").GetGuid();
+        var name = Unique("aud");
+        var created = await Post("/v1/clients", new { name, application = app });
+        var id = created.GetProperty("id").GetGuid();
+        var secret = created.GetProperty("secret").GetString()!;
+        var raw = await _admin.GetStringAsync("/v1/audit?limit=200");
+        Assert.DoesNotContain(secret, raw);
+        var events = (await _admin.GetFromJsonAsync<JsonElement>("/v1/audit?limit=200")).GetProperty("items").EnumerateArray()
+            .Where(e => e.GetProperty("action").GetString() == "POST /v1/clients" && (e.GetProperty("detail").GetString() ?? "").Contains(id.ToString()))
+            .ToList();
+        var detail = Assert.Single(events).GetProperty("detail").GetString()!;
+        Assert.Contains($"name={name}", detail);
+        Assert.Contains($"application={app}", detail);
+    }
 }

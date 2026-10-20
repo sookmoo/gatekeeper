@@ -1,0 +1,58 @@
+@page
+@model Gatekeeper.Web.Pages.Clients.IndexModel
+@{
+    ViewData["Title"] = "Clients";
+}
+<h1>Clients</h1>
+<p class="hint">A client is a service identity: it signs in with its name and a secret and gets a token for its application.</p>
+@if (Model.Done is not null)
+{
+    <p class="notice">@Model.Done</p>
+}
+@if (Model.Error is not null)
+{
+    <p class="error" role="alert">@Model.Error</p>
+}
+<p><a class="button" href="/Clients/Create">New client</a></p>
+<form method="get" action="/Clients" class="filter">
+    <label>Application
+        <select name="app">
+            <option value="">Any</option>
+            @foreach (var a in Model.Apps)
+            {
+                <option value="@a.Id" selected="@(Model.AppFilter == a.Id)">@a.Name</option>
+            }
+        </select>
+    </label>
+    <button type="submit">Filter</button>
+    <a href="/Clients">Clear</a>
+</form>
+@if (Model.Items.Count == 0)
+{
+    <p>No clients.</p>
+}
+else
+{
+    <table>
+        <thead><tr><th>Name</th><th>Application</th><th>Active</th><th></th></tr></thead>
+        <tbody>
+        @foreach (var c in Model.Items)
+        {
+            <tr>
+                <td>@c.Name</td>
+                <td>@Model.AppName(c)</td>
+                <td>@(c.IsActive ? "yes" : "no")</td>
+                <td>
+                    <a href="/Clients/Edit/@c.Id">Edit</a>
+                    <a href="/Clients/Rotate/@c.Id">Rotate secret</a>
+                    <a href="/Clients/Delete/@c.Id">Delete</a>
+                </td>
+            </tr>
+        }
+        </tbody>
+    </table>
+}
+@if (Model.NextCursor is not null)
+{
+    <p><a href="@Model.NextHref()">Next page</a></p>
+}
