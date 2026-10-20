@@ -539,6 +539,9 @@ public sealed class ClientService(IClientRepository clients, IAppRepository apps
     public async Task AssignRoleAsync(Guid clientId, Guid roleId, CancellationToken ct = default)
     {
         var client = await GetAsync(clientId, ct);
+        // A leftover client of the reserved application (none can be created now) must not gain roles.
+        if (await apps.GetAsync(client.AppId, ct) is { } clientApp && string.Equals(clientApp.Name, Reserved.AdminApp, StringComparison.OrdinalIgnoreCase))
+            throw new ConflictException($"Application '{clientApp.Name}' is reserved: its service identities cannot hold roles.");
         var role = await roles.GetAsync(roleId, ct) ?? throw new NotFoundException($"Role {roleId} not found.");
         // The token's audience is the client's application, so it can only carry that application's roles.
         if (role.AppId != client.AppId) throw new ConflictException("The role belongs to a different application than the client.");

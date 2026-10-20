@@ -1,0 +1,45 @@
+@page "/Clients/{id:guid}/Roles"
+@model Gatekeeper.Web.Pages.Clients.Roles.IndexModel
+@{
+    ViewData["Title"] = "Roles of a client";
+}
+<h1>Roles of client @Model.Target.Name</h1>
+<p><a href="/Clients">Back to clients</a> <a href="/Clients/Edit/@Model.Target.Id">Edit client</a></p>
+<p>Application: <strong>@Model.AppName</strong></p>
+<p class="hint">A client token carries the roles listed here, all from the client's own application. Without roles the client cannot get a token.</p>
+@if (Model.Done is not null)
+{
+    <p class="notice">@Model.Done</p>
+}
+@if (Model.Reserved)
+{
+    <p class="hint">@Gatekeeper.Web.Pages.Clients.ClientAccess.ReservedClientRolesText</p>
+}
+else
+{
+    <p><a class="button" href="/Clients/@Model.Target.Id/Roles/Add">Add a role</a></p>
+}
+@if (Model.Items.Count == 0)
+{
+    <p>No roles.</p>
+}
+else
+{
+    <table>
+        <thead><tr><th>Role</th><th>Description</th><th></th></tr></thead>
+        <tbody>
+        @foreach (var r in Model.Items)
+        {
+            <tr>
+                <td>@r.Name</td>
+                <td>@r.Description</td>
+                <td><a href="/Clients/@Model.Target.Id/Roles/Remove/@r.Id">Remove</a></td>
+            </tr>
+        }
+        </tbody>
+    </table>
+}
+@if (Model.NextCursor is not null)
+{
+    <p><a href="/Clients/@Model.Target.Id/Roles?cursor=@Uri.EscapeDataString(Model.NextCursor)">Next page</a></p>
+}

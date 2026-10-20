@@ -183,6 +183,16 @@ public sealed class GatekeeperApi(HttpClient http, WebSessions sessions, TimePro
     public async Task<string> RotateClientSecretAsync(WebSession s, Guid id, CancellationToken ct) =>
         (await SendAsync<SecretDto>(s, HttpMethod.Post, $"v1/clients/{id}/secret", null, ct)).Secret;
 
+    /// <summary>The roles a client holds (all of its own application).</summary>
+    public Task<Page<RoleDto>> ListClientRolesAsync(WebSession s, Guid clientId, string? cursor, int limit, CancellationToken ct) =>
+        SendAsync<Page<RoleDto>>(s, HttpMethod.Get, $"v1/clients/{clientId}/roles?limit={limit}" + (cursor is null ? "" : $"&cursor={Uri.EscapeDataString(cursor)}"), null, ct);
+
+    public async Task AssignClientRoleAsync(WebSession s, Guid clientId, Guid roleId, CancellationToken ct) =>
+        await SendAsync<object>(s, HttpMethod.Put, $"v1/clients/{clientId}/roles/{roleId}", null, ct);
+
+    public async Task RevokeClientRoleAsync(WebSession s, Guid clientId, Guid roleId, CancellationToken ct) =>
+        await SendAsync<object>(s, HttpMethod.Delete, $"v1/clients/{clientId}/roles/{roleId}", null, ct);
+
     /// <summary>The "admin" role of the reserved application: the one that grants access to this UI.</summary>
     public static bool IsAdminRole(AppDto app, RoleDto role) =>
         IsReserved(app) && string.Equals(role.Name, "admin", StringComparison.OrdinalIgnoreCase);

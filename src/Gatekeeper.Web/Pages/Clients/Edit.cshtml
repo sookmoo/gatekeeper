@@ -9,7 +9,7 @@
     <p class="error" role="alert">@Model.Error</p>
 }
 <p>Application: <strong>@Model.AppName</strong> (cannot be changed)</p>
-<p><a href="/Clients/Rotate/@Model.Current.Id">Rotate secret</a> <a href="/Clients/Delete/@Model.Current.Id">Delete</a></p>
+<p><a href="/Clients/@Model.Current.Id/Roles">Roles</a> <a href="/Clients/Rotate/@Model.Current.Id">Rotate secret</a> <a href="/Clients/Delete/@Model.Current.Id">Delete</a></p>
 <form method="post">
     <input type="hidden" name="OrigName" value="@Model.OrigName">
     <input type="hidden" name="OrigIsActive" value="@Model.OrigIsActive">

@@ -292,6 +292,26 @@ public class AuthApiTests
     }
 
     [Fact]
+    public async Task A_leftover_client_of_the_reserved_app_cannot_be_assigned_a_role_but_can_lose_one()
+    {
+        using var f = NewFactory();
+        var admin = f.CreateAdminClient();
+        var app = await FindId(admin, "/v1/applications?limit=200", "gatekeeper");
+        var adminRole = await FindId(admin, $"/v1/applications/{app}/roles", "admin");
+        var now = DateTimeOffset.UtcNow;
+        var client = (await f.Services.GetRequiredService<Gatekeeper.Application.IClientRepository>().AddAsync(new Gatekeeper.Domain.Client(Guid.NewGuid(), "leftover", app, true, now, now), "hash")).Id;
+        var r = await admin.PutAsync($"/v1/clients/{client}/roles/{adminRole}", null);
+        Assert.Equal(HttpStatusCode.Conflict, r.StatusCode);
+        Assert.Contains("reserved", await r.Content.ReadAsStringAsync());
+        Assert.Empty((await (await admin.GetAsync($"/v1/clients/{client}/roles")).Content.ReadFromJsonAsync<JsonElement>()).GetProperty("items").EnumerateArray());
+        // the refusal is audited like other refusals
+        var audit = await (await admin.GetAsync("/v1/audit?limit=50")).Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Contains(audit.GetProperty("items").EnumerateArray(), e => e.GetProperty("action").GetString()!.StartsWith("PUT /v1/clients/") && e.GetProperty("outcome").GetString() == "failure" && e.GetProperty("detail").GetString() == "ConflictException");
+        // removing is still allowed (a role that is not held is a plain 404)
+        Assert.Equal(HttpStatusCode.NotFound, (await admin.DeleteAsync($"/v1/clients/{client}/roles/{adminRole}")).StatusCode);
+    }
+
+    [Fact]
     public async Task A_valid_token_for_someone_who_is_not_an_administrator_is_rejected()
     {
         using var f = NewFactory();
