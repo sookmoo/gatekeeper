@@ -27,10 +27,12 @@ public class DeleteModel(GatekeeperApi api) : PageModel
         try
         {
             await api.DeleteAppAsync(HttpContext.Current(), id, ct);
+            HttpContext.Current().InvalidateAppList(); // the clients pages re-read the application list
             return RedirectToPage("Index", new { done = "deleted" });
         }
         catch (ApiException ex) when (ex.Status == HttpStatusCode.NotFound)
         {
+            HttpContext.Current().InvalidateAppList(); // it is gone (or renamed elsewhere): do not keep a stale list
             return NotFound();
         }
         catch (ApiException ex) when ((int)ex.Status is >= 400 and < 500 && ex.Status != HttpStatusCode.Unauthorized)

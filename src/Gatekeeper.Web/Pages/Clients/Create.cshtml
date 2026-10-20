@@ -1,0 +1,46 @@
+@page
+@model Gatekeeper.Web.Pages.Clients.CreateModel
+@{
+    ViewData["Title"] = Model.Created is null ? "New client" : "Client created";
+}
+@if (Model.Created is { } created)
+{
+    <partial name="_Secret" model="created" />
+}
+else
+{
+<h1>New client</h1>
+@if (Model.Error is not null)
+{
+    <p class="error" role="alert">@Model.Error</p>
+}
+@if (Model.Apps.Count == 0)
+{
+    <p>There is no application to create a client in. <a href="/Applications/Create">Create an application</a> first.</p>
+}
+else
+{
+    <form method="post" autocomplete="off">
+        <input type="hidden" name="Nonce" value="@Model.FormNonce">
+        <label>Name
+            <input name="Name" value="@Model.Name" maxlength="64" required autofocus>
+        </label>
+        <label>Application
+            <select name="App">
+                @foreach (var a in Model.Apps)
+                {
+                    <option value="@a.Id" selected="@(string.Equals(Model.App, a.Id.ToString(), StringComparison.OrdinalIgnoreCase))">@a.Name</option>
+                }
+            </select>
+        </label>
+        <p class="hint">Lowercase letters, digits, '.', '_' and '-', at most 64 characters. The reserved application cannot have clients.</p>
+        <label>
+            <input type="hidden" name="IsActive" value="false">
+            <input type="checkbox" name="IsActive" value="true" checked="@(Model.IsActive != false)">Active
+        </label>
+        <p class="hint">The secret is shown once, on the next page. Submit the form only once.</p>
+        <button type="submit">Create</button>
+        <a href="/Clients">Cancel</a>
+    </form>
+}
+}

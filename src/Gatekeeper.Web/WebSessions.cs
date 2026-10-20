@@ -13,6 +13,9 @@ public sealed record WebOptions
     public int MaxSessions { get; init; } = 1000;
 }
 
+/// <summary>The applications as read at one moment: the ones a client can belong to, and every name.</summary>
+public sealed record AppListSnapshot(DateTimeOffset At, List<AppDto> Choices, Dictionary<Guid, string> Names);
+
 /// <summary>The Gatekeeper tokens of one signed-in administrator. Immutable: a refresh swaps the whole record.</summary>
 public sealed record Tokens(string Access, DateTimeOffset AccessExpiresAt, string Refresh, DateTimeOffset RefreshExpiresAt);
 
@@ -67,6 +70,65 @@ public sealed class WebSession(string id, string username, Tokens tokens, DateTi
         {
             return default;
         }
+    }
+
+    /// <summary>The most recently read application list (see the client pages); a short-lived cache, replaced as a whole.</summary>
+    public AppListSnapshot? AppList { get { lock (_appListLock) return _appList; } }
+    private readonly object _appListLock = new();
+    private AppListSnapshot? _appList;
+    private long _appListVersion;
+
+    /// <summary>Forgets the cached list; a read that started before this call will not be stored.</summary>
+    public void InvalidateAppList()
+    {
+        lock (_appListLock)
+        {
+            _appListVersion++;
+            _appList = null;
+        }
+    }
+
+    /// <summary>The version to hand to <see cref="TryStoreAppList"/>: taken before the list is read.</summary>
+    public long AppListVersion { get { lock (_appListLock) return _appListVersion; } }
+
+    /// <summary>Stores a list read since <paramref name="version"/> was taken, unless the list was invalidated meanwhile.</summary>
+    public void TryStoreAppList(AppListSnapshot snapshot, long version)
+    {
+        lock (_appListLock)
+            if (version == _appListVersion) _appList = snapshot;
+    }
+
+    /// <summary>Drops the cached list if it is the given (expired) one.</summary>
+    public void DropAppList(AppListSnapshot expired)
+    {
+        lock (_appListLock)
+            if (ReferenceEquals(_appList, expired)) _appList = null;
+    }
+
+    private const int MaxNonces = 32;
+    private readonly object _nonceLock = new();
+    private readonly List<string> _nonces = [];
+
+    /// <summary>
+    /// A random one-time value for a form that must not be submitted twice (it is remembered here, on the server, not in a
+    /// cookie). At most 32 are kept; the oldest is forgotten first.
+    /// </summary>
+    public string IssueNonce(string purpose)
+    {
+        var nonce = Convert.ToBase64String(RandomNumberGenerator.GetBytes(18)).Replace('+', '-').Replace('/', '_');
+        lock (_nonceLock)
+        {
+            _nonces.Add(purpose + "|" + nonce);
+            if (_nonces.Count > MaxNonces) _nonces.RemoveRange(0, _nonces.Count - MaxNonces);
+        }
+        return nonce;
+    }
+
+    /// <summary>Uses a nonce up: true for exactly one caller, even when several submit the same one at once.</summary>
+    public bool ConsumeNonce(string purpose, string? nonce)
+    {
+        if (string.IsNullOrEmpty(nonce) || nonce.Length > 64) return false;
+        lock (_nonceLock) return _nonces.Remove(purpose + "|" + nonce);
     }
 
     internal void Touch(DateTimeOffset now) => Interlocked.Exchange(ref _lastSeenTicks, now.UtcTicks);

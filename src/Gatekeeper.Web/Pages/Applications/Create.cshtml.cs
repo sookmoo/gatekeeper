@@ -17,6 +17,7 @@ public class CreateModel(GatekeeperApi api) : PageModel
         try
         {
             await api.CreateAppAsync(HttpContext.Current(), Name?.Trim() ?? "", ct);
+            HttpContext.Current().InvalidateAppList(); // the clients pages re-read the application list
             return RedirectToPage("Index", new { done = "created" });
         }
         catch (ApiException ex) when ((int)ex.Status is >= 400 and < 500 && ex.Status != System.Net.HttpStatusCode.Unauthorized)

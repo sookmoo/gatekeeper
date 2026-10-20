@@ -11,7 +11,10 @@ public class EditModel(GatekeeperApi api, WebSessions sessions) : PageModel
     [BindProperty] public string? DisplayName { get; set; }
     [BindProperty] public string? Kind { get; set; }
     [BindProperty] public string? Expiry { get; set; }
-    [BindProperty] public bool? IsActive { get; set; }
+    // The browser sends the hidden "false" and, when ticked, "true" as well: read all values (see FormFlag).
+    [BindProperty(Name = "IsActive")] public string[]? IsActiveValues { get; set; }
+    /// <summary>The form's state. Not sent (a hand-made POST) means unchanged, never "off".</summary>
+    public bool? IsActive { get; private set; }
     // The values the form was loaded with. Only fields that differ from them are sent, so a stale form cannot undo
     // a change another administrator made meanwhile. Missing (not from our form): the values loaded now.
     [BindProperty] public string? OrigUsername { get; set; }
@@ -47,6 +50,7 @@ public class EditModel(GatekeeperApi api, WebSessions sessions) : PageModel
     public async Task<IActionResult> OnPostAsync(Guid id, CancellationToken ct)
     {
         if (!await LoadAsync(id, ct)) return NotFound();
+        IsActive = FormFlag.Parse(IsActiveValues);
         if (!UserForm.IsKind(Kind)) return Fail(UserForm.KindText);
         if (!UserForm.TryParseExpiry(Expiry, out var expiresAt)) return Fail(UserForm.ExpiryText);
         var username = Username?.Trim() ?? "";

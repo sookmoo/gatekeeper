@@ -1,0 +1,20 @@
+@page "{id:guid}"
+@model Gatekeeper.Web.Pages.Clients.DeleteModel
+@{
+    ViewData["Title"] = "Delete client";
+}
+<h1>Delete client</h1>
+@if (Model.Error is not null)
+{
+    <p class="error" role="alert">@Model.Error</p>
+}
+<p>Delete client <strong>@Model.Target.Name</strong> of application <strong>@Model.AppName</strong> (active: <strong>@(Model.Target.IsActive ? "yes" : "no")</strong>)? Its secret and role assignments are removed and it can no longer get tokens. This cannot be undone.</p>
+@if (Model.Target.IsActive)
+{
+    <p class="error" role="alert">This client is active: services that sign in with it fail from the moment you confirm.</p>
+}
+<p class="hint">Tokens it already holds stop passing Gatekeeper's introspection, but services that validate tokens locally accept them until they expire.</p>
+<form method="post">
+    <button type="submit" class="danger">Delete</button>
+    <a href="/Clients">Cancel</a>
+</form>
