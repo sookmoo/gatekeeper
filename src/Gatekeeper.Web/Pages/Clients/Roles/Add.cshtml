@@ -1,0 +1,47 @@
+@page "/Clients/{id:guid}/Roles/Add"
+@model Gatekeeper.Web.Pages.Clients.Roles.AddModel
+@{
+    ViewData["Title"] = "Add a role to a client";
+}
+<h1>Add a role to client @Model.Target.Name</h1>
+@if (Model.Error is not null)
+{
+    <p class="error" role="alert">@Model.Error</p>
+}
+<p>Roles of application <strong>@Model.AppName</strong>.</p>
+@if (Model.Reserved)
+{
+    <p class="hint">@Gatekeeper.Web.Pages.Clients.ClientAccess.ReservedClientRolesText</p>
+    <p><a href="/Clients/@Model.Target.Id/Roles">Back</a></p>
+}
+else if (Model.Roles.Count == 0)
+{
+    @if (Model.Error is null)
+    {
+        <p>No roles to choose from.</p>
+    }
+    @if (Model.NextCursor is not null)
+    {
+        <p><a href="@Model.NextHref()">More</a></p>
+    }
+    <p><a href="/Clients/@Model.Target.Id/Roles">Back</a></p>
+}
+else
+{
+    <form method="post">
+        <label>Role
+            <select name="RoleId">
+                @foreach (var r in Model.Roles)
+                {
+                    <option value="@r.Id">@r.Name</option>
+                }
+            </select>
+        </label>
+        <button type="submit">Add role</button>
+        <a href="/Clients/@Model.Target.Id/Roles">Cancel</a>
+    </form>
+    @if (Model.NextCursor is not null)
+    {
+        <p><a href="@Model.NextHref()">More</a></p>
+    }
+}

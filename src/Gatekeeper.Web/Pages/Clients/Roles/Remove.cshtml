@@ -1,0 +1,16 @@
+@page "/Clients/{id:guid}/Roles/Remove/{roleId:guid}"
+@model Gatekeeper.Web.Pages.Clients.Roles.RemoveModel
+@{
+    ViewData["Title"] = "Remove a role from a client";
+}
+<h1>Remove a role</h1>
+@if (Model.Error is not null)
+{
+    <p class="error" role="alert">@Model.Error</p>
+}
+<p>Remove role <strong>@Model.Role.Name</strong> of application <strong>@Model.AppName</strong> from client <strong>@Model.Target.Name</strong>?</p>
+<p class="hint">New tokens of this client no longer carry the role. Tokens it already holds keep it until they expire.</p>
+<form method="post">
+    <button type="submit" class="danger">Remove</button>
+    <a href="/Clients/@Model.Target.Id/Roles">Cancel</a>
+</form>

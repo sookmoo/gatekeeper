@@ -72,6 +72,35 @@ public static class ClientAccess
         return snapshot;
     }
 
+    public const string ReservedClientRolesText = "Clients of the reserved application cannot hold roles.";
+
+    /// <summary>A fixed text for a refused role change; the API's wording is never shown.</summary>
+    public static string RoleRefusalText(ApiException ex)
+    {
+        if (ex.Status == HttpStatusCode.Conflict)
+        {
+            if (ex.Message.Contains("different application", StringComparison.Ordinal)) return "That role belongs to a different application than the client.";
+            if (ex.Message.Contains("reserved", StringComparison.Ordinal)) return ReservedClientRolesText;
+            return "The role could not be changed because of a conflict.";
+        }
+        return "The role could not be changed.";
+    }
+
+    /// <summary>The ids of the roles a client holds. Bounded: at most 50 pages of 200.</summary>
+    public static async Task<HashSet<Guid>> HeldRoleIdsAsync(GatekeeperApi api, WebSession session, Guid clientId, CancellationToken ct)
+    {
+        var ids = new HashSet<Guid>();
+        string? cursor = null;
+        for (var pages = 0; pages < 50; pages++)
+        {
+            var page = await api.ListClientRolesAsync(session, clientId, cursor, 200, ct);
+            foreach (var r in page.Items) ids.Add(r.Id);
+            cursor = page.NextCursor;
+            if (cursor is null) break;
+        }
+        return ids;
+    }
+
     /// <summary>A fixed text for a refused create or rename; the API's wording is never shown.</summary>
     public static string SaveRefusalText(ApiException ex)
     {

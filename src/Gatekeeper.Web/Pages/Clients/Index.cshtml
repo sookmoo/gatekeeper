@@ -44,6 +44,7 @@ else
                 <td>@(c.IsActive ? "yes" : "no")</td>
                 <td>
                     <a href="/Clients/Edit/@c.Id">Edit</a>
+                    <a href="/Clients/@c.Id/Roles">Roles</a>
                     <a href="/Clients/Rotate/@c.Id">Rotate secret</a>
                     <a href="/Clients/Delete/@c.Id">Delete</a>
                 </td>

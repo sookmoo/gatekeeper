@@ -47,7 +47,7 @@ public static class UserAccess
     /// <summary>The API's detail for the log only: control characters removed and capped.</summary>
     public static string ForLog(string? text)
     {
-        var clean = new string((text ?? "").Where(c => !char.IsControl(c)).ToArray());
+        var clean = new string((text ?? "").Where(c => !char.IsControl(c) && char.GetUnicodeCategory(c) is not (System.Globalization.UnicodeCategory.LineSeparator or System.Globalization.UnicodeCategory.ParagraphSeparator or System.Globalization.UnicodeCategory.Format)).ToArray());
         return clean.Length <= 200 ? clean : clean[..200];
     }
 
