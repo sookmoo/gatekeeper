@@ -32,7 +32,9 @@ public sealed class WebFixture : IDisposable
             if (secureCookies) b.UseSetting("Web:SecureCookies", "true");
             b.ConfigureServices(s =>
         {
-            s.AddHttpClient<GatekeeperApi>().ConfigurePrimaryHttpMessageHandler(() => Api.Server.CreateHandler());
+            // The production client times out after 10 s; on a loaded machine Argon2 logins can exceed that and
+            // the login page then answers 200 with a timeout message. Tests must not depend on wall-clock speed.
+            s.AddHttpClient<GatekeeperApi>().ConfigureHttpClient(c => c.Timeout = TimeSpan.FromMinutes(5)).ConfigurePrimaryHttpMessageHandler(() => Api.Server.CreateHandler());
             if (fakeTime) s.AddSingleton<TimeProvider>(Time);
             configureWeb?.Invoke(s);
         });
@@ -67,7 +69,7 @@ public sealed class WebFixture : IDisposable
     {
         var b = Browser();
         var r = await PostFormAsync(b, "/Login", new() { ["Username"] = AdminName, ["Password"] = AdminPassword });
-        Assert.Equal(HttpStatusCode.Redirect, r.StatusCode);
+        Assert.True(r.StatusCode == HttpStatusCode.Redirect, "sign-in answered " + (int)r.StatusCode + ": " + Regex.Match(await r.Content.ReadAsStringAsync(), "class=\"error\"[^>]*>([^<]*)").Groups[1].Value);
         return b;
     }
 

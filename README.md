@@ -162,7 +162,8 @@ through the API and works as their session: the browser only holds an `HttpOnly`
 tokens stay on the server. Every call to the API carries the signed-in administrator's own token, so the audit trail names the person.
 Today it covers sign in/out, applications (list, create, rename, delete), roles (the reserved application's roles are shown read-only),
 users (list, create, edit, delete, their roles, password and sessions) and clients (service identities: list with application filter,
-create, rename, enable/disable, rotate secret, delete); a client's roles (use `gk client`) and the audit trail follow.
+create, rename, enable/disable, rotate secret, delete), a client's roles, and the audit trail (read-only, newest first, exact
+actor and action filters, paged). The audit page pages with the API's offset cursor, so while new events arrive a next page can repeat rows.
 
 A client's secret is shown once, on the page that answers the create or rotate request (no redirect, `Cache-Control: no-store`,
 never in a URL, cookie, log or audit row). Reloading or going back makes the browser offer to resend the form, so the create form and the

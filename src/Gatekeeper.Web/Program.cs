@@ -136,9 +136,9 @@ app.Use(async (http, next) =>
             _ => (StatusCodes.Status502BadGateway, true, "The Gatekeeper API could not complete the request."),
         };
         // The API's own wording stays in the log: it is not shown to the browser.
-        var detail = new string(ex.Message.Where(c => !char.IsControl(c)).Take(200).ToArray());
+        var detail = Gatekeeper.Web.Pages.Users.UserAccess.ForLog(ex.Message);
         app.Logger.LogWarning("API error {Status} on {Method} {Path}: {Detail}", (int)ex.Status, http.Request.Method, http.Request.Path, detail);
-        var back = http.Request.Path.StartsWithSegments("/Users") ? "/Users" : http.Request.Path.StartsWithSegments("/Applications") ? "/Applications" : http.Request.Path.StartsWithSegments("/Clients") ? "/Clients" : "/";
+        var back = http.Request.Path.StartsWithSegments("/Users") ? "/Users" : http.Request.Path.StartsWithSegments("/Applications") ? "/Applications" : http.Request.Path.StartsWithSegments("/Clients") ? "/Clients" : http.Request.Path.StartsWithSegments("/Audit") ? "/Audit" : "/";
         http.Response.StatusCode = status;
         http.Response.ContentType = "text/html; charset=utf-8";
         await http.Response.WriteAsync($"<!doctype html><meta charset=\"utf-8\"><link rel=\"stylesheet\" href=\"/site.css\"><title>Gatekeeper</title><main><p>{HtmlEncoder.Default.Encode(text)}</p>{(retry ? $"<p><a href=\"{back}\">Try again</a></p>" : $"<p><a href=\"{back}\">Back</a></p>")}</main>");

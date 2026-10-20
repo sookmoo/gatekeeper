@@ -1,0 +1,51 @@
+@page
+@model Gatekeeper.Web.Pages.Audit.IndexModel
+@using Gatekeeper.Web.Pages.Audit
+@{
+    ViewData["Title"] = "Audit trail";
+}
+<h1>Audit trail</h1>
+<p class="hint">Newest first, read-only. The actor is a user or client id, "system" or "anonymous". Filters match exactly.</p>
+@if (Model.Error is not null)
+{
+    <p class="error" role="alert">@Model.Error</p>
+}
+<form method="get" action="/Audit" class="filter">
+    <label>Actor
+        <input type="text" name="actor" value="@Model.Actor" maxlength="200">
+    </label>
+    <label>Action
+        <input type="text" name="action" value="@Model.Action" maxlength="200">
+    </label>
+    <button type="submit">Filter</button>
+    <a href="/Audit">Clear</a>
+</form>
+@if (Model.Items.Count == 0)
+{
+    <p>No events.</p>
+}
+else
+{
+    <table>
+        <thead><tr><th>Time (UTC)</th><th>Actor</th><th>Action</th><th>Target</th><th>Outcome</th><th>Detail</th><th>Address</th></tr></thead>
+        <tbody>
+        @foreach (var e in Model.Items)
+        {
+            <tr>
+                <td>@IndexModel.Time(e.At)</td>
+                <td>@IndexModel.Cap(e.Actor)</td>
+                <td>@IndexModel.Cap(e.Action)</td>
+                <td>@IndexModel.Cap(e.Target)</td>
+                <td>@IndexModel.Cap(e.Outcome)</td>
+                <td>@IndexModel.Cap(e.Detail)</td>
+                <td>@IndexModel.Cap(e.Address)</td>
+            </tr>
+        }
+        </tbody>
+    </table>
+}
+@if (Model.NextCursor is not null)
+{
+    <p><a href="@Model.NextHref()">Next page</a></p>
+}
+<p class="hint">Paging uses an offset: while new events arrive, a next page can repeat rows already shown. Long fields are shortened here.</p>
