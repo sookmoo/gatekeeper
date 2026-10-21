@@ -33,6 +33,8 @@ public sealed record SecretDto(string Secret)
     private bool PrintMembers(System.Text.StringBuilder builder) => false;
 }
 
+public sealed record AuditDto(Guid Id, DateTimeOffset At, string Actor, string Action, string? Target, string Outcome, string? Detail, string? Address);
+
 public sealed record Page<T>(List<T> Items, string? NextCursor);
 
 /// <summary>An error answered by the Gatekeeper API (or its absence): the status and a readable message.</summary>
@@ -192,6 +194,16 @@ public sealed class GatekeeperApi(HttpClient http, WebSessions sessions, TimePro
 
     public async Task RevokeClientRoleAsync(WebSession s, Guid clientId, Guid roleId, CancellationToken ct) =>
         await SendAsync<object>(s, HttpMethod.Delete, $"v1/clients/{clientId}/roles/{roleId}", null, ct);
+
+    /// <summary>Audit events, newest first; actor and action are exact-match filters (null or empty: no filter).</summary>
+    public Task<Page<AuditDto>> ListAuditAsync(WebSession s, string? actor, string? action, string? cursor, int limit, CancellationToken ct)
+    {
+        var path = $"v1/audit?limit={limit}";
+        if (!string.IsNullOrEmpty(actor)) path += $"&actor={Uri.EscapeDataString(actor)}";
+        if (!string.IsNullOrEmpty(action)) path += $"&action={Uri.EscapeDataString(action)}";
+        if (cursor is not null) path += $"&cursor={Uri.EscapeDataString(cursor)}";
+        return SendAsync<Page<AuditDto>>(s, HttpMethod.Get, path, null, ct);
+    }
 
     /// <summary>The "admin" role of the reserved application: the one that grants access to this UI.</summary>
     public static bool IsAdminRole(AppDto app, RoleDto role) =>
