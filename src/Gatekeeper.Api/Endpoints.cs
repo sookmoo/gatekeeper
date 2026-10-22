@@ -130,6 +130,17 @@ public static class Endpoints
         });
         users.MapGet("/{id:guid}/sessions", (Guid id, SessionService s, IUserRepository u, int? limit, string? cursor, CancellationToken ct) =>
             s.ListAsync(id, u, PageQuery.Parse(limit, cursor), ct)).ProducesProblem(StatusCodes.Status404NotFound);
+        users.MapGet("/{id:guid}/sessions/{sessionId:guid}", (Guid id, Guid sessionId, SessionService s, CancellationToken ct) =>
+            s.GetForUserAsync(id, sessionId, ct))
+            .WithDescription("404 both when there is no such session and when it belongs to another user. Any state (active, revoked or expired) is returned while the row is kept.")
+            .ProducesProblem(StatusCodes.Status404NotFound);
+        users.MapDelete("/{id:guid}/sessions/{sessionId:guid}", async (Guid id, Guid sessionId, SessionService s, CancellationToken ct) =>
+        {
+            await s.RevokeForUserAsync(id, sessionId, ct);
+            return Results.NoContent();
+        }).WithDescription("Ends one session of the user. 404 both when there is no such session and when it belongs to another user. The audit target names the user and session ids.")
+          .Produces(StatusCodes.Status204NoContent)
+          .ProducesProblem(StatusCodes.Status404NotFound);
         users.MapDelete("/{id:guid}/sessions", async (Guid id, SessionService s, UserService u, CancellationToken ct) =>
         {
             await u.GetAsync(id, ct); // 404 for an unknown user
@@ -148,11 +159,15 @@ public static class Endpoints
             return Results.NoContent();
         }).WithDescription("When this was the user's last role in the application, the user's sessions in that application end at once (other applications are untouched).");
 
-        v1.MapGroup("/sessions").WithTags("Sessions").MapDelete("/{id:guid}", async (Guid id, SessionService s, CancellationToken ct) =>
+        v1.MapGroup("/sessions").WithTags("Sessions").MapDelete("/{id:guid}", async (Guid id, SessionService s, HttpContext http, CancellationToken ct) =>
         {
-            await s.RevokeAsync(id, ct);
+            http.Response.Headers["Deprecation"] = "true";
+            var owner = await s.RevokeAsync(id, ct);
+            http.Response.Headers.Link = $"</v1/users/{owner}/sessions/{id}>; rel=\"successor-version\"";
+            http.Items[AuditMiddleware.NoteKey] = $"user={owner}";
             return Results.NoContent();
-        }).ProducesProblem(StatusCodes.Status404NotFound);
+        }).WithDescription("Deprecated: use DELETE /v1/users/{id}/sessions/{sessionId}, which is scoped to the owner. The audit note names the owner (user=<id>). The response carries a Deprecation header and a Link to the successor route; it will be removed once no client uses it.")
+          .ProducesProblem(StatusCodes.Status404NotFound);
 
         var clients = v1.MapGroup("/clients").WithTags("Clients");
         clients.MapGet("/", (ClientService s, Guid? application, int? limit, string? cursor, CancellationToken ct) =>

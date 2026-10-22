@@ -157,8 +157,12 @@ public sealed class GatekeeperApi(HttpClient http, WebSessions sessions, TimePro
     public Task<Page<SessionDto>> ListUserSessionsAsync(WebSession s, Guid userId, string? cursor, int limit, CancellationToken ct) =>
         SendAsync<Page<SessionDto>>(s, HttpMethod.Get, $"v1/users/{userId}/sessions?limit={limit}" + (cursor is null ? "" : $"&cursor={Uri.EscapeDataString(cursor)}"), null, ct);
 
-    public async Task RevokeSessionAsync(WebSession s, Guid sessionId, CancellationToken ct) =>
-        await SendAsync<object>(s, HttpMethod.Delete, $"v1/sessions/{sessionId}", null, ct);
+    /// <summary>One session of the user; 404 when it does not exist or is another user's.</summary>
+    public Task<SessionDto> GetUserSessionAsync(WebSession s, Guid userId, Guid sessionId, CancellationToken ct) =>
+        SendAsync<SessionDto>(s, HttpMethod.Get, $"v1/users/{userId}/sessions/{sessionId}", null, ct);
+
+    public async Task RevokeSessionAsync(WebSession s, Guid userId, Guid sessionId, CancellationToken ct) =>
+        await SendAsync<object>(s, HttpMethod.Delete, $"v1/users/{userId}/sessions/{sessionId}", null, ct);
 
     /// <summary>Revokes all sessions of a user and returns how many the API ended.</summary>
     public async Task<int> RevokeUserSessionsAsync(WebSession s, Guid userId, CancellationToken ct) =>

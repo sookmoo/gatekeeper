@@ -1018,6 +1018,107 @@
         ]
       }
     },
+    "/v1/users/{id}/sessions/{sessionId}": {
+      "get": {
+        "tags": [
+          "Users"
+        ],
+        "description": "404 both when there is no such session and when it belongs to another user. Any state (active, revoked or expired) is returned while the row is kept.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "sessionId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Session"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": [ ]
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "Users"
+        ],
+        "description": "Ends one session of the user. 404 both when there is no such session and when it belongs to another user. The audit target names the user and session ids.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "sessionId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "No Content"
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": [ ]
+          }
+        ]
+      }
+    },
     "/v1/users/{id}/roles": {
       "get": {
         "tags": [
@@ -1158,6 +1259,7 @@
         "tags": [
           "Sessions"
         ],
+        "description": "Deprecated: use DELETE /v1/users/{id}/sessions/{sessionId}, which is scoped to the owner. The audit note names the owner (user=<id>). The response carries a Deprecation header and a Link to the successor route; it will be removed once no client uses it.",
         "parameters": [
           {
             "name": "id",
@@ -1181,6 +1283,7 @@
             }
           }
         },
+        "deprecated": true,
         "security": [
           {
             "bearer": [ ]

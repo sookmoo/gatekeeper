@@ -4,7 +4,7 @@ using Microsoft.AspNetCore.Mvc.RazorPages;
 
 namespace Gatekeeper.Web.Pages.Users.Sessions;
 
-public class RevokeModel(GatekeeperApi api, WebSessions sessions, ILogger<RevokeModel> log) : PageModel
+public class RevokeModel(GatekeeperApi api, WebSessions sessions, TimeProvider time, ILogger<RevokeModel> log) : PageModel
 {
     public UserDto Target { get; private set; } = null!;
     public SessionDto Session { get; private set; } = null!;
@@ -23,7 +23,7 @@ public class RevokeModel(GatekeeperApi api, WebSessions sessions, ILogger<Revoke
         try
         {
             var own = IsOwn;
-            await api.RevokeSessionAsync(HttpContext.Current(), sessionId, ct);
+            await api.RevokeSessionAsync(HttpContext.Current(), id, sessionId, ct);
             // The UI runs on this session: end it cleanly rather than letting the next call fail.
             if (own) return Redirect(await UserAccess.EndOwnSessionAsync(api, sessions, HttpContext, ct));
             return RedirectToPage("Index", new { id, done = "revoked" });
@@ -41,14 +41,16 @@ public class RevokeModel(GatekeeperApi api, WebSessions sessions, ILogger<Revoke
         }
     }
 
-    // False unless the user exists and the session is listed under them.
+    // False unless the user exists and the API says the session is theirs.
     private async Task<bool> LoadAsync(Guid id, Guid sessionId, CancellationToken ct)
     {
         try
         {
             var me = HttpContext.Current();
             Target = await api.GetUserAsync(me, id, ct);
-            if (await SessionAccess.FindAsync(api, me, id, sessionId, ct) is not { } found) return false;
+            var found = await api.GetUserSessionAsync(me, id, sessionId, ct); // 404 unless it is this user's
+            // The API keeps ended sessions for a while; as before, only an active one can be revoked here.
+            if (SessionAccess.State(found, time.GetUtcNow()) != "active") return false;
             Session = found;
             AppName = (await UserAccess.AppNamesAsync(api, me, [found.AppId], ct)).GetValueOrDefault(found.AppId);
             return true;

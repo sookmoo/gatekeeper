@@ -88,7 +88,7 @@ public class Sessions5fQaTests : IClassFixture<WebFixture>
     // ---- ownership, 50-page cap ----
 
     [Fact]
-    public async Task Beyond_the_50_page_cap_a_session_is_not_found_and_revoke_all_fails_closed_with_a_lower_bound()
+    public async Task Revoke_asks_the_scoped_route_without_walking_the_list_and_revoke_all_still_fails_closed_with_a_lower_bound()
     {
         var uid = Guid.Empty;
         var app = Guid.NewGuid();
@@ -100,6 +100,7 @@ public class Sessions5fQaTests : IClassFixture<WebFixture>
         {
             var path = r.RequestUri!.AbsolutePath;
             if (r.Method == HttpMethod.Delete && path.Contains("ssions")) { deletes.Add(path); return Json(new { revoked = 7 }); }
+            if (r.Method == HttpMethod.Get && path.EndsWith($"/users/{uid}/sessions/{target}")) return new HttpResponseMessage(HttpStatusCode.NotFound);
             if (r.Method == HttpMethod.Get && path.EndsWith($"/users/{uid}/sessions"))
             {
                 Interlocked.Increment(ref listCalls);
@@ -115,17 +116,19 @@ public class Sessions5fQaTests : IClassFixture<WebFixture>
 
         listCalls = 0;
         Assert.Equal(HttpStatusCode.NotFound, (await b.GetAsync($"/Users/{uid}/Sessions/Revoke/{target}")).StatusCode);
-        Assert.Equal(50, listCalls); // bounded
+        Assert.Equal(0, listCalls); // no list walk: the API answers for the one session
         var post = await WebFixture.PostFormAsync(b, $"/Users/{uid}/Sessions/Revoke/{target}", new(), $"/Users/{uid}/Sessions/RevokeAll");
         Assert.Equal(HttpStatusCode.NotFound, post.StatusCode);
         Assert.Empty(deletes); // never acted on
 
+        listCalls = 0;
         var all = await b.GetStringAsync($"/Users/{uid}/Sessions/RevokeAll");
         Assert.Contains("or more", all);
+        Assert.Equal(50, listCalls); // revoke all is still bounded
     }
 
     [Fact]
-    public async Task A_listed_session_of_the_user_is_found_on_a_later_page()
+    public async Task A_session_beyond_the_first_page_is_revoked_through_the_scoped_route()
     {
         var uid = Guid.Empty;
         var app = Guid.NewGuid();
@@ -135,11 +138,8 @@ public class Sessions5fQaTests : IClassFixture<WebFixture>
         f = new WebFixture(false, s => s.AddHttpClient<GatekeeperApi>().ConfigurePrimaryHttpMessageHandler(() => new StubHandler(f!.Api.Server.CreateHandler(), r =>
         {
             var path = r.RequestUri!.AbsolutePath;
-            if (r.Method == HttpMethod.Delete && path.StartsWith("/v1/sessions/")) { deleted.Add(path); return new HttpResponseMessage(HttpStatusCode.NoContent); }
-            if (r.Method == HttpMethod.Get && path.EndsWith($"/users/{uid}/sessions"))
-                return r.RequestUri.Query.Contains("cursor=")
-                    ? Json(new { items = new[] { Row(wanted, uid, app, DateTimeOffset.UtcNow) }, nextCursor = (string?)null })
-                    : Json(new { items = new[] { Row(Guid.NewGuid(), uid, app, DateTimeOffset.UtcNow) }, nextCursor = "p2" });
+            if (r.Method == HttpMethod.Delete && path.StartsWith("/v1/users/")) { deleted.Add(path); return new HttpResponseMessage(HttpStatusCode.NoContent); }
+            if (r.Method == HttpMethod.Get && path.EndsWith($"/users/{uid}/sessions/{wanted}")) return Json(Row(wanted, uid, app, DateTimeOffset.UtcNow));
             if (r.Method == HttpMethod.Get && path.EndsWith($"/applications/{app}")) return Json(new { id = app, name = "x" });
             return null;
         })));
@@ -149,7 +149,7 @@ public class Sessions5fQaTests : IClassFixture<WebFixture>
         uid = (await UserWithAppAsync(api)).User;
         var r = await WebFixture.PostFormAsync(b, $"/Users/{uid}/Sessions/Revoke/{wanted}", new());
         Assert.Equal(HttpStatusCode.Redirect, r.StatusCode);
-        Assert.Equal([$"/v1/sessions/{wanted}"], deleted);
+        Assert.Equal([$"/v1/users/{uid}/sessions/{wanted}"], deleted);
     }
 
     [Fact]
@@ -383,6 +383,7 @@ public class Sessions5fQaTests : IClassFixture<WebFixture>
             var path = r.RequestUri!.AbsolutePath;
             if (r.Method == HttpMethod.Get && path == $"/v1/users/{uid}")
                 return Json(new { id = uid, username = hostile, email = "a@b.c", displayName = hostile, isActive = true, kind = "person", expiresAt = (DateTimeOffset?)null });
+            if (r.Method == HttpMethod.Get && path.EndsWith($"/users/{uid}/sessions/{sid}")) return Json(Row(sid, uid, app, DateTimeOffset.UtcNow));
             if (r.Method == HttpMethod.Get && path.EndsWith($"/users/{uid}/sessions"))
                 return Json(new { items = new[] { Row(sid, uid, app, DateTimeOffset.UtcNow) }, nextCursor = (string?)null });
             if (r.Method == HttpMethod.Get && path.EndsWith($"/applications/{app}")) return Json(new { id = app, name = hostile });

@@ -24,6 +24,7 @@ public class Slice6aReviewApiTests
         public Task<IReadOnlyList<Session>> ListActiveByUserAsync(Guid u, DateTimeOffset now, Slice? slice = null, CancellationToken ct = default) => inner.ListActiveByUserAsync(u, now, slice, ct);
         public Task<bool> RotateAsync(Guid id, string e, string n, DateTimeOffset now, CancellationToken ct = default) => inner.RotateAsync(id, e, n, now, ct);
         public Task<bool> RevokeAsync(Guid id, DateTimeOffset now, CancellationToken ct = default) => inner.RevokeAsync(id, now, ct);
+        public Task<bool> RevokeForUserAsync(Guid userId, Guid sessionId, DateTimeOffset now, CancellationToken ct = default) => inner.RevokeForUserAsync(userId, sessionId, now, ct);
         public Task<int> RevokeAllForUserAsync(Guid u, DateTimeOffset now, CancellationToken ct = default)
         {
             if (Armed) { Armed = false; throw new OperationCanceledException("simulated disconnect"); }
@@ -43,6 +44,7 @@ public class Slice6aReviewApiTests
         public Task<IReadOnlyList<Session>> ListActiveByUserAsync(Guid u, DateTimeOffset now, Slice? slice = null, CancellationToken ct = default) => inner.ListActiveByUserAsync(u, now, slice, ct);
         public Task<bool> RotateAsync(Guid id, string e, string n, DateTimeOffset now, CancellationToken ct = default) => inner.RotateAsync(id, e, n, now, ct);
         public Task<bool> RevokeAsync(Guid id, DateTimeOffset now, CancellationToken ct = default) => inner.RevokeAsync(id, now, ct);
+        public Task<bool> RevokeForUserAsync(Guid userId, Guid sessionId, DateTimeOffset now, CancellationToken ct = default) => inner.RevokeForUserAsync(userId, sessionId, now, ct);
         public Task<int> RevokeAllForUserAsync(Guid u, DateTimeOffset now, CancellationToken ct = default) => inner.RevokeAllForUserAsync(u, now, ct);
         public Task<int> RevokeAllForUserInAppAsync(Guid u, Guid a, DateTimeOffset now, CancellationToken ct = default) => inner.RevokeAllForUserInAppAsync(u, a, now, ct);
         public Task<int> CapExpiryForUserAsync(Guid u, DateTimeOffset e, DateTimeOffset now, CancellationToken ct = default) => inner.CapExpiryForUserAsync(u, e, now, ct);

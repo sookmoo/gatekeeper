@@ -106,6 +106,8 @@ public interface ISessionRepository
     Task<bool> RotateAsync(Guid id, string expectedHash, string newHash, DateTimeOffset now, CancellationToken ct = default);
     /// <summary>Marks the session revoked (idempotent). False if there is no such session.</summary>
     Task<bool> RevokeAsync(Guid id, DateTimeOffset now, CancellationToken ct = default);
+    /// <summary>Marks the session revoked (idempotent) only if it belongs to the user, in one atomic step. False if there is no such session or it is another user's.</summary>
+    Task<bool> RevokeForUserAsync(Guid userId, Guid sessionId, DateTimeOffset now, CancellationToken ct = default);
     /// <summary>Revokes every active session of the user. Returns how many.</summary>
     Task<int> RevokeAllForUserAsync(Guid userId, DateTimeOffset now, CancellationToken ct = default);
     /// <summary>Revokes every active session of the user in one application. Returns how many.</summary>
