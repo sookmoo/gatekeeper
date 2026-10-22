@@ -69,10 +69,19 @@ public static class AuthEndpoints
                     return Results.Problem("Invalid credentials.", statusCode: StatusCodes.Status401Unauthorized);
                 }
 
+                (Session Session, string Token, AuthResult Auth)? started = r.Refresh == true ? await sessions.StartAsync(result, ct) : null;
+                if (r.Refresh == true && started is null)
+                {
+                    // Deactivated or stripped of the role between the check and the session insert: same answer as any failed login,
+                    // and no success is recorded or counted.
+                    await audit.RecordAsync(http, result.User.Id.ToString(), "auth.login", result.App.Name, false, "raced");
+                    http.Response.Headers.WWWAuthenticate = "Bearer";
+                    return Results.Problem("Invalid credentials.", statusCode: StatusCodes.Status401Unauthorized);
+                }
                 throttle.RecordSuccess(address, r.Username);
                 await audit.RecordAsync(http, result.User.Id.ToString(), "auth.login", result.App.Name, true);
-                (Session Session, string Token)? started = r.Refresh == true ? await sessions.StartAsync(result, ct) : null;
-                var (token, expires) = tokens.Issue(result, sessionId: started?.Session.Id);
+                // With a session, the token carries the roles read after it was stored.
+                var (token, expires) = tokens.Issue(started?.Auth ?? result, sessionId: started?.Session.Id);
                 http.Response.Headers.CacheControl = "no-store";
                 return Results.Ok(new LoginResponse(token, "Bearer", (int)(expires - DateTimeOffset.UtcNow).TotalSeconds,
                     started?.Token, started is null ? null : (int)(started.Value.Session.ExpiresAt - DateTimeOffset.UtcNow).TotalSeconds));

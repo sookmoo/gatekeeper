@@ -72,6 +72,9 @@ public sealed partial class AuditMiddleware(RequestDelegate next)
         }
         catch (OperationCanceledException)
         {
+            // The client went away or timed out; the change may already be committed, so the trail must still show the attempt.
+            // "cancelled" means the outcome is unknown: the change may or may not have been committed.
+            await recorder.RecordAsync(http, actor, action, target, false, http.Items[NoteKey] is string cancelNote ? $"cancelled; {cancelNote}" : "cancelled");
             throw;
         }
         catch (Exception ex)

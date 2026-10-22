@@ -447,6 +447,26 @@ public sealed class InMemorySessionRepository(InMemoryStore s) : ISessionReposit
         }
     }
 
+    public Task<int> RevokeAllForUserInAppAsync(Guid userId, Guid appId, DateTimeOffset now, CancellationToken ct = default)
+    {
+        lock (s.Gate)
+        {
+            var active = s.Sessions.Values.Where(x => x.UserId == userId && x.AppId == appId && x.IsActive(now)).ToList();
+            foreach (var x in active) s.Sessions[x.Id] = x with { RevokedAt = now };
+            return Task.FromResult(active.Count);
+        }
+    }
+
+    public Task<int> CapExpiryForUserAsync(Guid userId, DateTimeOffset endsAt, DateTimeOffset now, CancellationToken ct = default)
+    {
+        lock (s.Gate)
+        {
+            var active = s.Sessions.Values.Where(x => x.UserId == userId && x.IsActive(now) && x.ExpiresAt > endsAt).ToList();
+            foreach (var x in active) s.Sessions[x.Id] = x with { ExpiresAt = endsAt };
+            return Task.FromResult(active.Count);
+        }
+    }
+
     public Task<int> PurgeAsync(DateTimeOffset expiredBefore, CancellationToken ct = default)
     {
         lock (s.Gate)

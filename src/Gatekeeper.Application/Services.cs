@@ -135,7 +135,10 @@ public sealed class RoleService(IAppRepository apps, IRoleRepository roles)
     }
 }
 
-public sealed class UserService(IUserRepository users, AdminGuard? guard = null)
+/// <summary>What a user change did to the user's sessions (for the audit detail).</summary>
+public readonly record struct SessionEffects(int Revoked, int Capped);
+
+public sealed class UserService(IUserRepository users, AdminGuard? guard = null, ISessionRepository? sessions = null, IRoleRepository? roles = null)
 {
     public async Task<Page<User>> ListAsync(bool? active = null, string? username = null, UserKind? kind = null, PageQuery? page = null, CancellationToken ct = default)
     {
@@ -165,8 +168,13 @@ public sealed class UserService(IUserRepository users, AdminGuard? guard = null)
     /// Replace: a null isActive or kind is left unchanged. A test user keeps its expiry unless a new one is given.
     /// Runs under the admin guard and reads the user inside it, so a concurrent role assignment or kind change cannot
     /// be overwritten with a stale kind (which could leave a non-person holding the admin role).
+    /// Deactivating a user ends all their sessions; moving a test user's expiry earlier caps their sessions to it.
     /// </summary>
-    public Task<User> UpdateAsync(Guid id, string? username, string? email, string? displayName, bool? isActive,
+    public async Task<User> UpdateAsync(Guid id, string? username, string? email, string? displayName, bool? isActive,
+        UserKind? kind = null, DateTimeOffset? expiresAt = null, CancellationToken ct = default) =>
+        (await UpdateWithEffectsAsync(id, username, email, displayName, isActive, kind, expiresAt, ct)).User;
+
+    public Task<(User User, SessionEffects Effects)> UpdateWithEffectsAsync(Guid id, string? username, string? email, string? displayName, bool? isActive,
         UserKind? kind = null, DateTimeOffset? expiresAt = null, CancellationToken ct = default)
     {
         Validation.UserFields(username, email, displayName);
@@ -175,7 +183,7 @@ public sealed class UserService(IUserRepository users, AdminGuard? guard = null)
             : guard.ExclusiveAsync(() => Apply(id, username, email, displayName, isActive, kind, expiresAt, ct), ct);
     }
 
-    private async Task<User> Apply(Guid id, string? username, string? email, string? displayName, bool? isActive,
+    private async Task<(User User, SessionEffects Effects)> Apply(Guid id, string? username, string? email, string? displayName, bool? isActive,
         UserKind? kind, DateTimeOffset? expiresAt, CancellationToken ct)
     {
         var existing = await GetAsync(id, ct);
@@ -189,15 +197,33 @@ public sealed class UserService(IUserRepository users, AdminGuard? guard = null)
             if (isActive == false && existing.IsActive) await guard.EnsureNotLastAdminAsync(id, ct);
             if (newKind != UserKind.Person && existing.Kind == UserKind.Person) await guard.EnsureNotAdministratorAsync(id, ct);
         }
-        return await Save(existing, username, email, displayName, isActive, newKind, newExpiry, ct);
+        var saved = await Save(existing, username, email, displayName, isActive, newKind, newExpiry, ct);
+        // The user row is saved first. These steps are idempotent (they act on the saved state, not on the change) and ignore
+        // cancellation, so a retry of the same request repairs a half-done change and a disconnect cannot leave sessions alive.
+        int revoked = 0, capped = 0;
+        if (sessions is not null)
+        {
+            var at = Clock.UtcNowMicros();
+            // Inactive: nothing may stay alive. Reactivation, or an expired test user becoming usable again (extended): whatever exists
+            // was made before or during the pause and is not legitimate.
+            if (!saved.IsActive || !existing.IsActive || (!existing.IsUsable(at) && saved.IsUsable(at))) revoked = await sessions.RevokeAllForUserAsync(id, at, CancellationToken.None);
+            // A later extension of the account must not revive sessions that were cut short by an earlier expiry.
+            if (saved.Kind == UserKind.Test && saved.ExpiresAt is { } ends)
+                capped = await sessions.CapExpiryForUserAsync(id, ends, at, CancellationToken.None);
+        }
+        return (saved, new SessionEffects(revoked, capped));
     }
 
     /// <summary>Partial update: a null field is left unchanged (use an empty display name to clear it).</summary>
-    public Task<User> PatchAsync(Guid id, string? username, string? email, string? displayName, bool? isActive,
+    public async Task<User> PatchAsync(Guid id, string? username, string? email, string? displayName, bool? isActive,
+        UserKind? kind = null, DateTimeOffset? expiresAt = null, CancellationToken ct = default) =>
+        (await PatchWithEffectsAsync(id, username, email, displayName, isActive, kind, expiresAt, ct)).User;
+
+    public Task<(User User, SessionEffects Effects)> PatchWithEffectsAsync(Guid id, string? username, string? email, string? displayName, bool? isActive,
         UserKind? kind = null, DateTimeOffset? expiresAt = null, CancellationToken ct = default) => PatchGate.RunAsync(async () =>
     {
         var e = await GetAsync(id, ct);
-        return await UpdateAsync(id, username ?? e.Username, email ?? e.Email, displayName ?? e.DisplayName, isActive, kind, expiresAt, ct);
+        return await UpdateWithEffectsAsync(id, username ?? e.Username, email ?? e.Email, displayName ?? e.DisplayName, isActive, kind, expiresAt, ct);
     }, ct);
 
     private static DateTimeOffset? Truncate(DateTimeOffset? value) =>
@@ -247,38 +273,65 @@ public sealed class UserService(IUserRepository users, AdminGuard? guard = null)
     {
         // The admin role is for people only. Checked under the guard so it cannot race with a change of kind.
         if (guard is not null) await guard.EnsureAssignableAsync(roleId, ct);
+        if (guard is not null && await guard.AdminRoleIdAsync(ct) != roleId)
+        {
+            await guard.ExclusiveAsync(async () => { await EndStaleSessionsBeforeAssignAsync(userId, roleId, ct); await users.AssignRoleAsync(userId, roleId, ct); return 0; }, ct);
+            return;
+        }
         if (guard is not null && await guard.AdminRoleIdAsync(ct) == roleId)
         {
             await guard.ExclusiveAsync(async () =>
             {
                 if ((await GetAsync(userId, ct)).Kind != UserKind.Person)
                     throw new ConflictException("Only a person can hold the admin role.");
+                await EndStaleSessionsBeforeAssignAsync(userId, roleId, ct);
                 await users.AssignRoleAsync(userId, roleId, ct);
                 return 0;
             }, ct);
             return;
         }
+        await EndStaleSessionsBeforeAssignAsync(userId, roleId, ct);
         await users.AssignRoleAsync(userId, roleId, ct); // store verifies user and role atomically
+    }
+
+    /// <summary>
+    /// A user with no role in an application cannot have a legitimate session there (a login needs a role), so any that exist are
+    /// leftovers (for example from before a lazy cut-off) and must not come back to life with the new role.
+    /// </summary>
+    private async Task EndStaleSessionsBeforeAssignAsync(Guid userId, Guid roleId, CancellationToken ct)
+    {
+        if (sessions is null || roles is null || await roles.GetAsync(roleId, ct) is not { } role) return;
+        if ((await users.ListRolesAsync(userId, role.AppId, new Slice(0, 1), ct)).Count > 0) return;
+        await sessions.RevokeAllForUserInAppAsync(userId, role.AppId, Clock.UtcNowMicros(), CancellationToken.None);
     }
 
     public async Task RevokeRoleAsync(Guid userId, Guid roleId, CancellationToken ct = default)
     {
         await GetAsync(userId, ct);
-        if (guard is null) { await Revoke(userId, roleId, ct); return; }
+        if (guard is null) { await RevokeAndEndSessions(userId, roleId, ct); return; }
         await guard.ExclusiveAsync(async () =>
         {
             if (await guard.AdminRoleIdAsync(ct) == roleId) await guard.EnsureNotLastAdminAsync(userId, ct);
-            await Revoke(userId, roleId, ct);
+            await RevokeAndEndSessions(userId, roleId, ct);
             return 0;
         }, ct);
     }
 
-    private async Task Revoke(Guid userId, Guid roleId, CancellationToken ct)
+    /// <summary>
+    /// Removes the assignment. Sessions are per application: when the user holds no role in the role's application afterwards,
+    /// their sessions there end. That check also runs when the assignment was already gone (the 404 path), so a retry repairs a
+    /// removal whose session step failed.
+    /// </summary>
+    private async Task RevokeAndEndSessions(Guid userId, Guid roleId, CancellationToken ct)
     {
+        var appId = sessions is null || roles is null ? null : (await roles.GetAsync(roleId, ct))?.AppId;
+        var removed = await users.RevokeRoleAsync(userId, roleId, ct);
+        if (appId is { } app && (await users.ListRolesAsync(userId, app, new Slice(0, 1), CancellationToken.None)).Count == 0)
+            await sessions!.RevokeAllForUserInAppAsync(userId, app, Clock.UtcNowMicros(), CancellationToken.None);
         // Revoking an assignment that does not exist is a 404 so callers notice typos.
-        if (!await users.RevokeRoleAsync(userId, roleId, ct))
-            throw new NotFoundException($"User {userId} does not have role {roleId}.");
+        if (!removed) throw new NotFoundException($"User {userId} does not have role {roleId}.");
     }
+
 }
 
 /// <summary>
@@ -654,7 +707,12 @@ public sealed class SessionService(ISessionRepository sessions, AuthService auth
     /// <summary>See <see cref="RefreshOptions.ReuseGrace"/>. Settable so tests can turn the grace off.</summary>
     public TimeSpan ReuseGrace { get; set; } = (options ?? new RefreshOptions()).ReuseGrace;
 
-    public async Task<(Session Session, string Token)> StartAsync(AuthResult login, CancellationToken ct = default)
+    /// <summary>
+    /// Starts a session, or returns null when the user is no longer allowed one. The login was checked a moment ago; a deactivation
+    /// or role removal can have landed since, and its session revoke would have missed a session that did not exist yet. So the user
+    /// is re-read after the insert, and the new session is revoked at once if they are not usable or hold no role in the application.
+    /// </summary>
+    public async Task<(Session Session, string Token, AuthResult Auth)?> StartAsync(AuthResult login, CancellationToken ct = default)
     {
         var now = Clock.UtcNowMicros();
         var id = Guid.NewGuid();
@@ -663,9 +721,20 @@ public sealed class SessionService(ISessionRepository sessions, AuthService auth
         var ends = login.User.ExpiresAt is { } accountEnds && accountEnds < now + _lifetime ? accountEnds : now + _lifetime;
         var session = new Session(id, login.User.Id, login.App.Id, now, now, ends, null);
         await sessions.AddAsync(session, HashToken(token), ct);
+        if (await auth.ResolveAsync(login.User.Id, login.App.Id, CancellationToken.None) is not { } fresh)
+        {
+            await sessions.RevokeAsync(id, Clock.UtcNowMicros(), CancellationToken.None);
+            return null;
+        }
+        // Re-apply the account expiry from the fresh row (it may have moved earlier since the login was checked).
+        if (fresh.User.ExpiresAt is { } freshEnds && freshEnds < ends)
+        {
+            await sessions.CapExpiryForUserAsync(fresh.User.Id, freshEnds, Clock.UtcNowMicros(), CancellationToken.None);
+            session = session with { ExpiresAt = freshEnds };
+        }
         await TrimAsync(login.User.Id, id, now, ct);
         await PurgeSometimesAsync(now, ct);
-        return (session, token);
+        return (session, token, fresh);
     }
 
     public async Task<RefreshResult> RefreshAsync(string? token, CancellationToken ct = default)

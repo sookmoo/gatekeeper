@@ -64,6 +64,56 @@ public abstract class Qa4cStoreTests : IDisposable
     }
 
     [SkippableFact]
+    public async Task Revoke_in_one_application_leaves_other_applications_and_users_alone()
+    {
+        var (apps, users, s) = Open();
+        var a = await apps.AddAsync(new App(Guid.NewGuid(), "shop"));
+        var b = await apps.AddAsync(new App(Guid.NewGuid(), "blog"));
+        var u = await users.AddAsync(new User(Guid.NewGuid(), "alice", "alice@example.com", "A", true, T0, T0));
+        var v = await users.AddAsync(new User(Guid.NewGuid(), "bob", "bob@example.com", "B", true, T0, T0));
+        var inA = new Session(Guid.NewGuid(), u.Id, a.Id, T0, T0, T0.AddDays(1), null);
+        var inA2 = new Session(Guid.NewGuid(), u.Id, a.Id, T0, T0, T0.AddDays(1), null);
+        var expiredInA = new Session(Guid.NewGuid(), u.Id, a.Id, T0, T0, T0.AddHours(1), null);
+        var inB = new Session(Guid.NewGuid(), u.Id, b.Id, T0, T0, T0.AddDays(1), null);
+        var otherUser = new Session(Guid.NewGuid(), v.Id, a.Id, T0, T0, T0.AddDays(1), null);
+        foreach (var x in new[] { inA, inA2, expiredInA, inB, otherUser }) await s.AddAsync(x, "h" + x.Id);
+        var now = T0.AddHours(2);
+        Assert.Equal(2, await s.RevokeAllForUserInAppAsync(u.Id, a.Id, now));
+        Assert.Equal(0, await s.RevokeAllForUserInAppAsync(u.Id, a.Id, now));
+        Assert.Equal(now, (await s.GetAsync(inA.Id))!.RevokedAt);
+        Assert.Null((await s.GetAsync(expiredInA.Id))!.RevokedAt);
+        Assert.Null((await s.GetAsync(inB.Id))!.RevokedAt);
+        Assert.Null((await s.GetAsync(otherUser.Id))!.RevokedAt);
+        Assert.Equal(0, await s.RevokeAllForUserInAppAsync(u.Id, Guid.NewGuid(), now));
+    }
+
+    [SkippableFact]
+    public async Task Cap_expiry_only_shortens_active_sessions_of_that_user()
+    {
+        var (apps, users, s) = Open();
+        var a = await apps.AddAsync(new App(Guid.NewGuid(), "shop"));
+        var u = await users.AddAsync(new User(Guid.NewGuid(), "alice", "alice@example.com", "A", true, T0, T0));
+        var v = await users.AddAsync(new User(Guid.NewGuid(), "bob", "bob@example.com", "B", true, T0, T0));
+        var longer = new Session(Guid.NewGuid(), u.Id, a.Id, T0, T0, T0.AddDays(10), null);
+        var shorter = new Session(Guid.NewGuid(), u.Id, a.Id, T0, T0, T0.AddHours(5), null);
+        var expired = new Session(Guid.NewGuid(), u.Id, a.Id, T0, T0, T0.AddHours(1), null);
+        var revoked = new Session(Guid.NewGuid(), u.Id, a.Id, T0, T0, T0.AddDays(10), T0.AddMinutes(1));
+        var other = new Session(Guid.NewGuid(), v.Id, a.Id, T0, T0, T0.AddDays(10), null);
+        foreach (var x in new[] { longer, shorter, expired, revoked, other }) await s.AddAsync(x, "h" + x.Id);
+        var now = T0.AddHours(2);
+        var ends = T0.AddHours(8);
+        Assert.Equal(1, await s.CapExpiryForUserAsync(u.Id, ends, now));
+        Assert.Equal(ends, (await s.GetAsync(longer.Id))!.ExpiresAt);
+        Assert.Equal(shorter.ExpiresAt, (await s.GetAsync(shorter.Id))!.ExpiresAt);   // never lengthened
+        Assert.Equal(expired.ExpiresAt, (await s.GetAsync(expired.Id))!.ExpiresAt);
+        Assert.Equal(revoked.ExpiresAt, (await s.GetAsync(revoked.Id))!.ExpiresAt);
+        Assert.Equal(other.ExpiresAt, (await s.GetAsync(other.Id))!.ExpiresAt);
+        Assert.Equal(0, await s.CapExpiryForUserAsync(u.Id, ends, now));                // idempotent
+        Assert.Equal(0, await s.CapExpiryForUserAsync(u.Id, T0.AddDays(30), now));      // a later date changes nothing
+        Assert.Equal(ends, (await s.GetAsync(longer.Id))!.ExpiresAt);
+    }
+
+    [SkippableFact]
     public async Task Adding_a_session_with_an_existing_id_is_rejected_the_same_way()
     {
         var (s, u, a) = await Seed();

@@ -85,8 +85,10 @@ dotnet bin/Debug/net10.0/Gatekeeper.Api.dll           # serve, uses Gatekeeper
   Presenting the token that was just replaced means a stale copy exists (theft or a replay), so the whole session is ended, unless it
   comes within `Auth__RefreshReuseGraceSeconds` (default 10) of the rotation: that is a parallel request that lost the race (a retry, two
   tabs), which simply fails and leaves the winner's new token valid. Anything else invalid is a plain `401` (identical for every reason, throttled per address). A refresh re-reads the user: a deactivated
-  user, a removed role or a deleted application ends the session (at the next refresh or introspection; a password change ends the
-  sessions at once). Refresh failures have their own throttle counters, separate from login. A user has at most 20 active sessions;
+  user, a removed role or a deleted application ends the session (at the next refresh or introspection). Some changes end sessions
+  at once: a new password, deactivating the user (re-enabling does not revive them), and removing the user's last role in an application
+  (that application's sessions only). Moving a test user's `expiresAt` earlier caps the active sessions to it; extending it later does
+  not lengthen them. The audit detail of the user change shows `sessionsRevoked=<n>` / `sessionsCapped=<n>`. Refresh failures have their own throttle counters, separate from login. A user has at most 20 active sessions;
   starting another ends the least recently used.
 - `POST /v1/auth/logout {"refreshToken"}` ends the session (always `204`). A new password ends all of that user's sessions.
   Admins: `GET /v1/users/{id}/sessions`, `DELETE /v1/users/{id}/sessions` (all), `DELETE /v1/sessions/{id}`; CLI

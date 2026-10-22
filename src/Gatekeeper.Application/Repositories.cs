@@ -108,6 +108,10 @@ public interface ISessionRepository
     Task<bool> RevokeAsync(Guid id, DateTimeOffset now, CancellationToken ct = default);
     /// <summary>Revokes every active session of the user. Returns how many.</summary>
     Task<int> RevokeAllForUserAsync(Guid userId, DateTimeOffset now, CancellationToken ct = default);
+    /// <summary>Revokes every active session of the user in one application. Returns how many.</summary>
+    Task<int> RevokeAllForUserInAppAsync(Guid userId, Guid appId, DateTimeOffset now, CancellationToken ct = default);
+    /// <summary>Shortens active sessions of the user that end after <paramref name="endsAt"/> to end then (never lengthens). Returns how many changed.</summary>
+    Task<int> CapExpiryForUserAsync(Guid userId, DateTimeOffset endsAt, DateTimeOffset now, CancellationToken ct = default);
     /// <summary>Deletes sessions that expired before <paramref name="expiredBefore"/>. Returns how many.</summary>
     Task<int> PurgeAsync(DateTimeOffset expiredBefore, CancellationToken ct = default);
 }
