@@ -772,6 +772,7 @@
         "tags": [
           "Users"
         ],
+        "description": "Setting isActive from true to false ends all of the user's sessions at once. Moving a test user's expiresAt earlier (or making a person a test user) caps active sessions to the new expiry; a later extension does not lengthen them.",
         "parameters": [
           {
             "name": "id",
@@ -815,6 +816,7 @@
         "tags": [
           "Users"
         ],
+        "description": "Setting isActive from true to false ends all of the user's sessions at once. Moving a test user's expiresAt earlier (or making a person a test user) caps active sessions to the new expiry; a later extension does not lengthen them.",
         "parameters": [
           {
             "name": "id",
@@ -1118,6 +1120,7 @@
         "tags": [
           "Users"
         ],
+        "description": "When this was the user's last role in the application, the user's sessions in that application end at once (other applications are untouched).",
         "parameters": [
           {
             "name": "id",

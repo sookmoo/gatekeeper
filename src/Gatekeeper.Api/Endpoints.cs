@@ -47,7 +47,21 @@ public static class Endpoints
     private static async Task<User> Noted(HttpContext http, Task<User> change)
     {
         var u = await change;
-        http.Items[AuditMiddleware.NoteKey] = $"kind={u.Kind.ToString().ToLowerInvariant()} expiresAt={(u.ExpiresAt is { } e ? e.UtcDateTime.ToString("O") : "none")} active={u.IsActive}";
+        http.Items[AuditMiddleware.NoteKey] = UserNote(u);
+        return u;
+    }
+
+    private static string UserNote(User u) =>
+        $"kind={u.Kind.ToString().ToLowerInvariant()} expiresAt={(u.ExpiresAt is { } e ? e.UtcDateTime.ToString("O") : "none")} active={u.IsActive}";
+
+    /// <summary>As <see cref="Noted"/>, plus what the change did to the user's sessions (only when it did something).</summary>
+    private static async Task<User> Noted(HttpContext http, Task<(User User, SessionEffects Effects)> change)
+    {
+        var (u, fx) = await change;
+        var note = UserNote(u);
+        if (fx.Revoked > 0) note += $" sessionsRevoked={fx.Revoked}";
+        if (fx.Capped > 0) note += $" sessionsCapped={fx.Capped}";
+        http.Items[AuditMiddleware.NoteKey] = note;
         return u;
     }
 
@@ -99,9 +113,11 @@ public static class Endpoints
         });
         users.MapGet("/{id:guid}", (Guid id, UserService s, CancellationToken ct) => s.GetAsync(id, ct));
         users.MapPut("/{id:guid}", (HttpContext http, Guid id, UserRequest r, UserService s, CancellationToken ct) =>
-            Noted(http, s.UpdateAsync(id, r.Username, r.Email, r.DisplayName, r.IsActive, r.Kind, r.ExpiresAt, ct)));
+            Noted(http, s.UpdateWithEffectsAsync(id, r.Username, r.Email, r.DisplayName, r.IsActive, r.Kind, r.ExpiresAt, ct)))
+            .WithDescription("Setting isActive from true to false ends all of the user's sessions at once. Moving a test user's expiresAt earlier (or making a person a test user) caps active sessions to the new expiry; a later extension does not lengthen them.");
         users.MapMethods("/{id:guid}", ["PATCH"], (HttpContext http, Guid id, UserRequest r, UserService s, CancellationToken ct) =>
-            Noted(http, s.PatchAsync(id, r.Username, r.Email, r.DisplayName, r.IsActive, r.Kind, r.ExpiresAt, ct)));
+            Noted(http, s.PatchWithEffectsAsync(id, r.Username, r.Email, r.DisplayName, r.IsActive, r.Kind, r.ExpiresAt, ct)))
+            .WithDescription("Setting isActive from true to false ends all of the user's sessions at once. Moving a test user's expiresAt earlier (or making a person a test user) caps active sessions to the new expiry; a later extension does not lengthen them.");
         users.MapDelete("/{id:guid}", async (Guid id, UserService s, CancellationToken ct) =>
         {
             await s.DeleteAsync(id, ct);
@@ -130,7 +146,7 @@ public static class Endpoints
         {
             await s.RevokeRoleAsync(id, roleId, ct);
             return Results.NoContent();
-        });
+        }).WithDescription("When this was the user's last role in the application, the user's sessions in that application end at once (other applications are untouched).");
 
         v1.MapGroup("/sessions").WithTags("Sessions").MapDelete("/{id:guid}", async (Guid id, SessionService s, CancellationToken ct) =>
         {
