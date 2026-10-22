@@ -144,6 +144,12 @@ identities on `sub` (the stable id): `client_id` is the client's name, which can
 Every state-changing management call (who, the route as listed in `docs/openapi.json`, ids, success or failure and status), every
 login and client-token attempt, and `bootstrap-admin` is recorded in `audit_events`:
 `GET /v1/audit?actor=&action=&limit=&cursor=` (newest first) or `gk audit list [--actor ..] [--action ..] [--limit n]`.
+Paging is by keyset: `nextCursor` is opaque and encodes the last row's time and id, so events arriving between pages cause no
+repeats and no gaps, and deep pages stay cheap. Cursors of the other lists (offsets) are refused here with 400, and so is any
+edited cursor. Indexes on `(actor, at DESC, id DESC)` and `(action, at DESC, id DESC)` serve the filters (migration
+`AddAuditIndexes`). The migration builds them with `CREATE INDEX CONCURRENTLY`, outside a transaction, so audit writes are not blocked on a
+large table; it drops an INVALID leftover of the same name (from an interrupted earlier run) and keeps a valid existing index, so operators may
+pre-create both indexes with `CREATE INDEX CONCURRENTLY` under the same names and the migration then skips them.
 Calls that fail before reaching the endpoint body (malformed JSON, wrong content type, oversized body) are recorded too.
 Bodies, passwords and secrets are never recorded. A failed login or client-token attempt records the name only if it belongs to
 a real user or client; any other value (a typo, a probe, a password or secret typed into the wrong field) is recorded as its
@@ -167,7 +173,7 @@ tokens stay on the server. Every call to the API carries the signed-in administr
 Today it covers sign in/out, applications (list, create, rename, delete), roles (the reserved application's roles are shown read-only),
 users (list, create, edit, delete, their roles, password and sessions) and clients (service identities: list with application filter,
 create, rename, enable/disable, rotate secret, delete), a client's roles, and the audit trail (read-only, newest first, exact
-actor and action filters, paged). The audit page pages with the API's offset cursor, so while new events arrive a next page can repeat rows.
+actor and action filters, paged).
 
 A client's secret is shown once, on the page that answers the create or rotate request (no redirect, `Cache-Control: no-store`,
 never in a URL, cookie, log or audit row). Reloading or going back makes the browser offer to resend the form, so the create form and the

@@ -153,6 +153,8 @@ public sealed class GatekeeperDbContext(DbContextOptions<GatekeeperDbContext> op
             e.Property(x => x.Action).IsRequired();
             e.Property(x => x.Outcome).IsRequired();
             e.HasIndex(x => new { x.At, x.Id }).HasDatabaseName("ix_audit_events_at_id");
+            e.HasIndex(x => new { x.Actor, x.At, x.Id }).HasDatabaseName("ix_audit_events_actor_at_id").IsDescending(false, true, true);
+            e.HasIndex(x => new { x.Action, x.At, x.Id }).HasDatabaseName("ix_audit_events_action_at_id").IsDescending(false, true, true);
         });
 
         foreach (var property in b.Model.GetEntityTypes().SelectMany(t => t.GetProperties()))

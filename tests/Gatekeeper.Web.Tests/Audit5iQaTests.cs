@@ -115,10 +115,10 @@ public class Audit5iQaTests : IClassFixture<WebFixture>
         var b = await _f.SignedInAsync();
         var cursors = new[]
         {
-            "garbage", "!!!", "%00", "o1", "bzE", "bzE=", "bzE%3D", "bzEw", "b0E", "-1", new string('A', 33), new string('A', 5000),
+            "garbage", "!!!", "%00", "o1", "bzE", "bzE=", "bzE%3D", "bzEw", "b0E", "-1", new string('A', 65), new string('A', 5000),
             Uri.EscapeDataString("bzE\nx"), "..%2F..%2Fetc", "%E4%B8%AD", "bzFf", "b-5", "bzEyMw", // o123 (valid canonical?)
             "bzEwMDAwMDAw", // o10000000 over the max offset
-            "bzEwMDAwMDA", // o1000000 at the max offset: valid but empty
+            "bzEwMDAwMDA", // o1000000: an offset cursor, which the API now refuses (400 -> first page)
         };
         foreach (var c in cursors)
         {
@@ -136,9 +136,27 @@ public class Audit5iQaTests : IClassFixture<WebFixture>
     public async Task A_valid_cursor_past_the_end_shows_no_events_and_no_next_link()
     {
         var b = await _f.SignedInAsync();
-        var html = await b.GetStringAsync("/Audit?cursor=bzEwMDAwMDA"); // o1000000
+        var html = await b.GetStringAsync("/Audit?cursor=" + OldKeyCursor); // before every row
         Assert.Contains("No events.", html);
         Assert.DoesNotContain("Next page", html);
+    }
+
+    // 'k' + ticks of 0001-01-01 + empty id: older than any row, canonical
+    private static readonly string OldKeyCursor = Convert.ToBase64String(new byte[25] { (byte)'k', 0, 0, 0, 0, 0, 0, 0, 10, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+
+    [Fact]
+    public async Task Cursors_up_to_64_characters_reach_the_api_and_longer_ones_do_not()
+    {
+        var calls = new List<string>();
+        using var f = With(r => { if (r.RequestUri!.AbsolutePath == "/v1/audit") calls.Add(r.RequestUri.Query); return null; });
+        var b = await f.SignedInAsync();
+        Assert.Equal(HttpStatusCode.Redirect, (await b.GetAsync("/Audit?cursor=" + new string('A', 65))).StatusCode);
+        Assert.Empty(calls);
+        Assert.Equal(HttpStatusCode.Redirect, (await b.GetAsync("/Audit?cursor=" + new string('A', 34))).StatusCode); // the API refuses a non-canonical one
+        Assert.Single(calls);
+        calls.Clear();
+        Assert.Equal(HttpStatusCode.Redirect, (await b.GetAsync("/Audit?cursor=" + new string('A', 64))).StatusCode);
+        Assert.Single(calls);
     }
 
     [Fact]

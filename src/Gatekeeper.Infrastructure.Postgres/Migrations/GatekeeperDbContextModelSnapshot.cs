@@ -87,6 +87,14 @@ namespace Gatekeeper.Infrastructure.Postgres.Migrations
                     b.HasIndex("At", "Id")
                         .HasDatabaseName("ix_audit_events_at_id");
 
+                    b.HasIndex("Action", "At", "Id")
+                        .IsDescending(false, true, true)
+                        .HasDatabaseName("ix_audit_events_action_at_id");
+
+                    b.HasIndex("Actor", "At", "Id")
+                        .IsDescending(false, true, true)
+                        .HasDatabaseName("ix_audit_events_actor_at_id");
+
                     b.ToTable("audit_events", (string)null);
                 });
 

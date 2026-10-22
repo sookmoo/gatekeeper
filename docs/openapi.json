@@ -1675,6 +1675,7 @@
         "tags": [
           "Audit"
         ],
+        "description": "Newest first. The cursor is opaque and keyset-based (the last row's time and id): events arriving between pages cause no repeats or gaps. A cursor from another list, or an edited one, is 400.",
         "parameters": [
           {
             "name": "actor",

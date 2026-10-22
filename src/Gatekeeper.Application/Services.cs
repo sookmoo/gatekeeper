@@ -490,13 +490,13 @@ public sealed class AuditService(IAuditRepository audit)
         audit.AppendAsync(new AuditEvent(Guid.NewGuid(), Clock.UtcNowMicros(), Clean(actor)!, Clean(action)!, Clean(target),
             success ? AuditEvent.Success : AuditEvent.Failure, Clean(detail), Clean(address)), ct);
 
-    public async Task<Page<AuditEvent>> ListAsync(string? actor = null, string? action = null, PageQuery? page = null, CancellationToken ct = default)
+    public async Task<Page<AuditEvent>> ListAsync(string? actor = null, string? action = null, AuditPageQuery? page = null, CancellationToken ct = default)
     {
-        page ??= PageQuery.Default;
+        page ??= AuditPageQuery.Default;
         // Nothing recorded contains control characters or malformed Unicode (see Clean), so such a filter matches nothing.
         if ((actor is not null && !Validation.IsCleanText(actor)) || (action is not null && !Validation.IsCleanText(action)))
-            return page.Build<AuditEvent>([]);
-        return page.Build(await audit.ListAsync(actor, action, page.Slice, ct));
+            return page.Build([]);
+        return page.Build(await audit.ListAsync(actor, action, page.After, page.Take, ct));
     }
 
     public static string? Clean(string? text)

@@ -270,7 +270,7 @@ public class Qa4bApiTests
     private sealed class ThrowingAudit : IAuditRepository
     {
         public Task AppendAsync(AuditEvent entry, CancellationToken ct = default) => throw new InvalidOperationException("audit down");
-        public Task<IReadOnlyList<AuditEvent>> ListAsync(string? actor = null, string? action = null, Slice? slice = null, CancellationToken ct = default) =>
+        public Task<IReadOnlyList<AuditEvent>> ListAsync(string? actor = null, string? action = null, AuditKey? after = null, int? take = null, CancellationToken ct = default) =>
             throw new StoreUnavailableException("audit down");
     }
 
@@ -287,7 +287,7 @@ public class Qa4bApiTests
     private sealed class HangingAudit : IAuditRepository
     {
         public async Task AppendAsync(AuditEvent entry, CancellationToken ct = default) => await Task.Delay(Timeout.Infinite, ct);
-        public Task<IReadOnlyList<AuditEvent>> ListAsync(string? actor = null, string? action = null, Slice? slice = null, CancellationToken ct = default) =>
+        public Task<IReadOnlyList<AuditEvent>> ListAsync(string? actor = null, string? action = null, AuditKey? after = null, int? take = null, CancellationToken ct = default) =>
             Task.FromResult<IReadOnlyList<AuditEvent>>([]);
     }
 

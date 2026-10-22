@@ -108,13 +108,22 @@ public class Audit5iTests : IClassFixture<WebFixture>
             Assert.Equal(HttpStatusCode.OK, (await api.PatchAsJsonAsync($"/v1/applications/{app}", new { name = Unique("p" + i) })).StatusCode);
 
         var action = "PATCH /v1/applications/{id}";
+        var before = 0; // rows matching now, counted through the API
+        string? walk = null;
+        do
+        {
+            var p = await api.GetFromJsonAsync<JsonElement>($"/v1/audit?actor={adminId}&action=" + Uri.EscapeDataString(action) + "&limit=200" + (walk is null ? "" : "&cursor=" + Uri.EscapeDataString(walk)));
+            before += p.GetProperty("items").GetArrayLength();
+            walk = p.GetProperty("nextCursor").GetString();
+        } while (walk is not null);
         var first = await b.GetStringAsync($"/Audit?actor={adminId}&action=" + Uri.EscapeDataString(action));
         Assert.Equal(50, Regex.Matches(first, "<tr>").Count - 1);
         var link = WebUtility.HtmlDecode(Regex.Match(first, "<a href=\"([^\"]*cursor=[^\"]*)\">Next page</a>").Groups[1].Value);
         Assert.StartsWith($"/Audit?actor={adminId}&action=PATCH%20%2Fv1%2Fapplications%2F%7Bid%7D&cursor=", link);
+        for (var i = 0; i < 3; i++) await api.PatchAsJsonAsync($"/v1/applications/{app}", new { name = Unique("late" + i) }); // newer events arrive between the pages
         var second = await b.GetStringAsync(link);
         var rows = Regex.Matches(second, "<tr>").Count - 1;
-        Assert.InRange(rows, 5, 49);
+        Assert.Equal(before - 50, rows); // no repeats of page 1 and no gaps
         Assert.Contains("PATCH /v1/applications/{id}", second);
 
         // an edited cursor falls back to the first page, filters kept
@@ -223,7 +232,7 @@ public class Audit5iTests : IClassFixture<WebFixture>
 
     [Theory]
     [InlineData("a+b")]
-    [InlineData("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")]
+    [InlineData("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")]
     public async Task A_malformed_cursor_goes_to_the_first_page_without_an_api_call(string cursor)
     {
         var calls = 0;
