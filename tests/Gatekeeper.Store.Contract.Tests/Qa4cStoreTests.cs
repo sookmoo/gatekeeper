@@ -23,6 +23,23 @@ public abstract class Qa4cStoreTests : IDisposable
     }
 
     [SkippableFact]
+    public async Task Revoke_for_user_only_touches_a_session_of_that_user()
+    {
+        var (s, u, a) = await Seed();
+        var (_, users, _) = Open();
+        var other = await users.AddAsync(new User(Guid.NewGuid(), "bob", "bob@example.com", "B", true, T0, T0));
+        var mine = new Session(Guid.NewGuid(), u.Id, a.Id, T0, T0, T0.AddDays(1), null);
+        await s.AddAsync(mine, "m");
+        var at = T0.AddHours(1);
+        Assert.False(await s.RevokeForUserAsync(other.Id, mine.Id, at));            // not this user's: unchanged
+        Assert.Null((await s.GetAsync(mine.Id))!.RevokedAt);
+        Assert.False(await s.RevokeForUserAsync(u.Id, Guid.NewGuid(), at));        // unknown session
+        Assert.True(await s.RevokeForUserAsync(u.Id, mine.Id, at));
+        Assert.True(await s.RevokeForUserAsync(u.Id, mine.Id, at.AddHours(1)));    // idempotent, keeps the first time
+        Assert.Equal(at, (await s.GetAsync(mine.Id))!.RevokedAt);
+    }
+
+    [SkippableFact]
     public async Task Rotation_and_activity_are_exclusive_at_the_exact_expiry_instant()
     {
         var (s, u, a) = await Seed();

@@ -56,6 +56,10 @@ public sealed class BearerSecurityTransformer : IOpenApiDocumentTransformer
             foreach (var op in item.Operations.Values)
                 op.Security = [new OpenApiSecurityRequirement { [new OpenApiSecuritySchemeReference("bearer", document)] = [] }];
         }
+        // Superseded by DELETE /v1/users/{id}/sessions/{sessionId} (slice 6b); kept for existing callers.
+        if (document.Paths.TryGetValue("/v1/sessions/{id}", out var old) && old.Operations is not null
+            && old.Operations.TryGetValue(HttpMethod.Delete, out var oldDelete))
+            oldDelete.Deprecated = true;
         return Task.CompletedTask;
     }
 }

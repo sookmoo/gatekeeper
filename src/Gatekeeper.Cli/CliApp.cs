@@ -389,6 +389,15 @@ public static class CliApp
                 x.Message($"revoked {result.GetProperty("revoked").GetInt32()} session(s)");
             }));
 
+            var rsUser = UserArg(); var rsSession = new Argument<string>("session") { Description = "Session id (see 'user sessions')" };
+            cmd.Subcommands.Add(Cmd("revoke-session", "End one of a user's sessions", c => { c.Arguments.Add(rsUser); c.Arguments.Add(rsSession); }, async x =>
+            {
+                var id = await x.ResolveUser(x.Get(rsUser)!);
+                if (!Guid.TryParse(x.Get(rsSession), out var sessionId)) throw new CliException(1, "The session must be a session id.");
+                await x.Api.DeleteAsync($"/v1/users/{id}/sessions/{sessionId}");
+                x.Message("revoked");
+            }));
+
             var pUser = UserArg();
             cmd.Subcommands.Add(Cmd("set-password", "Set a user's password (read from stdin or a hidden prompt)", c => c.Arguments.Add(pUser), async x =>
             {

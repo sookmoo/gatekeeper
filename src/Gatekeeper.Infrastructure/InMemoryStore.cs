@@ -437,6 +437,16 @@ public sealed class InMemorySessionRepository(InMemoryStore s) : ISessionReposit
         }
     }
 
+    public Task<bool> RevokeForUserAsync(Guid userId, Guid sessionId, DateTimeOffset now, CancellationToken ct = default)
+    {
+        lock (s.Gate)
+        {
+            if (!s.Sessions.TryGetValue(sessionId, out var session) || session.UserId != userId) return Task.FromResult(false);
+            if (session.RevokedAt is null) s.Sessions[sessionId] = session with { RevokedAt = now };
+            return Task.FromResult(true);
+        }
+    }
+
     public Task<int> RevokeAllForUserAsync(Guid userId, DateTimeOffset now, CancellationToken ct = default)
     {
         lock (s.Gate)

@@ -357,7 +357,7 @@ public class Sessions5fTests : IClassFixture<WebFixture>
         await WebFixture.PostFormAsync(b, $"/Users/{user}/Sessions/Revoke/{sid}", new());
         await WebFixture.PostFormAsync(b, $"/Users/{user}/Sessions/RevokeAll", new());
         var me = (await AdminIdAsync(api)).ToString();
-        foreach (var (action, key) in new[] { ("DELETE /v1/sessions/{id}", sid.ToString()), ("DELETE /v1/users/{id}/sessions", user.ToString()) })
+        foreach (var (action, key) in new[] { ("DELETE /v1/users/{id}/sessions/{sessionId}", sid.ToString()), ("DELETE /v1/users/{id}/sessions", user.ToString()) })
         {
             var rows = JsonDocument.Parse(await api.GetStringAsync("/v1/audit?action=" + Uri.EscapeDataString(action) + "&limit=200")).RootElement.GetProperty("items").EnumerateArray()
                 .Where(e => (e.GetProperty("target").GetString() ?? "").Contains(key)).ToList();

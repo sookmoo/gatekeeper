@@ -384,6 +384,10 @@ public sealed class PostgresSessionRepository(Factory factory) : PostgresReposit
         await db.Database.ExecuteSqlInterpolatedAsync(
             $"UPDATE sessions SET revoked_at = COALESCE(revoked_at, {now}) WHERE id = {id}", ct) > 0, ct: ct);
 
+    public Task<bool> RevokeForUserAsync(Guid userId, Guid sessionId, DateTimeOffset now, CancellationToken ct = default) => Run(async db =>
+        await db.Database.ExecuteSqlInterpolatedAsync(
+            $"UPDATE sessions SET revoked_at = COALESCE(revoked_at, {now}) WHERE id = {sessionId} AND user_id = {userId}", ct) > 0, ct: ct);
+
     public Task<int> RevokeAllForUserAsync(Guid userId, DateTimeOffset now, CancellationToken ct = default) => Run(db =>
         db.Database.ExecuteSqlInterpolatedAsync(
             $"UPDATE sessions SET revoked_at = {now} WHERE user_id = {userId} AND revoked_at IS NULL AND expires_at > {now}", ct), ct: ct);

@@ -41,19 +41,5 @@ public static class SessionAccess
         return null;
     }
 
-    /// <summary>The session only if it is listed under this user (a session id that is not theirs is never acted on).</summary>
-    public static async Task<SessionDto?> FindAsync(GatekeeperApi api, WebSession session, Guid userId, Guid sessionId, CancellationToken ct)
-    {
-        string? cursor = null;
-        for (var pages = 0; pages < MaxPages; pages++)
-        {
-            var page = await api.ListUserSessionsAsync(session, userId, cursor, 200, ct);
-            if (page.Items.FirstOrDefault(s => s.Id == sessionId) is { } found) return found;
-            cursor = page.NextCursor;
-            if (cursor is null) return null;
-        }
-        return null;
-    }
-
     public static bool IsNotFound(ApiException ex) => ex.Status == HttpStatusCode.NotFound;
 }

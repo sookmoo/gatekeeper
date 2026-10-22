@@ -92,6 +92,36 @@ public class SessionCliTests : IClassFixture<WebApplicationFactory<Program>>
         Assert.Contains("revoked", revoke.Out);
     }
 
+    private static Guid SessionOf(string refresh)
+    {
+        var part = refresh["gkr_".Length..refresh.IndexOf('.')].Replace('-', '+').Replace('_', '/');
+        return new Guid(Convert.FromBase64String(part.PadRight(part.Length + (4 - part.Length % 4) % 4, '=')));
+    }
+
+    [Fact]
+    public async Task One_session_is_revoked_by_user_and_session_id_and_another_users_session_is_not_found()
+    {
+        var tokens = await LoggedIn();
+        var other = new MemoryTokenStore();
+        Assert.Equal(0, (await Gk(other, TestAuth.AdminPassword, "login", "--user", TestAuth.AdminName)).Code); // a second session
+        var victim = SessionOf(other.Current!.RefreshToken!);
+
+        // A user that does not own the session: 404 (exit 2) and nothing changes.
+        var name = "bob" + Guid.NewGuid().ToString("N")[..8];
+        Assert.Equal(0, (await Gk(tokens, null, "user", "create", name, "--email", name + "@example.com")).Code);
+        Assert.Equal(2, (await Gk(tokens, null, "user", "revoke-session", name, victim.ToString())).Code);
+        Assert.Equal(1, (await Gk(tokens, null, "user", "revoke-session", TestAuth.AdminName, "not-an-id")).Code);
+        Age(other);
+        Assert.Equal(0, (await Gk(other, null, "app", "list")).Code); // still alive
+
+        var ok = await Gk(tokens, null, "user", "revoke-session", TestAuth.AdminName, victim.ToString());
+        Assert.Equal(0, ok.Code);
+        Assert.Contains("revoked", ok.Out);
+        Age(other);
+        Assert.Equal(5, (await Gk(other, null, "app", "list")).Code);
+        Assert.Equal(0, (await Gk(tokens, null, "app", "list")).Code); // the caller's own session was not touched
+    }
+
     [Fact]
     public async Task A_file_token_store_round_trips_refresh_fields_and_still_reads_old_files()
     {
