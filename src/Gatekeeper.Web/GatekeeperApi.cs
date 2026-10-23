@@ -5,17 +5,17 @@ using System.Text.Json;
 
 namespace Gatekeeper.Web;
 
-public sealed record AppDto(Guid Id, string Name);
+public sealed record AppDto(Guid Id, string Name, long Version = 0);
 
-public sealed record RoleDto(Guid Id, Guid AppId, string Name, string Description);
+public sealed record RoleDto(Guid Id, Guid AppId, string Name, string Description, long Version = 0);
 
-public sealed record UserDto(Guid Id, string Username, string Email, string DisplayName, bool IsActive, string Kind, DateTimeOffset? ExpiresAt);
+public sealed record UserDto(Guid Id, string Username, string Email, string DisplayName, bool IsActive, string Kind, DateTimeOffset? ExpiresAt, long Version = 0);
 
 public sealed record SessionDto(Guid Id, Guid UserId, Guid AppId, DateTimeOffset CreatedAt, DateTimeOffset LastUsedAt, DateTimeOffset ExpiresAt, DateTimeOffset? RevokedAt);
 
 public sealed record RevokedDto(int Revoked);
 
-public sealed record ClientDto(Guid Id, string Name, Guid AppId, bool IsActive, DateTimeOffset CreatedAt, DateTimeOffset UpdatedAt);
+public sealed record ClientDto(Guid Id, string Name, Guid AppId, bool IsActive, DateTimeOffset CreatedAt, DateTimeOffset UpdatedAt, long Version = 0);
 
 /// <summary>A new client with its one-time secret. ToString never prints the secret, so logging the object cannot leak it.</summary>
 public sealed record ClientCreatedDto(Guid Id, string Name, Guid AppId, bool IsActive, string Secret)
@@ -93,11 +93,11 @@ public sealed class GatekeeperApi(HttpClient http, WebSessions sessions, TimePro
     public Task<AppDto> CreateAppAsync(WebSession s, string name, CancellationToken ct) =>
         SendAsync<AppDto>(s, HttpMethod.Post, "v1/applications", new { name }, ct);
 
-    public Task<AppDto> RenameAppAsync(WebSession s, Guid id, string name, CancellationToken ct) =>
-        SendAsync<AppDto>(s, HttpMethod.Patch, $"v1/applications/{id}", new { name }, ct);
+    public Task<AppDto> RenameAppAsync(WebSession s, Guid id, string name, long version, CancellationToken ct) =>
+        SendAsync<AppDto>(s, HttpMethod.Patch, $"v1/applications/{id}", new { name }, ct, version);
 
-    public async Task DeleteAppAsync(WebSession s, Guid id, CancellationToken ct) =>
-        await SendAsync<object>(s, HttpMethod.Delete, $"v1/applications/{id}", null, ct);
+    public async Task DeleteAppAsync(WebSession s, Guid id, long version, CancellationToken ct) =>
+        await SendAsync<object>(s, HttpMethod.Delete, $"v1/applications/{id}", null, ct, version);
 
     public static bool IsReserved(AppDto app) => string.Equals(app.Name, AdminApplication, StringComparison.OrdinalIgnoreCase);
 
@@ -110,11 +110,11 @@ public sealed class GatekeeperApi(HttpClient http, WebSessions sessions, TimePro
     public Task<RoleDto> CreateRoleAsync(WebSession s, Guid appId, string name, string description, CancellationToken ct) =>
         SendAsync<RoleDto>(s, HttpMethod.Post, $"v1/applications/{appId}/roles", new { name, description }, ct);
 
-    public Task<RoleDto> UpdateRoleAsync(WebSession s, Guid id, string name, string description, CancellationToken ct) =>
-        SendAsync<RoleDto>(s, HttpMethod.Patch, $"v1/roles/{id}", new { name, description }, ct);
+    public Task<RoleDto> UpdateRoleAsync(WebSession s, Guid id, string name, string description, long version, CancellationToken ct) =>
+        SendAsync<RoleDto>(s, HttpMethod.Patch, $"v1/roles/{id}", new { name, description }, ct, version);
 
-    public async Task DeleteRoleAsync(WebSession s, Guid id, CancellationToken ct) =>
-        await SendAsync<object>(s, HttpMethod.Delete, $"v1/roles/{id}", null, ct);
+    public async Task DeleteRoleAsync(WebSession s, Guid id, long version, CancellationToken ct) =>
+        await SendAsync<object>(s, HttpMethod.Delete, $"v1/roles/{id}", null, ct, version);
 
     public Task<Page<UserDto>> ListUsersAsync(WebSession s, string? kind, bool? active, string? username, string? cursor, int limit, CancellationToken ct)
     {
@@ -133,11 +133,11 @@ public sealed class GatekeeperApi(HttpClient http, WebSessions sessions, TimePro
         SendAsync<UserDto>(s, HttpMethod.Post, "v1/users", new { username, email, displayName, kind, expiresAt }, ct);
 
     /// <summary>A null <paramref name="expiresAt"/> leaves the expiry unchanged (a test user) or gives the default (a person made a test user).</summary>
-    public Task<UserDto> UpdateUserAsync(WebSession s, Guid id, string? username, string? email, string? displayName, bool? isActive, string? kind, DateTimeOffset? expiresAt, CancellationToken ct) =>
-        SendAsync<UserDto>(s, HttpMethod.Patch, $"v1/users/{id}", new { username, email, displayName, isActive, kind, expiresAt }, ct);
+    public Task<UserDto> UpdateUserAsync(WebSession s, Guid id, string? username, string? email, string? displayName, bool? isActive, string? kind, DateTimeOffset? expiresAt, long version, CancellationToken ct) =>
+        SendAsync<UserDto>(s, HttpMethod.Patch, $"v1/users/{id}", new { username, email, displayName, isActive, kind, expiresAt }, ct, version);
 
-    public async Task DeleteUserAsync(WebSession s, Guid id, CancellationToken ct) =>
-        await SendAsync<object>(s, HttpMethod.Delete, $"v1/users/{id}", null, ct);
+    public async Task DeleteUserAsync(WebSession s, Guid id, long version, CancellationToken ct) =>
+        await SendAsync<object>(s, HttpMethod.Delete, $"v1/users/{id}", null, ct, version);
 
     /// <summary>The roles a user holds (optionally only those of one application).</summary>
     public Task<Page<RoleDto>> ListUserRolesAsync(WebSession s, Guid userId, Guid? appId, string? cursor, int limit, CancellationToken ct) =>
@@ -178,12 +178,12 @@ public sealed class GatekeeperApi(HttpClient http, WebSessions sessions, TimePro
     public Task<ClientCreatedDto> CreateClientAsync(WebSession s, string name, Guid appId, bool isActive, CancellationToken ct) =>
         SendAsync<ClientCreatedDto>(s, HttpMethod.Post, "v1/clients", new { name, application = appId, isActive }, ct);
 
-    /// <summary>A null field is left unchanged.</summary>
-    public Task<ClientDto> UpdateClientAsync(WebSession s, Guid id, string? name, bool? isActive, CancellationToken ct) =>
-        SendAsync<ClientDto>(s, HttpMethod.Patch, $"v1/clients/{id}", new { name, isActive }, ct);
+    /// <summary>A null field is left unchanged. <paramref name="version"/> is sent as <c>If-Match</c>: a changed client answers 412.</summary>
+    public Task<ClientDto> UpdateClientAsync(WebSession s, Guid id, string? name, bool? isActive, long version, CancellationToken ct) =>
+        SendAsync<ClientDto>(s, HttpMethod.Patch, $"v1/clients/{id}", new { name, isActive }, ct, version);
 
-    public async Task DeleteClientAsync(WebSession s, Guid id, CancellationToken ct) =>
-        await SendAsync<object>(s, HttpMethod.Delete, $"v1/clients/{id}", null, ct);
+    public async Task DeleteClientAsync(WebSession s, Guid id, long version, CancellationToken ct) =>
+        await SendAsync<object>(s, HttpMethod.Delete, $"v1/clients/{id}", null, ct, version);
 
     /// <summary>Replaces a client's secret and returns the new one (shown once; never store or log it).</summary>
     public async Task<string> RotateClientSecretAsync(WebSession s, Guid id, CancellationToken ct) =>
@@ -213,10 +213,12 @@ public sealed class GatekeeperApi(HttpClient http, WebSessions sessions, TimePro
     public static bool IsAdminRole(AppDto app, RoleDto role) =>
         IsReserved(app) && string.Equals(role.Name, "admin", StringComparison.OrdinalIgnoreCase);
 
-    private async Task<T> SendAsync<T>(WebSession s, HttpMethod method, string path, object? body, CancellationToken ct)
+    private async Task<T> SendAsync<T>(WebSession s, HttpMethod method, string path, object? body, CancellationToken ct, long? ifMatchVersion = null)
     {
         await EnsureFreshAsync(s, ct);
         using var request = new HttpRequestMessage(method, path);
+        // A write that carries a version is conditional: the API answers 412 when the resource changed since it was read.
+        if (ifMatchVersion is { } v) request.Headers.TryAddWithoutValidation("If-Match", $"\"{v.ToString(System.Globalization.CultureInfo.InvariantCulture)}\"");
         if (body is not null) request.Content = JsonContent.Create(body);
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", s.Tokens.Access);
         try

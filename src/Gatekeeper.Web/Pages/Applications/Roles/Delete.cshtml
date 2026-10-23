@@ -17,6 +17,7 @@ else
 {
     <p>Delete role <strong>@Model.Role.Name</strong> of <strong>@Model.App.Name</strong>? It is also removed from every user and service client that holds it, and this cannot be undone.</p>
     <form method="post">
+        <input type="hidden" name="Version" value="@Model.HiddenVersion">
         <button type="submit" class="danger">Delete</button>
         <a href="/Applications/@Model.App.Id/Roles">Cancel</a>
     </form>

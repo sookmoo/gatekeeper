@@ -16,6 +16,9 @@ public class EditModel(GatekeeperApi api, ILogger<EditModel> log) : PageModel
     [BindProperty] public string? OrigName { get; set; }
     [BindProperty] public string? OrigIsActive { get; set; }
 
+    /// <summary>The version the hidden field carries: the one the form was opened with, or the fresh one after a refusal that re-reads the client.</summary>
+    public long HiddenVersion { get; private set; }
+
     /// <summary>The client as the API holds it (the heading shows its current name, not what was typed).</summary>
     public ClientDto Current { get; private set; } = null!;
     public string AppName { get; private set; } = "(unknown)";
@@ -28,6 +31,7 @@ public class EditModel(GatekeeperApi api, ILogger<EditModel> log) : PageModel
         IsActive = Current.IsActive;
         OrigName = Name;
         OrigIsActive = Current.IsActive ? "true" : "false";
+        HiddenVersion = Current.Version;
         return Page();
     }
 
@@ -35,6 +39,9 @@ public class EditModel(GatekeeperApi api, ILogger<EditModel> log) : PageModel
     {
         if (!await LoadAsync(id, ct)) return NotFound();
         IsActive = FormFlag.Parse(IsActiveValues);
+        // Never an unconditional write: without a usable version nothing is sent and the form is shown again with the current values.
+        if (!FormVersion.TryRead(Request, out var version)) return ShowCurrent(FormVersion.MissingText, StatusCodes.Status400BadRequest);
+        HiddenVersion = version;
         var name = Name?.Trim() ?? "";
         var origActive = OrigIsActive is null ? Current.IsActive : OrigIsActive == "true";
         string? sendName = name != (OrigName ?? Current.Name) ? name : null;
@@ -42,12 +49,18 @@ public class EditModel(GatekeeperApi api, ILogger<EditModel> log) : PageModel
         if (sendName is null && sendActive is null) return RedirectToPage("Index", new { done = "updated" });
         try
         {
-            await api.UpdateClientAsync(HttpContext.Current(), id, sendName, sendActive, ct);
+            await api.UpdateClientAsync(HttpContext.Current(), id, sendName, sendActive, version, ct);
             return RedirectToPage("Index", new { done = "updated" });
         }
         catch (ApiException ex) when (ex.Status == HttpStatusCode.NotFound)
         {
             return NotFound();
+        }
+        catch (ApiException ex) when (FormVersion.IsStale(ex))
+        {
+            log.LogInformation("Updating a client was refused as stale: {Detail}", Users.UserAccess.ForLog(ex.Message));
+            if (!await LoadAsync(id, ct)) return NotFound();
+            return ShowCurrent(FormVersion.ChangedText, StatusCodes.Status412PreconditionFailed);
         }
         catch (ApiException ex) when (Users.UserAccess.IsRefusal(ex))
         {
@@ -56,6 +69,19 @@ public class EditModel(GatekeeperApi api, ILogger<EditModel> log) : PageModel
             Response.StatusCode = (int)ex.Status;
             return Page();
         }
+    }
+
+    // Shows the client as the API holds it now, with its version, instead of what was typed.
+    private IActionResult ShowCurrent(string error, int status)
+    {
+        Name = Current.Name;
+        IsActive = Current.IsActive;
+        OrigName = Name;
+        OrigIsActive = Current.IsActive ? "true" : "false";
+        HiddenVersion = Current.Version;
+        Error = error;
+        Response.StatusCode = status;
+        return Page();
     }
 
     private async Task<bool> LoadAsync(Guid id, CancellationToken ct)

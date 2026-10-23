@@ -177,8 +177,8 @@ public class Roles5cTests : IClassFixture<WebFixture>
         foreach (var (url, fields) in new[]
         {
             (path + "/Create", new Dictionary<string, string> { ["Name"] = "intruder" }),
-            ($"{path}/Edit/{adminRole}", new Dictionary<string, string> { ["Name"] = "renamed" }),
-            ($"{path}/Delete/{adminRole}", new Dictionary<string, string>()),
+            ($"{path}/Edit/{adminRole}", new Dictionary<string, string> { ["Name"] = "renamed", ["Version"] = "1" }),
+            ($"{path}/Delete/{adminRole}", new Dictionary<string, string> { ["Version"] = "1" }),
         })
         {
             fields["__RequestVerificationToken"] = token;
@@ -189,7 +189,7 @@ public class Roles5cTests : IClassFixture<WebFixture>
 
         // a crafted Edit that only changes the description is refused too
         var edit = await b.PostAsync($"{path}/Edit/{adminRole}", new FormUrlEncodedContent(new Dictionary<string, string>
-            { ["Name"] = "admin", ["Description"] = "tampered", ["__RequestVerificationToken"] = token }));
+            { ["Name"] = "admin", ["Description"] = "tampered", ["Version"] = "1", ["__RequestVerificationToken"] = token }));
         Assert.Equal(HttpStatusCode.Conflict, edit.StatusCode);
         var after = await (await ApiAdminAsync()).GetFromJsonAsync<JsonElement>($"/v1/roles/{adminRole}");
         Assert.Equal("Manages Gatekeeper", after.GetProperty("description").GetString());

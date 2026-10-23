@@ -4,10 +4,12 @@ using Microsoft.AspNetCore.Mvc.RazorPages;
 
 namespace Gatekeeper.Web.Pages.Applications.Roles;
 
-public class EditModel(GatekeeperApi api) : PageModel
+public class EditModel(GatekeeperApi api, ILogger<EditModel> log) : PageModel
 {
     [BindProperty] public string? Name { get; set; }
     [BindProperty] public string? Description { get; set; }
+    /// <summary>The version the hidden field carries: the one the form was opened with, or the fresh one after a refusal that re-reads the role.</summary>
+    public long HiddenVersion { get; private set; }
     public AppDto App { get; private set; } = null!;
     public bool ReadOnly { get; private set; }
     public string? Error { get; private set; }
@@ -18,26 +20,48 @@ public class EditModel(GatekeeperApi api) : PageModel
         if (role is null) return NotFound();
         Name = role.Name;
         Description = role.Description;
+        HiddenVersion = role.Version;
         return Page();
     }
 
     public async Task<IActionResult> OnPostAsync(Guid appId, Guid id, CancellationToken ct)
     {
-        if (await LoadAsync(appId, id, ct) is null) return NotFound();
+        var current = await LoadAsync(appId, id, ct);
+        if (current is null) return NotFound();
+        // Never an unconditional write: without a usable version nothing is sent and the form is shown again with the current values.
+        if (!FormVersion.TryRead(Request, out var version)) return ShowCurrent(current, FormVersion.MissingText, StatusCodes.Status400BadRequest);
+        HiddenVersion = version;
         try
         {
-            await api.UpdateRoleAsync(HttpContext.Current(), id, Name?.Trim() ?? "", Description?.Trim() ?? "", ct);
+            await api.UpdateRoleAsync(HttpContext.Current(), id, Name?.Trim() ?? "", Description?.Trim() ?? "", version, ct);
             return RedirectToPage("Index", new { appId, done = "updated" });
         }
         catch (ApiException ex) when (ex.Status == HttpStatusCode.NotFound)
         {
             return NotFound();
         }
+        catch (ApiException ex) when (FormVersion.IsStale(ex))
+        {
+            log.LogInformation("Updating a role was refused as stale: {Detail}", Users.UserAccess.ForLog(ex.Message));
+            var fresh = await LoadAsync(appId, id, ct);
+            return fresh is null ? NotFound() : ShowCurrent(fresh, FormVersion.ChangedText, StatusCodes.Status412PreconditionFailed);
+        }
         catch (ApiException ex) when ((int)ex.Status is >= 400 and < 500 && ex.Status != HttpStatusCode.Unauthorized)
         {
             Error = Refusal(ex);
             return Page();
         }
+    }
+
+    // Shows the role as the API holds it now, with its version, instead of what was typed.
+    private IActionResult ShowCurrent(RoleDto role, string error, int status)
+    {
+        Name = role.Name;
+        Description = role.Description;
+        HiddenVersion = role.Version;
+        Error = error;
+        Response.StatusCode = status;
+        return Page();
     }
 
     private string Refusal(ApiException ex)

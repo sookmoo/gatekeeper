@@ -15,6 +15,7 @@
 }
 <p class="hint">Tokens it already holds stop passing Gatekeeper's introspection, but services that validate tokens locally accept them until they expire.</p>
 <form method="post">
+    <input type="hidden" name="Version" value="@Model.HiddenVersion">
     <button type="submit" class="danger">Delete</button>
     <a href="/Clients">Cancel</a>
 </form>

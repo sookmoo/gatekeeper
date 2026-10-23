@@ -149,18 +149,19 @@ public class Roles5cExtraTests : IClassFixture<WebFixture>
         var path = $"/Applications/{app}/Roles";
         await WebFixture.PostFormAsync(b, path + "/Create", new() { ["Name"] = "victim" });
         var id = RoleId(await b.GetStringAsync(path), "victim");
-        var token = await WebFixture.TokenAsync(b, $"{path}/Delete/{id}");
+        var (token, _, version) = await WebFixture.TokenNonceAndVersionAsync(b, $"{path}/Delete/{id}");
 
         Task<HttpResponseMessage> Post(string url, Dictionary<string, string> f)
         {
             f["__RequestVerificationToken"] = token;
+            f["Version"] = version!; // every form was opened at the same version
             return b.PostAsync(url, new FormUrlEncodedContent(f));
         }
         var results = await Task.WhenAll(
             Post($"{path}/Delete/{id}", new()), Post($"{path}/Delete/{id}", new()),
             Post($"{path}/Edit/{id}", new() { ["Name"] = "late" }), Post($"{path}/Delete/{id}", new()));
         foreach (var r in results)
-            Assert.True(r.StatusCode is HttpStatusCode.Redirect or HttpStatusCode.NotFound, $"unexpected {r.StatusCode}");
+            Assert.True(r.StatusCode is HttpStatusCode.Redirect or HttpStatusCode.NotFound or HttpStatusCode.PreconditionFailed, $"unexpected {r.StatusCode}");
         Assert.Contains(results, r => r.StatusCode == HttpStatusCode.Redirect);
         Assert.DoesNotContain("<td>victim</td>", await b.GetStringAsync(path));
     }
