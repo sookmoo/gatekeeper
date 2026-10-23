@@ -88,6 +88,7 @@ builder.Services
     .AddOpenApi(o =>
     {
         o.AddDocumentTransformer<BearerSecurityTransformer>();
+        o.AddDocumentTransformer<ConcurrencyTransformer>();
         // The kind has its own converter, so describe it here: exactly one of three words.
         o.AddSchemaTransformer((schema, context, _) =>
         {

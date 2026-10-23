@@ -234,7 +234,7 @@ public abstract class Qa4bStoreTests : IDisposable
         {
             ("c.Add", () => clients.AddAsync(NewClient(app, "late"), "h", ct)), ("c.Get", () => clients.GetAsync(c.Id, ct)),
             ("c.ByName", () => clients.GetByNameAsync("svc", ct)), ("c.List", () => clients.ListAsync(null, null, ct)),
-            ("c.Update", () => clients.UpdateAsync(c with { Name = "renamed" }, ct)), ("c.Delete", () => clients.DeleteAsync(c.Id, ct)),
+            ("c.Update", () => clients.UpdateAsync(c with { Name = "renamed" }, ct: ct)), ("c.Delete", () => clients.DeleteAsync(c.Id, ct: ct)),
             ("c.SetSecret", () => clients.SetSecretHashAsync(c.Id, "zz", DateTimeOffset.UtcNow, ct)),
             ("c.GetSecret", () => clients.GetSecretHashAsync(c.Id, ct)), ("c.Assign", () => clients.AssignRoleAsync(c.Id, role.Id, ct)),
             ("c.Revoke", () => clients.RevokeRoleAsync(c.Id, role.Id, ct)), ("c.Roles", () => clients.ListRolesAsync(c.Id, null, ct)),

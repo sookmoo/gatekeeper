@@ -1,8 +1,18 @@
 namespace Gatekeeper.Domain;
 
-public sealed record App(Guid Id, string Name);
+/// <summary>
+/// A row that carries a version for optimistic concurrency. It starts at 1 and the store adds 1 on every write of the row's own
+/// fields (not on role assignments, passwords, secrets or sessions, which are separate resources). The API exposes it as the
+/// body field <c>version</c> and the strong ETag <c>"&lt;version&gt;"</c>.
+/// </summary>
+public interface IVersioned
+{
+    long Version { get; }
+}
 
-public sealed record Role(Guid Id, Guid AppId, string Name, string Description);
+public sealed record App(Guid Id, string Name, long Version = 1) : IVersioned;
+
+public sealed record Role(Guid Id, Guid AppId, string Name, string Description, long Version = 1) : IVersioned;
 
 public sealed record User(
     Guid Id,
@@ -13,7 +23,8 @@ public sealed record User(
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt,
     UserKind Kind = UserKind.Person,
-    DateTimeOffset? ExpiresAt = null)
+    DateTimeOffset? ExpiresAt = null,
+    long Version = 1) : IVersioned
 {
     /// <summary>Whether the account may sign in right now: enabled and, for a test user, not past its expiry.</summary>
     public bool IsUsable(DateTimeOffset now) => IsActive && (ExpiresAt is null || ExpiresAt > now);
@@ -43,7 +54,8 @@ public sealed record Client(
     Guid AppId,
     bool IsActive,
     DateTimeOffset CreatedAt,
-    DateTimeOffset UpdatedAt);
+    DateTimeOffset UpdatedAt,
+    long Version = 1) : IVersioned;
 
 /// <summary>
 /// A refresh-token session of a user in one application. The token hashes live in the store, never on this record.

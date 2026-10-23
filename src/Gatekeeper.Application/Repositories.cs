@@ -8,6 +8,10 @@ namespace Gatekeeper.Application;
 // ConflictException; missing rows yield null/false. Deletes cascade to dependents.
 // Writes that reference a parent (role -> app, assignment -> user/role) verify the parent
 // atomically with the write and throw NotFoundException if it is gone (FK in Postgres).
+// Apps, roles, users and clients carry a version (1 on creation, +1 on every UpdateAsync, whatever the passed entity says).
+// UpdateAsync and DeleteAsync take an optional expectedVersion: the write then only happens if the row still has that version,
+// decided atomically with the write; otherwise PreconditionFailedException is thrown and nothing changes. A missing row wins
+// over a wrong version (null/false), and a version mismatch wins over a uniqueness conflict. Null means unconditional.
 
 public interface IAppRepository
 {
@@ -16,8 +20,8 @@ public interface IAppRepository
     /// <summary>Case-insensitive.</summary>
     Task<App?> GetByNameAsync(string name, CancellationToken ct = default);
     Task<IReadOnlyList<App>> ListAsync(Slice? slice = null, CancellationToken ct = default);
-    Task<App?> UpdateAsync(App app, CancellationToken ct = default);
-    Task<bool> DeleteAsync(Guid id, CancellationToken ct = default);
+    Task<App?> UpdateAsync(App app, long? expectedVersion = null, CancellationToken ct = default);
+    Task<bool> DeleteAsync(Guid id, long? expectedVersion = null, CancellationToken ct = default);
 }
 
 public interface IRoleRepository
@@ -25,8 +29,8 @@ public interface IRoleRepository
     Task<Role> AddAsync(Role role, CancellationToken ct = default);
     Task<Role?> GetAsync(Guid id, CancellationToken ct = default);
     Task<IReadOnlyList<Role>> ListByAppAsync(Guid appId, Slice? slice = null, CancellationToken ct = default);
-    Task<Role?> UpdateAsync(Role role, CancellationToken ct = default);
-    Task<bool> DeleteAsync(Guid id, CancellationToken ct = default);
+    Task<Role?> UpdateAsync(Role role, long? expectedVersion = null, CancellationToken ct = default);
+    Task<bool> DeleteAsync(Guid id, long? expectedVersion = null, CancellationToken ct = default);
 }
 
 public interface IUserRepository
@@ -34,8 +38,8 @@ public interface IUserRepository
     Task<User> AddAsync(User user, CancellationToken ct = default);
     Task<User?> GetAsync(Guid id, CancellationToken ct = default);
     Task<IReadOnlyList<User>> ListAsync(bool? active = null, string? username = null, UserKind? kind = null, Slice? slice = null, CancellationToken ct = default);
-    Task<User?> UpdateAsync(User user, CancellationToken ct = default);
-    Task<bool> DeleteAsync(Guid id, CancellationToken ct = default);
+    Task<User?> UpdateAsync(User user, long? expectedVersion = null, CancellationToken ct = default);
+    Task<bool> DeleteAsync(Guid id, long? expectedVersion = null, CancellationToken ct = default);
 
     /// <summary>Idempotent. Throws NotFoundException if the user or role does not exist.</summary>
     Task AssignRoleAsync(Guid userId, Guid roleId, CancellationToken ct = default);
@@ -71,9 +75,9 @@ public interface IClientRepository
     /// <summary>Case-insensitive.</summary>
     Task<Client?> GetByNameAsync(string name, CancellationToken ct = default);
     Task<IReadOnlyList<Client>> ListAsync(Guid? appId = null, Slice? slice = null, CancellationToken ct = default);
-    /// <summary>Updates name, active flag and timestamp only.</summary>
-    Task<Client?> UpdateAsync(Client client, CancellationToken ct = default);
-    Task<bool> DeleteAsync(Guid id, CancellationToken ct = default);
+    /// <summary>Updates name, active flag and timestamp only (and the version).</summary>
+    Task<Client?> UpdateAsync(Client client, long? expectedVersion = null, CancellationToken ct = default);
+    Task<bool> DeleteAsync(Guid id, long? expectedVersion = null, CancellationToken ct = default);
     Task<bool> SetSecretHashAsync(Guid id, string secretHash, DateTimeOffset at, CancellationToken ct = default);
     Task<string?> GetSecretHashAsync(Guid id, CancellationToken ct = default);
 

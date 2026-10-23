@@ -165,6 +165,44 @@ and the error is logged. Not recorded: reads, throttled attempts, and requests r
 (an absent or null field is left alone; send `""` to clear a description or display name). The CLI `update` commands use it.
 Concurrent PATCHes run one at a time in a process (so one cannot silently undo another's change, for example a disable).
 
+### Versions and `If-Match` (optimistic concurrency)
+
+Applications, roles, users and clients carry a `version` (integer, 1 when created, +1 on every write of the row's own fields;
+role assignments, passwords, client secrets and sessions are separate resources and do not change it). Every single-resource
+`GET`, `PUT`, `PATCH` and every create (`POST`) answers with the `version` in the body and a strong `ETag: "<version>"`
+(for example `"3"`). The ETag of a `POST` create describes the created resource. Lists have no ETag; their items carry `version`.
+
+`PUT`, `PATCH` and `DELETE` of these four resources accept an optional `If-Match` header:
+
+- no header: the write is unconditional, as before;
+- `If-Match: "3"` (or a list such as `"2", "3"`): the write happens only if the stored version is one of them, otherwise the answer is
+  `412 Precondition Failed` (problem body with a fixed text) and nothing changes. The check is part of the write
+  (`UPDATE ... WHERE id = @id AND version = @expected` in Postgres, under the store lock in memory), so of several requests
+  carrying the same ETag exactly one wins and the others get 412;
+- `If-Match: *` matches any existing resource (a missing one is still 404);
+- a weak tag (`W/"3"`) never matches (strong comparison, as RFC 9110 requires for `If-Match`), so a proxy that weakens ETags causes 412, not a silent overwrite;
+- anything else (`3`, `"3`, an empty value, `*` mixed with tags, more than 1024 characters) is `400`.
+
+Precedence when several things are wrong: `400` for a malformed `If-Match` first (it is a syntax error), then `404`, then `412`, then
+the other checks, which differ a little per resource: applications and clients validate the body (`400`) and then apply their `409`
+rules (reserved application and name; name already taken); roles apply the reserved-application `409` first and then validate (`400`);
+users validate and then apply the administrator rules (last administrator, admin must be a person) and the taken-name `409`.
+Without `If-Match` the order is as it always was (validation first). A refused write does not bump the version, and the 412 is
+recorded in the audit trail as a failure. A `PATCH` that changes no value (an application, role, client or user already has the
+values) writes nothing: it answers 200 with the current ETag and the version stays (the precondition is still checked first, and so is the
+reserved-application rule for roles, so a no-op PATCH of a role of the `gatekeeper` application is still 409; a user
+`PATCH` still repairs session effects of an earlier half-done change). A `PATCH` with several tags in `If-Match` writes onto the version it read
+and merged its values onto, so a write that slips in between gives 412 rather than being silently overwritten.
+Unconditional writes (no `If-Match`) to one row queue on a row lock in Postgres (`FOR NO KEY UPDATE`, so inserts that reference the row, such as sessions, are not blocked), so every one succeeds with its own version; a writer waits at most 2 s for the lock and then gets 503 with `Retry-After`.
+
+**Upgrading to `AddVersions`:** the migration adds a `version` column to four tables. It locks the four tables together up front under a 2 s `lock_timeout`, so it fails cleanly (and
+rolls back) instead of queueing behind a long-running query; run `migrate` again at a quiet moment. Do not run old and new API instances
+side by side across this migration: an old instance does not know the column and its writes do not bump `version`, which would let a stale
+`If-Match` succeed. Stop the old instances, migrate, start the new ones. (A `BEFORE UPDATE` trigger that bumps the version would remove that
+requirement; it is a possible follow-up.)
+
+The Web UI and the CLI send no `If-Match` yet (the UI keeps its form snapshot; a `--if-version` CLI option is deferred).
+
 ## Administration UI
 
 `src/Gatekeeper.Web` is a small server-rendered web UI (Razor Pages, no JavaScript) in its own container. It signs administrators in

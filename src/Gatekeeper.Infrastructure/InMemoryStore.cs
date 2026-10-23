@@ -23,6 +23,12 @@ public sealed class InMemoryStore
     internal static IReadOnlyList<T> Paged<T>(IEnumerable<T> ordered, Slice? slice) =>
         (slice is null ? ordered : ordered.Skip(slice.Offset).Take(slice.Take)).ToList();
 
+    /// <summary>Throws PreconditionFailedException when a version is expected and the row has another (the caller holds the gate).</summary>
+    internal static void CheckVersion(long current, long? expected)
+    {
+        if (expected is { } e && e != current) throw new PreconditionFailedException();
+    }
+
     public void RemoveSessionsWhere(Func<Session, bool> match)
     {
         foreach (var x in Sessions.Values.Where(match).ToList())
@@ -54,6 +60,7 @@ public sealed class InMemoryAppRepository(InMemoryStore s) : IAppRepository
         lock (s.Gate)
         {
             EnsureNameFree(app);
+            app = app with { Version = 1 };
             s.Apps[app.Id] = app;
             return Task.FromResult(app);
         }
@@ -74,22 +81,26 @@ public sealed class InMemoryAppRepository(InMemoryStore s) : IAppRepository
         lock (s.Gate) return Task.FromResult<IReadOnlyList<App>>(InMemoryStore.Paged(s.Apps.Values.OrderBy(a => a.Name), slice));
     }
 
-    public Task<App?> UpdateAsync(App app, CancellationToken ct = default)
+    public Task<App?> UpdateAsync(App app, long? expectedVersion = null, CancellationToken ct = default)
     {
         lock (s.Gate)
         {
-            if (!s.Apps.ContainsKey(app.Id)) return Task.FromResult<App?>(null);
+            if (!s.Apps.TryGetValue(app.Id, out var current)) return Task.FromResult<App?>(null);
+            InMemoryStore.CheckVersion(current.Version, expectedVersion);
             EnsureNameFree(app);
-            s.Apps[app.Id] = app;
-            return Task.FromResult<App?>(app);
+            var updated = app with { Version = current.Version + 1 };
+            s.Apps[app.Id] = updated;
+            return Task.FromResult<App?>(updated);
         }
     }
 
-    public Task<bool> DeleteAsync(Guid id, CancellationToken ct = default)
+    public Task<bool> DeleteAsync(Guid id, long? expectedVersion = null, CancellationToken ct = default)
     {
         lock (s.Gate)
         {
-            if (!s.Apps.Remove(id)) return Task.FromResult(false);
+            if (!s.Apps.TryGetValue(id, out var current)) return Task.FromResult(false);
+            InMemoryStore.CheckVersion(current.Version, expectedVersion);
+            s.Apps.Remove(id);
             foreach (var role in s.Roles.Values.Where(r => r.AppId == id).ToList()) s.RemoveRole(role.Id);
             foreach (var client in s.Clients.Values.Where(c => c.AppId == id).ToList()) s.RemoveClient(client.Id);
             s.RemoveSessionsWhere(x => x.AppId == id);
@@ -114,6 +125,7 @@ public sealed class InMemoryRoleRepository(InMemoryStore s) : IRoleRepository
         {
             if (!s.Apps.ContainsKey(role.AppId)) throw new NotFoundException($"Application {role.AppId} not found.");
             EnsureNameFree(role);
+            role = role with { Version = 1 };
             s.Roles[role.Id] = role;
             return Task.FromResult(role);
         }
@@ -131,24 +143,27 @@ public sealed class InMemoryRoleRepository(InMemoryStore s) : IRoleRepository
                 InMemoryStore.Paged(s.Roles.Values.Where(r => r.AppId == appId).OrderBy(r => r.Name), slice));
     }
 
-    public Task<Role?> UpdateAsync(Role role, CancellationToken ct = default)
+    public Task<Role?> UpdateAsync(Role role, long? expectedVersion = null, CancellationToken ct = default)
     {
         lock (s.Gate)
         {
-            if (!s.Roles.ContainsKey(role.Id)) return Task.FromResult<Role?>(null);
+            if (!s.Roles.TryGetValue(role.Id, out var current)) return Task.FromResult<Role?>(null);
+            InMemoryStore.CheckVersion(current.Version, expectedVersion);
             EnsureNameFree(role);
-            s.Roles[role.Id] = role;
-            return Task.FromResult<Role?>(role);
+            var updated = role with { Version = current.Version + 1 };
+            s.Roles[role.Id] = updated;
+            return Task.FromResult<Role?>(updated);
         }
     }
 
-    public Task<bool> DeleteAsync(Guid id, CancellationToken ct = default)
+    public Task<bool> DeleteAsync(Guid id, long? expectedVersion = null, CancellationToken ct = default)
     {
         lock (s.Gate)
         {
-            var existed = s.Roles.ContainsKey(id);
+            if (!s.Roles.TryGetValue(id, out var current)) return Task.FromResult(false);
+            InMemoryStore.CheckVersion(current.Version, expectedVersion);
             s.RemoveRole(id);
-            return Task.FromResult(existed);
+            return Task.FromResult(true);
         }
     }
 
@@ -166,6 +181,7 @@ public sealed class InMemoryUserRepository(InMemoryStore s) : IUserRepository
         lock (s.Gate)
         {
             EnsureUnique(user);
+            user = user with { Version = 1 };
             s.Users[user.Id] = user;
             return Task.FromResult(user);
         }
@@ -187,22 +203,26 @@ public sealed class InMemoryUserRepository(InMemoryStore s) : IUserRepository
                     .OrderBy(u => u.Username), slice));
     }
 
-    public Task<User?> UpdateAsync(User user, CancellationToken ct = default)
+    public Task<User?> UpdateAsync(User user, long? expectedVersion = null, CancellationToken ct = default)
     {
         lock (s.Gate)
         {
-            if (!s.Users.ContainsKey(user.Id)) return Task.FromResult<User?>(null);
+            if (!s.Users.TryGetValue(user.Id, out var current)) return Task.FromResult<User?>(null);
+            InMemoryStore.CheckVersion(current.Version, expectedVersion);
             EnsureUnique(user);
-            s.Users[user.Id] = user;
-            return Task.FromResult<User?>(user);
+            var updated = user with { Version = current.Version + 1 };
+            s.Users[user.Id] = updated;
+            return Task.FromResult<User?>(updated);
         }
     }
 
-    public Task<bool> DeleteAsync(Guid id, CancellationToken ct = default)
+    public Task<bool> DeleteAsync(Guid id, long? expectedVersion = null, CancellationToken ct = default)
     {
         lock (s.Gate)
         {
-            if (!s.Users.Remove(id)) return Task.FromResult(false);
+            if (!s.Users.TryGetValue(id, out var current)) return Task.FromResult(false);
+            InMemoryStore.CheckVersion(current.Version, expectedVersion);
+            s.Users.Remove(id);
             s.Assignments.RemoveWhere(a => a.UserId == id);
             s.Credentials.Remove(id);
             s.RemoveSessionsWhere(x => x.UserId == id);
@@ -293,6 +313,7 @@ public sealed class InMemoryClientRepository(InMemoryStore s) : IClientRepositor
         {
             if (!s.Apps.ContainsKey(client.AppId)) throw new NotFoundException($"Application {client.AppId} not found.");
             EnsureNameFree(client);
+            client = client with { Version = 1 };
             s.Clients[client.Id] = client;
             s.ClientSecrets[client.Id] = secretHash;
             return Task.FromResult(client);
@@ -316,25 +337,27 @@ public sealed class InMemoryClientRepository(InMemoryStore s) : IClientRepositor
                 s.Clients.Values.Where(c => appId is null || c.AppId == appId).OrderBy(c => c.Name), slice));
     }
 
-    public Task<Client?> UpdateAsync(Client client, CancellationToken ct = default)
+    public Task<Client?> UpdateAsync(Client client, long? expectedVersion = null, CancellationToken ct = default)
     {
         lock (s.Gate)
         {
             if (!s.Clients.TryGetValue(client.Id, out var current)) return Task.FromResult<Client?>(null);
+            InMemoryStore.CheckVersion(current.Version, expectedVersion);
             EnsureNameFree(client);
-            var updated = current with { Name = client.Name, IsActive = client.IsActive, UpdatedAt = client.UpdatedAt };
+            var updated = current with { Name = client.Name, IsActive = client.IsActive, UpdatedAt = client.UpdatedAt, Version = current.Version + 1 };
             s.Clients[client.Id] = updated;
             return Task.FromResult<Client?>(updated);
         }
     }
 
-    public Task<bool> DeleteAsync(Guid id, CancellationToken ct = default)
+    public Task<bool> DeleteAsync(Guid id, long? expectedVersion = null, CancellationToken ct = default)
     {
         lock (s.Gate)
         {
-            var existed = s.Clients.ContainsKey(id);
+            if (!s.Clients.TryGetValue(id, out var current)) return Task.FromResult(false);
+            InMemoryStore.CheckVersion(current.Version, expectedVersion);
             s.RemoveClient(id);
-            return Task.FromResult(existed);
+            return Task.FromResult(true);
         }
     }
 

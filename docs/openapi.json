@@ -248,8 +248,23 @@
           "required": true
         },
         "responses": {
-          "200": {
-            "description": "OK"
+          "201": {
+            "description": "Created",
+            "headers": {
+              "ETag": {
+                "description": "Strong entity-tag of this version of the resource: the quoted `version` field, for example \"3\". Use it in If-Match.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/App"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -278,6 +293,14 @@
         "responses": {
           "200": {
             "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "Strong entity-tag of this version of the resource: the quoted `version` field, for example \"3\". Use it in If-Match.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -306,6 +329,14 @@
               "type": "string",
               "format": "uuid"
             }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "description": "Optional precondition. Send the ETag from an earlier GET, PUT, PATCH or POST of this resource (for example \"3\"), or * for any existing resource. When the resource has another version the answer is 412 and nothing changes. Without the header the change is unconditional. A header that is not * or a list of entity-tags is 400; a weak tag (W/\"3\") never matches. Checks run in this order: 400 (malformed header), 404, 412, then the other checks (body validation 400 and the 409 rules; their order differs a little per resource, see the README). A PATCH that changes no value writes nothing and keeps the version.",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -321,10 +352,28 @@
         "responses": {
           "200": {
             "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "Strong entity-tag of this version of the resource: the quoted `version` field, for example \"3\". Use it in If-Match.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/App"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "Precondition Failed: the resource has another version than the If-Match header says. Nothing was changed.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
                 }
               }
             }
@@ -349,6 +398,14 @@
               "type": "string",
               "format": "uuid"
             }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "description": "Optional precondition. Send the ETag from an earlier GET, PUT, PATCH or POST of this resource (for example \"3\"), or * for any existing resource. When the resource has another version the answer is 412 and nothing changes. Without the header the change is unconditional. A header that is not * or a list of entity-tags is 400; a weak tag (W/\"3\") never matches. Checks run in this order: 400 (malformed header), 404, 412, then the other checks (body validation 400 and the 409 rules; their order differs a little per resource, see the README). A PATCH that changes no value writes nothing and keeps the version.",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -364,10 +421,28 @@
         "responses": {
           "200": {
             "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "Strong entity-tag of this version of the resource: the quoted `version` field, for example \"3\". Use it in If-Match.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/App"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "Precondition Failed: the resource has another version than the If-Match header says. Nothing was changed.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
                 }
               }
             }
@@ -392,11 +467,29 @@
               "type": "string",
               "format": "uuid"
             }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "description": "Optional precondition. Send the ETag from an earlier GET, PUT, PATCH or POST of this resource (for example \"3\"), or * for any existing resource. When the resource has another version the answer is 412 and nothing changes. Without the header the change is unconditional. A header that is not * or a list of entity-tags is 400; a weak tag (W/\"3\") never matches. Checks run in this order: 400 (malformed header), 404, 412, then the other checks (body validation 400 and the 409 rules; their order differs a little per resource, see the README). A PATCH that changes no value writes nothing and keeps the version.",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
           "200": {
             "description": "OK"
+          },
+          "412": {
+            "description": "Precondition Failed: the resource has another version than the If-Match header says. Nothing was changed.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -485,8 +578,23 @@
           "required": true
         },
         "responses": {
-          "200": {
-            "description": "OK"
+          "201": {
+            "description": "Created",
+            "headers": {
+              "ETag": {
+                "description": "Strong entity-tag of this version of the resource: the quoted `version` field, for example \"3\". Use it in If-Match.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Role"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -515,6 +623,14 @@
         "responses": {
           "200": {
             "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "Strong entity-tag of this version of the resource: the quoted `version` field, for example \"3\". Use it in If-Match.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -543,6 +659,14 @@
               "type": "string",
               "format": "uuid"
             }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "description": "Optional precondition. Send the ETag from an earlier GET, PUT, PATCH or POST of this resource (for example \"3\"), or * for any existing resource. When the resource has another version the answer is 412 and nothing changes. Without the header the change is unconditional. A header that is not * or a list of entity-tags is 400; a weak tag (W/\"3\") never matches. Checks run in this order: 400 (malformed header), 404, 412, then the other checks (body validation 400 and the 409 rules; their order differs a little per resource, see the README). A PATCH that changes no value writes nothing and keeps the version.",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -558,10 +682,28 @@
         "responses": {
           "200": {
             "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "Strong entity-tag of this version of the resource: the quoted `version` field, for example \"3\". Use it in If-Match.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Role"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "Precondition Failed: the resource has another version than the If-Match header says. Nothing was changed.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
                 }
               }
             }
@@ -586,6 +728,14 @@
               "type": "string",
               "format": "uuid"
             }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "description": "Optional precondition. Send the ETag from an earlier GET, PUT, PATCH or POST of this resource (for example \"3\"), or * for any existing resource. When the resource has another version the answer is 412 and nothing changes. Without the header the change is unconditional. A header that is not * or a list of entity-tags is 400; a weak tag (W/\"3\") never matches. Checks run in this order: 400 (malformed header), 404, 412, then the other checks (body validation 400 and the 409 rules; their order differs a little per resource, see the README). A PATCH that changes no value writes nothing and keeps the version.",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -601,10 +751,28 @@
         "responses": {
           "200": {
             "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "Strong entity-tag of this version of the resource: the quoted `version` field, for example \"3\". Use it in If-Match.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Role"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "Precondition Failed: the resource has another version than the If-Match header says. Nothing was changed.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
                 }
               }
             }
@@ -629,11 +797,29 @@
               "type": "string",
               "format": "uuid"
             }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "description": "Optional precondition. Send the ETag from an earlier GET, PUT, PATCH or POST of this resource (for example \"3\"), or * for any existing resource. When the resource has another version the answer is 412 and nothing changes. Without the header the change is unconditional. A header that is not * or a list of entity-tags is 400; a weak tag (W/\"3\") never matches. Checks run in this order: 400 (malformed header), 404, 412, then the other checks (body validation 400 and the 409 rules; their order differs a little per resource, see the README). A PATCH that changes no value writes nothing and keeps the version.",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
           "200": {
             "description": "OK"
+          },
+          "412": {
+            "description": "Precondition Failed: the resource has another version than the If-Match header says. Nothing was changed.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -723,8 +909,23 @@
           "required": true
         },
         "responses": {
-          "200": {
-            "description": "OK"
+          "201": {
+            "description": "Created",
+            "headers": {
+              "ETag": {
+                "description": "Strong entity-tag of this version of the resource: the quoted `version` field, for example \"3\". Use it in If-Match.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/User"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -753,6 +954,14 @@
         "responses": {
           "200": {
             "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "Strong entity-tag of this version of the resource: the quoted `version` field, for example \"3\". Use it in If-Match.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -782,6 +991,14 @@
               "type": "string",
               "format": "uuid"
             }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "description": "Optional precondition. Send the ETag from an earlier GET, PUT, PATCH or POST of this resource (for example \"3\"), or * for any existing resource. When the resource has another version the answer is 412 and nothing changes. Without the header the change is unconditional. A header that is not * or a list of entity-tags is 400; a weak tag (W/\"3\") never matches. Checks run in this order: 400 (malformed header), 404, 412, then the other checks (body validation 400 and the 409 rules; their order differs a little per resource, see the README). A PATCH that changes no value writes nothing and keeps the version.",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -797,10 +1014,28 @@
         "responses": {
           "200": {
             "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "Strong entity-tag of this version of the resource: the quoted `version` field, for example \"3\". Use it in If-Match.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/User"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "Precondition Failed: the resource has another version than the If-Match header says. Nothing was changed.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
                 }
               }
             }
@@ -826,6 +1061,14 @@
               "type": "string",
               "format": "uuid"
             }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "description": "Optional precondition. Send the ETag from an earlier GET, PUT, PATCH or POST of this resource (for example \"3\"), or * for any existing resource. When the resource has another version the answer is 412 and nothing changes. Without the header the change is unconditional. A header that is not * or a list of entity-tags is 400; a weak tag (W/\"3\") never matches. Checks run in this order: 400 (malformed header), 404, 412, then the other checks (body validation 400 and the 409 rules; their order differs a little per resource, see the README). A PATCH that changes no value writes nothing and keeps the version.",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -841,10 +1084,28 @@
         "responses": {
           "200": {
             "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "Strong entity-tag of this version of the resource: the quoted `version` field, for example \"3\". Use it in If-Match.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/User"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "Precondition Failed: the resource has another version than the If-Match header says. Nothing was changed.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
                 }
               }
             }
@@ -869,11 +1130,29 @@
               "type": "string",
               "format": "uuid"
             }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "description": "Optional precondition. Send the ETag from an earlier GET, PUT, PATCH or POST of this resource (for example \"3\"), or * for any existing resource. When the resource has another version the answer is 412 and nothing changes. Without the header the change is unconditional. A header that is not * or a list of entity-tags is 400; a weak tag (W/\"3\") never matches. Checks run in this order: 400 (malformed header), 404, 412, then the other checks (body validation 400 and the 409 rules; their order differs a little per resource, see the README). A PATCH that changes no value writes nothing and keeps the version.",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
           "200": {
             "description": "OK"
+          },
+          "412": {
+            "description": "Precondition Failed: the resource has another version than the If-Match header says. Nothing was changed.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -1358,8 +1637,23 @@
           "required": true
         },
         "responses": {
-          "200": {
-            "description": "OK"
+          "201": {
+            "description": "Created",
+            "headers": {
+              "ETag": {
+                "description": "Strong entity-tag of this version of the resource: the quoted `version` field, for example \"3\". Use it in If-Match.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientCreatedResponse"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -1388,6 +1682,14 @@
         "responses": {
           "200": {
             "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "Strong entity-tag of this version of the resource: the quoted `version` field, for example \"3\". Use it in If-Match.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -1416,6 +1718,14 @@
               "type": "string",
               "format": "uuid"
             }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "description": "Optional precondition. Send the ETag from an earlier GET, PUT, PATCH or POST of this resource (for example \"3\"), or * for any existing resource. When the resource has another version the answer is 412 and nothing changes. Without the header the change is unconditional. A header that is not * or a list of entity-tags is 400; a weak tag (W/\"3\") never matches. Checks run in this order: 400 (malformed header), 404, 412, then the other checks (body validation 400 and the 409 rules; their order differs a little per resource, see the README). A PATCH that changes no value writes nothing and keeps the version.",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -1431,10 +1741,28 @@
         "responses": {
           "200": {
             "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "Strong entity-tag of this version of the resource: the quoted `version` field, for example \"3\". Use it in If-Match.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Client"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "Precondition Failed: the resource has another version than the If-Match header says. Nothing was changed.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
                 }
               }
             }
@@ -1459,6 +1787,14 @@
               "type": "string",
               "format": "uuid"
             }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "description": "Optional precondition. Send the ETag from an earlier GET, PUT, PATCH or POST of this resource (for example \"3\"), or * for any existing resource. When the resource has another version the answer is 412 and nothing changes. Without the header the change is unconditional. A header that is not * or a list of entity-tags is 400; a weak tag (W/\"3\") never matches. Checks run in this order: 400 (malformed header), 404, 412, then the other checks (body validation 400 and the 409 rules; their order differs a little per resource, see the README). A PATCH that changes no value writes nothing and keeps the version.",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -1474,10 +1810,28 @@
         "responses": {
           "200": {
             "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "Strong entity-tag of this version of the resource: the quoted `version` field, for example \"3\". Use it in If-Match.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Client"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "Precondition Failed: the resource has another version than the If-Match header says. Nothing was changed.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
                 }
               }
             }
@@ -1502,11 +1856,29 @@
               "type": "string",
               "format": "uuid"
             }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "description": "Optional precondition. Send the ETag from an earlier GET, PUT, PATCH or POST of this resource (for example \"3\"), or * for any existing resource. When the resource has another version the answer is 412 and nothing changes. Without the header the change is unconditional. A header that is not * or a list of entity-tags is 400; a weak tag (W/\"3\") never matches. Checks run in this order: 400 (malformed header), 404, 412, then the other checks (body validation 400 and the 409 rules; their order differs a little per resource, see the README). A PATCH that changes no value writes nothing and keeps the version.",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
           "200": {
             "description": "OK"
+          },
+          "412": {
+            "description": "Precondition Failed: the resource has another version than the If-Match header says. Nothing was changed.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -1736,7 +2108,8 @@
       "App": {
         "required": [
           "id",
-          "name"
+          "name",
+          "version"
         ],
         "type": "object",
         "properties": {
@@ -1746,6 +2119,11 @@
           },
           "name": {
             "type": "string"
+          },
+          "version": {
+            "minimum": 1,
+            "type": "integer",
+            "format": "int64"
           }
         }
       },
@@ -1820,7 +2198,8 @@
           "appId",
           "isActive",
           "createdAt",
-          "updatedAt"
+          "updatedAt",
+          "version"
         ],
         "type": "object",
         "properties": {
@@ -1845,6 +2224,56 @@
           "updatedAt": {
             "type": "string",
             "format": "date-time"
+          },
+          "version": {
+            "minimum": 1,
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "ClientCreatedResponse": {
+        "required": [
+          "id",
+          "name",
+          "appId",
+          "isActive",
+          "createdAt",
+          "updatedAt",
+          "secret",
+          "version"
+        ],
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string"
+          },
+          "appId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "isActive": {
+            "type": "boolean"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "secret": {
+            "type": "string"
+          },
+          "version": {
+            "minimum": 1,
+            "type": "integer",
+            "format": "int64"
           }
         }
       },
@@ -2168,7 +2597,8 @@
           "id",
           "appId",
           "name",
-          "description"
+          "description",
+          "version"
         ],
         "type": "object",
         "properties": {
@@ -2185,6 +2615,11 @@
           },
           "description": {
             "type": "string"
+          },
+          "version": {
+            "minimum": 1,
+            "type": "integer",
+            "format": "int64"
           }
         }
       },
@@ -2262,7 +2697,8 @@
           "displayName",
           "isActive",
           "createdAt",
-          "updatedAt"
+          "updatedAt",
+          "version"
         ],
         "type": "object",
         "properties": {
@@ -2305,6 +2741,11 @@
               "string"
             ],
             "format": "date-time"
+          },
+          "version": {
+            "minimum": 1,
+            "type": "integer",
+            "format": "int64"
           }
         }
       },

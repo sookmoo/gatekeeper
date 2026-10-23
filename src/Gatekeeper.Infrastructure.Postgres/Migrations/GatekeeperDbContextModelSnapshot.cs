@@ -35,6 +35,13 @@ namespace Gatekeeper.Infrastructure.Postgres.Migrations
                         .HasColumnType("citext")
                         .HasColumnName("name");
 
+                    b.Property<long>("Version")
+                        .IsConcurrencyToken()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasDefaultValue(1L)
+                        .HasColumnName("version");
+
                     b.HasKey("Id");
 
                     b.HasIndex("Name")
@@ -126,6 +133,13 @@ namespace Gatekeeper.Infrastructure.Postgres.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at");
 
+                    b.Property<long>("Version")
+                        .IsConcurrencyToken()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasDefaultValue(1L)
+                        .HasColumnName("version");
+
                     b.HasKey("Id");
 
                     b.HasIndex("AppId");
@@ -157,6 +171,13 @@ namespace Gatekeeper.Infrastructure.Postgres.Migrations
                         .IsRequired()
                         .HasColumnType("citext")
                         .HasColumnName("name");
+
+                    b.Property<long>("Version")
+                        .IsConcurrencyToken()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasDefaultValue(1L)
+                        .HasColumnName("version");
 
                     b.HasKey("Id");
 
@@ -212,6 +233,13 @@ namespace Gatekeeper.Infrastructure.Postgres.Migrations
                         .IsRequired()
                         .HasColumnType("citext")
                         .HasColumnName("username");
+
+                    b.Property<long>("Version")
+                        .IsConcurrencyToken()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasDefaultValue(1L)
+                        .HasColumnName("version");
 
                     b.HasKey("Id");
 

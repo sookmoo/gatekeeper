@@ -30,14 +30,14 @@ public abstract class QaSlice4aStoreTests : IDisposable
         var calls = new (string, Func<Task>)[]
         {
             ("apps.List", () => apps.ListAsync(null, ct)), ("apps.Get", () => apps.GetAsync(app.Id, ct)), ("apps.GetByName", () => apps.GetByNameAsync("a1", ct)),
-            ("apps.Add", () => apps.AddAsync(new App(Guid.NewGuid(), "late-app"), ct)), ("apps.Update", () => apps.UpdateAsync(app with { Name = "renamed" }, ct)),
-            ("apps.Delete", () => apps.DeleteAsync(app.Id, ct)),
+            ("apps.Add", () => apps.AddAsync(new App(Guid.NewGuid(), "late-app"), ct)), ("apps.Update", () => apps.UpdateAsync(app with { Name = "renamed" }, ct: ct)),
+            ("apps.Delete", () => apps.DeleteAsync(app.Id, ct: ct)),
             ("roles.ListByApp", () => roles.ListByAppAsync(app.Id, null, ct)), ("roles.Get", () => roles.GetAsync(role.Id, ct)),
-            ("roles.Add", () => roles.AddAsync(new Role(Guid.NewGuid(), app.Id, "late-role", ""), ct)), ("roles.Update", () => roles.UpdateAsync(role with { Name = "renamed" }, ct)),
-            ("roles.Delete", () => roles.DeleteAsync(role.Id, ct)),
+            ("roles.Add", () => roles.AddAsync(new Role(Guid.NewGuid(), app.Id, "late-role", ""), ct)), ("roles.Update", () => roles.UpdateAsync(role with { Name = "renamed" }, ct: ct)),
+            ("roles.Delete", () => roles.DeleteAsync(role.Id, ct: ct)),
             ("users.List", () => users.ListAsync(ct: ct)), ("users.Get", () => users.GetAsync(user.Id, ct)),
-            ("users.Add", () => users.AddAsync(U("late-user"), ct)), ("users.Update", () => users.UpdateAsync(user with { DisplayName = "x" }, ct)),
-            ("users.Delete", () => users.DeleteAsync(user.Id, ct)), ("users.Assign", () => users.AssignRoleAsync(user.Id, role.Id, ct)),
+            ("users.Add", () => users.AddAsync(U("late-user"), ct)), ("users.Update", () => users.UpdateAsync(user with { DisplayName = "x" }, ct: ct)),
+            ("users.Delete", () => users.DeleteAsync(user.Id, ct: ct)), ("users.Assign", () => users.AssignRoleAsync(user.Id, role.Id, ct)),
             ("users.Revoke", () => users.RevokeRoleAsync(user.Id, role.Id, ct)), ("users.ListRoles", () => users.ListRolesAsync(user.Id, null, null, ct)),
             ("creds.Set", () => creds.SetAsync(user.Id, "h", DateTimeOffset.UtcNow, ct)), ("creds.Get", () => creds.GetHashAsync(user.Id, ct)),
         };

@@ -35,6 +35,10 @@ public sealed class ErrorMappingMiddleware(RequestDelegate next)
         {
             await Results.Problem(ex.Message, statusCode: StatusCodes.Status404NotFound).ExecuteAsync(context);
         }
+        catch (PreconditionFailedException ex)
+        {
+            await Results.Problem(ex.Message, statusCode: StatusCodes.Status412PreconditionFailed).ExecuteAsync(context);
+        }
         catch (ConflictException ex)
         {
             await Results.Problem(ex.Message, statusCode: StatusCodes.Status409Conflict).ExecuteAsync(context);
