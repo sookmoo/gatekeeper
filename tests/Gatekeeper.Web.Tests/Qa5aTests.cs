@@ -37,8 +37,8 @@ public class Qa5aTests
         await WebFixture.PostFormAsync(b, "/Applications/Create", new() { ["Name"] = name });
         var list = await b.GetStringAsync("/Applications");
         var id = Regex.Match(list, $"<td>{name}</td>\\s*<td><code>([0-9a-f-]{{36}})</code>").Groups[1].Value;
-        var tok = await WebFixture.TokenAsync(b, $"/Applications/Delete/{id}");
-        var form = () => new FormUrlEncodedContent(new Dictionary<string, string> { ["__RequestVerificationToken"] = tok });
+        var (tok, _, ver) = await WebFixture.TokenNonceAndVersionAsync(b, $"/Applications/Delete/{id}");
+        var form = () => new FormUrlEncodedContent(new Dictionary<string, string> { ["__RequestVerificationToken"] = tok, ["Version"] = ver! });
         Assert.Equal(HttpStatusCode.Redirect, (await b.PostAsync($"/Applications/Delete/{id}", form())).StatusCode);
         var second = await b.PostAsync($"/Applications/Delete/{id}", form()); // a double click
         Assert.Equal(HttpStatusCode.NotFound, second.StatusCode);

@@ -4,7 +4,7 @@ using Microsoft.AspNetCore.Mvc.RazorPages;
 
 namespace Gatekeeper.Web.Pages.Users;
 
-public class EditModel(GatekeeperApi api, WebSessions sessions) : PageModel
+public class EditModel(GatekeeperApi api, WebSessions sessions, ILogger<EditModel> log) : PageModel
 {
     [BindProperty] public string? Username { get; set; }
     [BindProperty] public string? Email { get; set; }
@@ -23,6 +23,8 @@ public class EditModel(GatekeeperApi api, WebSessions sessions) : PageModel
     [BindProperty] public string? OrigKind { get; set; }
     [BindProperty] public string? OrigExpiry { get; set; }
     [BindProperty] public string? OrigIsActive { get; set; }
+    /// <summary>The version the hidden field carries: the one the form was opened with, or the fresh one after a refusal that re-reads the user.</summary>
+    public long HiddenVersion { get; private set; }
     /// <summary>The user as the API holds it (the heading shows its current name, not what was typed).</summary>
     public UserDto Current { get; private set; } = null!;
     public string? Error { get; private set; }
@@ -38,6 +40,7 @@ public class EditModel(GatekeeperApi api, WebSessions sessions) : PageModel
         Kind = Current.Kind;
         Expiry = UserForm.FormatExpiry(Current.ExpiresAt);
         IsActive = Current.IsActive;
+        HiddenVersion = Current.Version;
         OrigUsername = Username;
         OrigEmail = Email;
         OrigDisplayName = DisplayName;
@@ -51,6 +54,9 @@ public class EditModel(GatekeeperApi api, WebSessions sessions) : PageModel
     {
         if (!await LoadAsync(id, ct)) return NotFound();
         IsActive = FormFlag.Parse(IsActiveValues);
+        // Never an unconditional write: without a usable version nothing is sent and the form is shown again with the current values.
+        if (!FormVersion.TryRead(Request, out var version)) return ShowCurrent(FormVersion.MissingText, HttpStatusCode.BadRequest);
+        HiddenVersion = version;
         if (!UserForm.IsKind(Kind)) return Fail(UserForm.KindText);
         if (!UserForm.TryParseExpiry(Expiry, out var expiresAt)) return Fail(UserForm.ExpiryText);
         var username = Username?.Trim() ?? "";
@@ -75,7 +81,7 @@ public class EditModel(GatekeeperApi api, WebSessions sessions) : PageModel
         try
         {
             var self = IsSelf;
-            await api.UpdateUserAsync(HttpContext.Current(), id, sendUsername, sendEmail, sendDisplay, sendActive, sendKind, sendExpiry, ct);
+            await api.UpdateUserAsync(HttpContext.Current(), id, sendUsername, sendEmail, sendDisplay, sendActive, sendKind, sendExpiry, version, ct);
             if (self && sendActive == false)
             {
                 // Deactivated their own account: end the web session now rather than when the API's admin check notices.
@@ -91,10 +97,40 @@ public class EditModel(GatekeeperApi api, WebSessions sessions) : PageModel
         {
             return NotFound();
         }
+        catch (ApiException ex) when (FormVersion.IsStale(ex))
+        {
+            log.LogInformation("Updating a user was refused as stale: {Detail}", UserAccess.ForLog(ex.Message));
+            return await ShowFreshAsync(id, FormVersion.ChangedText, HttpStatusCode.PreconditionFailed, ct);
+        }
         catch (ApiException ex) when ((int)ex.Status is >= 400 and < 500 && ex.Status != HttpStatusCode.Unauthorized)
         {
             return Fail(ex.Message, ex.Status);
         }
+    }
+
+    // Shows the user as the API holds it now, with its version, instead of what was typed.
+    private async Task<IActionResult> ShowFreshAsync(Guid id, string error, HttpStatusCode status, CancellationToken ct)
+    {
+        if (!await LoadAsync(id, ct)) return NotFound();
+        return ShowCurrent(error, status);
+    }
+
+    private IActionResult ShowCurrent(string error, HttpStatusCode status)
+    {
+        Username = Current.Username;
+        Email = Current.Email;
+        DisplayName = Current.DisplayName;
+        Kind = Current.Kind;
+        Expiry = UserForm.FormatExpiry(Current.ExpiresAt);
+        IsActive = Current.IsActive;
+        HiddenVersion = Current.Version;
+        OrigUsername = Username;
+        OrigEmail = Email;
+        OrigDisplayName = DisplayName;
+        OrigKind = Kind;
+        OrigExpiry = Expiry;
+        OrigIsActive = Current.IsActive ? "true" : "false";
+        return Fail(error, status);
     }
 
     private IActionResult Fail(string error, HttpStatusCode? apiStatus = null)

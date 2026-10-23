@@ -111,15 +111,15 @@ public partial class Clients5gReviewTests : IClassFixture<WebFixture>
 
         var renamed = Unique("r");
         var tok = await WebFixture.TokenAsync(b, edit);
-        Assert.Equal(HttpStatusCode.Redirect, (await RawPostAsync(b, edit, $"__RequestVerificationToken={Q(tok)}&OrigName={name}&OrigIsActive=true&Name={renamed}&IsActive=false&IsActive=true")).StatusCode);
+        Assert.Equal(HttpStatusCode.Redirect, (await RawPostAsync(b, edit, $"__RequestVerificationToken={Q(tok)}&OrigName={name}&OrigIsActive=true&Name={renamed}&IsActive=false&IsActive=true&Version={await WebFixture.VersionOfAsync(b, edit)}")).StatusCode);
         Assert.True(await ClientActiveAsync(api, id), "an unchanged-but-ticked client must stay active");
         Assert.Equal(renamed, (await api.GetFromJsonAsync<JsonElement>($"/v1/clients/{id}")).GetProperty("name").GetString());
 
         tok = await WebFixture.TokenAsync(b, edit);
-        await RawPostAsync(b, edit, $"__RequestVerificationToken={Q(tok)}&OrigName={renamed}&OrigIsActive=true&Name={renamed}&IsActive=false");
+        await RawPostAsync(b, edit, $"__RequestVerificationToken={Q(tok)}&OrigName={renamed}&OrigIsActive=true&Name={renamed}&IsActive=false&Version={await WebFixture.VersionOfAsync(b, edit)}");
         Assert.False(await ClientActiveAsync(api, id));
         tok = await WebFixture.TokenAsync(b, edit);
-        await RawPostAsync(b, edit, $"__RequestVerificationToken={Q(tok)}&OrigName={renamed}&OrigIsActive=false&Name={renamed}&IsActive=false&IsActive=true");
+        await RawPostAsync(b, edit, $"__RequestVerificationToken={Q(tok)}&OrigName={renamed}&OrigIsActive=false&Name={renamed}&IsActive=false&IsActive=true&Version={await WebFixture.VersionOfAsync(b, edit)}");
         Assert.True(await ClientActiveAsync(api, id));
     }
 
@@ -130,18 +130,18 @@ public partial class Clients5gReviewTests : IClassFixture<WebFixture>
         var api = await ApiAdminAsync(_f);
         var (name, id) = await NewUserAsync(api, active: true);
         var edit = $"/Users/Edit/{id}";
-        string Body(string token, string display, string orig, string active) =>
+        string Body(string token, string display, string orig, string active, string version) =>
             $"__RequestVerificationToken={Q(token)}&OrigUsername={name}&OrigEmail={name}%40example.com&OrigDisplayName=&OrigKind=person&OrigExpiry=&OrigIsActive={orig}" +
-            $"&Username={name}&Email={name}%40example.com&DisplayName={display}&Kind=person&Expiry=&{active}";
+            $"&Username={name}&Email={name}%40example.com&DisplayName={display}&Kind=person&Expiry=&{active}&Version={version}";
 
-        var saved = await RawPostAsync(b, edit, Body(await WebFixture.TokenAsync(b, edit), "Changed", "true", "IsActive=false&IsActive=true"));
+        var saved = await RawPostAsync(b, edit, Body(await WebFixture.TokenAsync(b, edit), "Changed", "true", "IsActive=false&IsActive=true", (await WebFixture.VersionOfAsync(b, edit))!));
         Assert.Equal(HttpStatusCode.Redirect, saved.StatusCode);
         Assert.True(await UserActiveAsync(api, id), "saving another field must not disable an active user");
         Assert.Equal("Changed", (await api.GetFromJsonAsync<JsonElement>($"/v1/users/{id}")).GetProperty("displayName").GetString());
 
-        Assert.Equal(HttpStatusCode.Redirect, (await RawPostAsync(b, edit, Body(await WebFixture.TokenAsync(b, edit), "Changed", "true", "IsActive=false"))).StatusCode);
+        Assert.Equal(HttpStatusCode.Redirect, (await RawPostAsync(b, edit, Body(await WebFixture.TokenAsync(b, edit), "Changed", "true", "IsActive=false", (await WebFixture.VersionOfAsync(b, edit))!))).StatusCode);
         Assert.False(await UserActiveAsync(api, id));
-        Assert.Equal(HttpStatusCode.Redirect, (await RawPostAsync(b, edit, Body(await WebFixture.TokenAsync(b, edit), "Changed", "false", "IsActive=false&IsActive=true"))).StatusCode);
+        Assert.Equal(HttpStatusCode.Redirect, (await RawPostAsync(b, edit, Body(await WebFixture.TokenAsync(b, edit), "Changed", "false", "IsActive=false&IsActive=true", (await WebFixture.VersionOfAsync(b, edit))!))).StatusCode);
         Assert.True(await UserActiveAsync(api, id));
     }
 
@@ -450,7 +450,7 @@ public partial class Clients5gReviewTests : IClassFixture<WebFixture>
         var (cid, _) = await CreateClientAsync(api, Unique("c"), app);
         var cPath = $"/Clients/Edit/{cid}";
         var (t1, _) = await WebFixture.TokenAndNonceAsync(b, cPath);
-        var c = await RawPostAsync(b, cPath, $"__RequestVerificationToken={Q(t1)}&Name=Bad%20Name!");
+        var c = await RawPostAsync(b, cPath, $"__RequestVerificationToken={Q(t1)}&Name=Bad%20Name!&Version={await WebFixture.VersionOfAsync(b, cPath)}");
         var ctext = await c.Content.ReadAsStringAsync();
         Assert.Equal(HttpStatusCode.BadRequest, c.StatusCode);
         Assert.Matches("<input type=\"checkbox\" name=\"IsActive\"[^>]*checked", ctext);
@@ -460,7 +460,7 @@ public partial class Clients5gReviewTests : IClassFixture<WebFixture>
         var uid = (await created.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetGuid();
         var uPath = $"/Users/Edit/{uid}";
         var (t2, _) = await WebFixture.TokenAndNonceAsync(b, uPath);
-        var ur = await RawPostAsync(b, uPath, $"__RequestVerificationToken={Q(t2)}&Username={u}&Email={u}%40example.com&DisplayName=x&Kind=bogus&Expiry=");
+        var ur = await RawPostAsync(b, uPath, $"__RequestVerificationToken={Q(t2)}&Username={u}&Email={u}%40example.com&DisplayName=x&Kind=bogus&Expiry=&Version={await WebFixture.VersionOfAsync(b, uPath)}");
         var utext = await ur.Content.ReadAsStringAsync();
         Assert.Equal(HttpStatusCode.OK, ur.StatusCode); // a validation message, no API call
         Assert.Contains("Kind must be", utext);

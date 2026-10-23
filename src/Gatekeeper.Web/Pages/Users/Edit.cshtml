@@ -14,6 +14,7 @@
 }
 <p><a href="/Users/@Model.Current.Id/Roles">Roles</a> <a href="/Users/@Model.Current.Id/Password">Set password</a> <a href="/Users/@Model.Current.Id/Sessions">Sessions</a></p>
 <form method="post">
+    <input type="hidden" name="Version" value="@Model.HiddenVersion">
     <input type="hidden" name="OrigUsername" value="@Model.OrigUsername">
     <input type="hidden" name="OrigEmail" value="@Model.OrigEmail">
     <input type="hidden" name="OrigDisplayName" value="@Model.OrigDisplayName">

@@ -46,22 +46,33 @@ public sealed class WebFixture : IDisposable
 
     public static async Task<string> TokenAsync(HttpClient browser, string path) => (await TokenAndNonceAsync(browser, path)).Token;
 
+    /// <summary>The hidden concurrency "Version" of the form at <paramref name="path"/> (one GET), or null when the form has none.</summary>
+    public static async Task<string?> VersionOfAsync(HttpClient browser, string path) => (await TokenNonceAndVersionAsync(browser, path)).Version;
+
     /// <summary>The antiforgery token and, on forms that have one, the one-time "Nonce" of the page at <paramref name="path"/> (one GET).</summary>
     public static async Task<(string Token, string? Nonce)> TokenAndNonceAsync(HttpClient browser, string path)
+    {
+        var (token, nonce, _) = await TokenNonceAndVersionAsync(browser, path);
+        return (token, nonce);
+    }
+
+    internal static async Task<(string Token, string? Nonce, string? Version)> TokenNonceAndVersionAsync(HttpClient browser, string path)
     {
         var html = await browser.GetStringAsync(path);
         var m = Regex.Match(html, "name=\"__RequestVerificationToken\"[^>]*value=\"([^\"]+)\"");
         Assert.True(m.Success, "no antiforgery token on " + path);
         var n = Regex.Match(html, "name=\"Nonce\"[^>]*value=\"([^\"]+)\"");
-        return (WebUtility.HtmlDecode(m.Groups[1].Value), n.Success ? WebUtility.HtmlDecode(n.Groups[1].Value) : null);
+        var v = Regex.Match(html, "name=\"Version\"[^>]*value=\"([^\"]*)\"");
+        return (WebUtility.HtmlDecode(m.Groups[1].Value), n.Success ? WebUtility.HtmlDecode(n.Groups[1].Value) : null, v.Success ? WebUtility.HtmlDecode(v.Groups[1].Value) : null);
     }
 
     /// <summary>Submits a form of the page at <paramref name="path"/> with a valid antiforgery token.</summary>
     public static async Task<HttpResponseMessage> PostFormAsync(HttpClient browser, string path, Dictionary<string, string> fields, string? tokenFrom = null)
     {
-        var (token, nonce) = await TokenAndNonceAsync(browser, tokenFrom ?? path);
+        var (token, nonce, version) = await TokenNonceAndVersionAsync(browser, tokenFrom ?? path);
         fields["__RequestVerificationToken"] = token;
         if (nonce is not null && !fields.ContainsKey("Nonce")) fields["Nonce"] = nonce; // what the browser would send back from the form
+        if (version is not null && !fields.ContainsKey("Version")) fields["Version"] = version; // the hidden concurrency token, as the browser would send it back
         return await browser.PostAsync(path, new FormUrlEncodedContent(fields));
     }
 

@@ -178,14 +178,14 @@ public class Users5dQaTests : IClassFixture<WebFixture>
     }
 
     [Fact]
-    public async Task Concurrent_edits_of_the_same_user_both_succeed_and_leave_a_consistent_user()
+    public async Task Concurrent_edits_of_the_same_user_let_one_win_and_refuse_the_other_with_412()
     {
         var b1 = await _f.SignedInAsync();
         var b2 = await _f.SignedInAsync();
         var api = await ApiAsync();
         var name = Unique("cc");
         var id = await CreateAsync(api, name, "shared");
-        // both load the form, then both save: last write wins, no error, no corruption
+        // both load the form (same version), then both save: exactly one wins, the other is refused (412) and writes nothing
         var f1 = await LoadedAsync(b1, id);
         var f2 = await LoadedAsync(b2, id);
         f1["DisplayName"] = "first";
@@ -193,13 +193,14 @@ public class Users5dQaTests : IClassFixture<WebFixture>
         var t1 = WebFixture.PostFormAsync(b1, $"/Users/Edit/{id}", f1, $"/Users/Edit/{id}");
         var t2 = WebFixture.PostFormAsync(b2, $"/Users/Edit/{id}", f2, $"/Users/Edit/{id}");
         var rs = await Task.WhenAll(t1, t2);
-        Assert.All(rs, r => Assert.Equal(HttpStatusCode.Redirect, r.StatusCode));
+        Assert.Equal(1, rs.Count(r => r.StatusCode == HttpStatusCode.Redirect));
+        Assert.Equal(1, rs.Count(r => r.StatusCode == HttpStatusCode.PreconditionFailed));
         var u = await GetAsync(api, id);
         var disp = u.GetProperty("displayName").GetString();
         var active = u.GetProperty("isActive").GetBoolean();
-        // Only changed fields are sent: the second form's deactivation always lands, the display name is whichever saved last.
-        Assert.True(disp is "first" or "second", $"state {disp}");
-        Assert.False(active, "the deactivation made by the second form must not be undone by the first (stale) one");
+        // The winner's change is stored whole, the loser's is not applied at all.
+        if (rs[0].StatusCode == HttpStatusCode.Redirect) Assert.True(disp == "first" && active, $"state {disp} {active}");
+        else Assert.True(disp == "second" && !active, $"state {disp} {active}");
     }
 
     [Fact]
@@ -213,9 +214,11 @@ public class Users5dQaTests : IClassFixture<WebFixture>
         var t1 = WebFixture.PostFormAsync(b1, $"/Users/Edit/{id}", Form(name, "shared", "", true, "x"));
         var t2 = WebFixture.PostFormAsync(b2, $"/Users/Delete/{id}", new());
         var rs = await Task.WhenAll(t1, t2);
-        Assert.All(rs, r => Assert.True(r.StatusCode is HttpStatusCode.Redirect or HttpStatusCode.NotFound, r.StatusCode.ToString()));
-        // delete again: 404 page
-        Assert.Equal(HttpStatusCode.NotFound, (await WebFixture.PostFormAsync(b1, $"/Users/Delete/{id}", new(), "/Users")).StatusCode);
+        // the edit may bump the version before the delete (412), or the delete may win and the edit finds nothing (404)
+        Assert.All(rs, r => Assert.True(r.StatusCode is HttpStatusCode.Redirect or HttpStatusCode.NotFound or HttpStatusCode.PreconditionFailed, r.StatusCode.ToString()));
+        // once it is gone (deleted above or here), another delete is the 404 page
+        await api.DeleteAsync($"/v1/users/{id}");
+        Assert.Equal(HttpStatusCode.NotFound, (await WebFixture.PostFormAsync(b1, $"/Users/Delete/{id}", new() { ["Version"] = "1" }, "/Users")).StatusCode);
     }
 
     [Fact]
@@ -300,7 +303,7 @@ public class Users5dQaTests : IClassFixture<WebFixture>
             ["Expiry"] = Regex.Match(html, "name=\"Expiry\"[^>]*value=\"([^\"]*)\"").Groups[1].Value,
         };
         if (Regex.IsMatch(html, "name=\"IsActive\" value=\"true\" checked")) d["IsActive"] = "true"; else d["IsActive"] = "false";
-        foreach (var n in new[] { "OrigUsername", "OrigEmail", "OrigDisplayName", "OrigKind", "OrigExpiry", "OrigIsActive" }) d[n] = Hid(html, n);
+        foreach (var n in new[] { "Version", "OrigUsername", "OrigEmail", "OrigDisplayName", "OrigKind", "OrigExpiry", "OrigIsActive" }) d[n] = Hid(html, n);
         return d;
     }
 

@@ -201,7 +201,7 @@ side by side across this migration: an old instance does not know the column and
 `If-Match` succeed. Stop the old instances, migrate, start the new ones. (A `BEFORE UPDATE` trigger that bumps the version would remove that
 requirement; it is a possible follow-up.)
 
-The Web UI and the CLI send no `If-Match` yet (the UI keeps its form snapshot; a `--if-version` CLI option is deferred).
+The CLI sends no `If-Match` yet (a `--if-version` option is deferred). The Web UI does (see the Administration UI section).
 
 ## Administration UI
 
@@ -225,7 +225,16 @@ session), but this is best effort and browser dependent: close the tab after cop
 passing introspection only while it stays disabled (enabling it again revives them until they expire), and services that validate tokens
 locally accept them until they expire: after a leak, rotate the secret and keep the client disabled until the access-token lifetime has passed.
 Known limits of the client screens: the client list reuses its application list for a few seconds per web session; the application list for the create form and the filter reads at most 1000 applications; there is no previous-page link;
-the edit form is a best-effort snapshot (the API has no concurrency token), so two administrators saving at the same moment can still overwrite each other.
+the edit forms of users and clients still keep a snapshot of the loaded values, but only to decide which fields to send; the lost-update guard is the version (below).
+
+The edit and delete pages of users, clients, applications and roles carry a hidden `Version` taken from the API (`version`) when the page
+is opened and send it back as `If-Match: "<version>"` on the save or delete. If the resource changed meanwhile (another administrator, another
+tab) the API answers 412 and the page answers `412` too, shows "Changed by someone else since you opened it. The current values are shown; apply
+your change again." and renders the form again with the current values and the current version; nothing is merged and nothing is retried
+automatically. A `Version` that is missing, not a canonical positive integer (no sign, spaces or leading zero), or sent more than once is never turned into an unconditional write: the page answers `400`,
+shows "The form is out of date or incomplete. The current values are shown; apply your change again." with the current values and version, and sends
+nothing to the API. A forged but well-formed version just gets the 412. Deactivating or deleting one's own account ends the web session only when the
+API call succeeds, not on a 412. Role assignments, passwords, sessions and secrets have no version and are unchanged.
 
 ```bash
 dotnet run --project src/Gatekeeper.Api                                   # terminal 1: http://localhost:5080

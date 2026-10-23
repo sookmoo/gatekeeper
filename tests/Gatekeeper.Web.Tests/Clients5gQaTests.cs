@@ -101,10 +101,10 @@ public partial class Clients5gQaTests : IClassFixture<WebFixture>
         // edit: untick (only false) disables, tick (false + true) enables
         var edit = $"/Clients/Edit/{id}";
         var t3 = await WebFixture.TokenAsync(b, edit);
-        await b.PostAsync(edit, new StringContent($"__RequestVerificationToken={Uri.EscapeDataString(t3)}&OrigName={name}&OrigIsActive=true&Name={name}&IsActive=false", Encoding.UTF8, "application/x-www-form-urlencoded"));
+        await b.PostAsync(edit, new StringContent($"__RequestVerificationToken={Uri.EscapeDataString(t3)}&OrigName={name}&OrigIsActive=true&Name={name}&IsActive=false&Version={await WebFixture.VersionOfAsync(b, edit)}", Encoding.UTF8, "application/x-www-form-urlencoded"));
         Assert.False((await ApiClientAsync(api, id)).GetProperty("isActive").GetBoolean());
         var t4 = await WebFixture.TokenAsync(b, edit);
-        await b.PostAsync(edit, new StringContent($"__RequestVerificationToken={Uri.EscapeDataString(t4)}&OrigName={name}&OrigIsActive=false&Name={name}&IsActive=false&IsActive=true", Encoding.UTF8, "application/x-www-form-urlencoded"));
+        await b.PostAsync(edit, new StringContent($"__RequestVerificationToken={Uri.EscapeDataString(t4)}&OrigName={name}&OrigIsActive=false&Name={name}&IsActive=false&IsActive=true&Version={await WebFixture.VersionOfAsync(b, edit)}", Encoding.UTF8, "application/x-www-form-urlencoded"));
         Assert.True((await ApiClientAsync(api, id)).GetProperty("isActive").GetBoolean(), "checked box on edit must enable the client");
     }
 
@@ -466,7 +466,7 @@ public partial class Clients5gQaTests : IClassFixture<WebFixture>
         var page = await b.GetStringAsync($"/Users/Edit/{id}");
         var orig = Regex.Match(page, "name=\"OrigIsActive\"[^>]*value=\"([^\"]*)\"").Groups[1].Value;
         var token = await WebFixture.TokenAsync(b, $"/Users/Edit/{id}");
-        var body = $"__RequestVerificationToken={Uri.EscapeDataString(token)}&Username={name}&Email={name}%40example.com&DisplayName=Changed&Kind=person&Expiry=&OrigIsActive={orig}&IsActive=false&IsActive=true";
+        var body = $"__RequestVerificationToken={Uri.EscapeDataString(token)}&Username={name}&Email={name}%40example.com&DisplayName=Changed&Kind=person&Expiry=&OrigIsActive={orig}&IsActive=false&IsActive=true&Version={await WebFixture.VersionOfAsync(b, $"/Users/Edit/{id}")}";
         var saved = await b.PostAsync($"/Users/Edit/{id}", new StringContent(body, Encoding.UTF8, "application/x-www-form-urlencoded"));
         Assert.Equal(HttpStatusCode.Redirect, saved.StatusCode);
         Assert.Equal("Changed", (await api.GetFromJsonAsync<JsonElement>($"/v1/users/{id}")).GetProperty("displayName").GetString());

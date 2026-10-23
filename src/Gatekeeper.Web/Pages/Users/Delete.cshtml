@@ -14,6 +14,7 @@
 }
 <p>Delete user <strong>@Model.Target.Username</strong>? Its role assignments, password and sessions are removed as well, and this cannot be undone.</p>
 <form method="post">
+    <input type="hidden" name="Version" value="@Model.HiddenVersion">
     <button type="submit" class="danger">Delete</button>
     <a href="/Users">Cancel</a>
 </form>
