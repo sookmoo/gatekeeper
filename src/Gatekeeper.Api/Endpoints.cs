@@ -12,7 +12,7 @@ public sealed record UserRequest(string? Username, string? Email, string? Displa
 public sealed record ClientRequest(string? Name, Guid? Application, bool? IsActive);
 
 /// <summary>A new client with its one-time secret. ToString never prints the secret, so logging the object cannot leak it.</summary>
-public sealed record ClientCreatedResponse(Guid Id, string Name, Guid AppId, bool IsActive, DateTimeOffset CreatedAt, DateTimeOffset UpdatedAt, string Secret)
+public sealed record ClientCreatedResponse(Guid Id, string Name, Guid AppId, bool IsActive, DateTimeOffset CreatedAt, DateTimeOffset UpdatedAt, string Secret, long Version = 1) : IVersioned
 {
     private bool PrintMembers(System.Text.StringBuilder builder)
     {
@@ -31,6 +31,23 @@ public sealed record SecretResponse(string Secret)
 
 public sealed record PasswordRequest(string? Password);
 
+/// <summary>Adds the strong ETag (<c>"&lt;version&gt;"</c>) to every successful answer that carries a versioned resource (single-resource GET/PUT/PATCH and POST create).</summary>
+public sealed class ETagFilter : IEndpointFilter
+{
+    public async ValueTask<object?> InvokeAsync(EndpointFilterInvocationContext context, EndpointFilterDelegate next)
+    {
+        var result = await next(context);
+        var version = result switch
+        {
+            IVersioned v => v.Version,
+            IValueHttpResult { Value: IVersioned v } => v.Version,
+            _ => (long?)null,
+        };
+        if (version is { } n) context.HttpContext.Response.Headers.ETag = $"\"{n}\"";
+        return result;
+    }
+}
+
 public static class Endpoints
 {
     public const string AdminPolicy = "admin";
@@ -42,6 +59,12 @@ public static class Endpoints
         : kind.Equals("test", StringComparison.OrdinalIgnoreCase) ? UserKind.Test
         : kind.Equals("shared", StringComparison.OrdinalIgnoreCase) ? UserKind.Shared
         : throw new ValidationException(new Dictionary<string, string> { ["kind"] = "must be person, test or shared." });
+
+    /// <summary>The caller's If-Match header (several header lines count as one list), or null when there is none. Malformed is a 400.</summary>
+    private static Precondition? IfMatch(HttpContext http) =>
+        http.Request.Headers.TryGetValue(Microsoft.Net.Http.Headers.HeaderNames.IfMatch, out var values)
+            ? Precondition.Parse(string.Join(",", values.OfType<string>())) // an empty header is present but matches no syntax: 400
+            : null;
 
     /// <summary>What a user change leaves behind, for the audit detail (the trail otherwise shows only the route and status).</summary>
     private static async Task<User> Noted(HttpContext http, Task<User> change)
@@ -67,7 +90,7 @@ public static class Endpoints
 
     public static void MapApi(this IEndpointRouteBuilder routes)
     {
-        var v1 = routes.MapGroup("/v1").RequireAuthorization(AdminPolicy);
+        var v1 = routes.MapGroup("/v1").RequireAuthorization(AdminPolicy).AddEndpointFilter<ETagFilter>();
 
         var apps = v1.MapGroup("/applications").WithTags("Applications");
         apps.MapGet("/", (AppService s, int? limit, string? cursor, CancellationToken ct) =>
@@ -76,13 +99,13 @@ public static class Endpoints
         {
             var created = await s.CreateAsync(r.Name, ct);
             return Results.Created($"/v1/applications/{created.Id}", created);
-        });
+        }).Produces<App>(StatusCodes.Status201Created);
         apps.MapGet("/{id:guid}", (Guid id, AppService s, CancellationToken ct) => s.GetAsync(id, ct));
-        apps.MapPut("/{id:guid}", (Guid id, AppRequest r, AppService s, CancellationToken ct) => s.UpdateAsync(id, r.Name, ct));
-        apps.MapMethods("/{id:guid}", ["PATCH"], (Guid id, AppRequest r, AppService s, CancellationToken ct) => s.PatchAsync(id, r.Name, ct));
-        apps.MapDelete("/{id:guid}", async (Guid id, AppService s, CancellationToken ct) =>
+        apps.MapPut("/{id:guid}", (HttpContext http, Guid id, AppRequest r, AppService s, CancellationToken ct) => s.UpdateAsync(id, r.Name, IfMatch(http), ct));
+        apps.MapMethods("/{id:guid}", ["PATCH"], (HttpContext http, Guid id, AppRequest r, AppService s, CancellationToken ct) => s.PatchAsync(id, r.Name, IfMatch(http), ct));
+        apps.MapDelete("/{id:guid}", async (HttpContext http, Guid id, AppService s, CancellationToken ct) =>
         {
-            await s.DeleteAsync(id, ct);
+            await s.DeleteAsync(id, IfMatch(http), ct);
             return Results.NoContent();
         });
         apps.MapGet("/{id:guid}/roles", (Guid id, RoleService s, int? limit, string? cursor, CancellationToken ct) =>
@@ -91,15 +114,15 @@ public static class Endpoints
         {
             var created = await s.CreateAsync(id, r.Name, r.Description, ct);
             return Results.Created($"/v1/roles/{created.Id}", created);
-        });
+        }).Produces<Role>(StatusCodes.Status201Created);
 
         var roles = v1.MapGroup("/roles").WithTags("Roles");
         roles.MapGet("/{id:guid}", (Guid id, RoleService s, CancellationToken ct) => s.GetAsync(id, ct));
-        roles.MapPut("/{id:guid}", (Guid id, RoleRequest r, RoleService s, CancellationToken ct) => s.UpdateAsync(id, r.Name, r.Description, ct));
-        roles.MapMethods("/{id:guid}", ["PATCH"], (Guid id, RoleRequest r, RoleService s, CancellationToken ct) => s.PatchAsync(id, r.Name, r.Description, ct));
-        roles.MapDelete("/{id:guid}", async (Guid id, RoleService s, CancellationToken ct) =>
+        roles.MapPut("/{id:guid}", (HttpContext http, Guid id, RoleRequest r, RoleService s, CancellationToken ct) => s.UpdateAsync(id, r.Name, r.Description, IfMatch(http), ct));
+        roles.MapMethods("/{id:guid}", ["PATCH"], (HttpContext http, Guid id, RoleRequest r, RoleService s, CancellationToken ct) => s.PatchAsync(id, r.Name, r.Description, IfMatch(http), ct));
+        roles.MapDelete("/{id:guid}", async (HttpContext http, Guid id, RoleService s, CancellationToken ct) =>
         {
-            await s.DeleteAsync(id, ct);
+            await s.DeleteAsync(id, IfMatch(http), ct);
             return Results.NoContent();
         });
 
@@ -110,17 +133,17 @@ public static class Endpoints
         {
             var created = await Noted(http, s.CreateAsync(r.Username, r.Email, r.DisplayName, r.IsActive ?? true, r.Kind ?? UserKind.Person, r.ExpiresAt, ct));
             return Results.Created($"/v1/users/{created.Id}", created);
-        });
+        }).Produces<User>(StatusCodes.Status201Created);
         users.MapGet("/{id:guid}", (Guid id, UserService s, CancellationToken ct) => s.GetAsync(id, ct));
         users.MapPut("/{id:guid}", (HttpContext http, Guid id, UserRequest r, UserService s, CancellationToken ct) =>
-            Noted(http, s.UpdateWithEffectsAsync(id, r.Username, r.Email, r.DisplayName, r.IsActive, r.Kind, r.ExpiresAt, ct)))
+            Noted(http, s.UpdateWithEffectsAsync(id, r.Username, r.Email, r.DisplayName, r.IsActive, r.Kind, r.ExpiresAt, IfMatch(http), ct)))
             .WithDescription("Setting isActive from true to false ends all of the user's sessions at once. Moving a test user's expiresAt earlier (or making a person a test user) caps active sessions to the new expiry; a later extension does not lengthen them.");
         users.MapMethods("/{id:guid}", ["PATCH"], (HttpContext http, Guid id, UserRequest r, UserService s, CancellationToken ct) =>
-            Noted(http, s.PatchWithEffectsAsync(id, r.Username, r.Email, r.DisplayName, r.IsActive, r.Kind, r.ExpiresAt, ct)))
+            Noted(http, s.PatchWithEffectsAsync(id, r.Username, r.Email, r.DisplayName, r.IsActive, r.Kind, r.ExpiresAt, IfMatch(http), ct)))
             .WithDescription("Setting isActive from true to false ends all of the user's sessions at once. Moving a test user's expiresAt earlier (or making a person a test user) caps active sessions to the new expiry; a later extension does not lengthen them.");
-        users.MapDelete("/{id:guid}", async (Guid id, UserService s, CancellationToken ct) =>
+        users.MapDelete("/{id:guid}", async (HttpContext http, Guid id, UserService s, CancellationToken ct) =>
         {
-            await s.DeleteAsync(id, ct);
+            await s.DeleteAsync(id, IfMatch(http), ct);
             return Results.NoContent();
         });
         users.MapPut("/{id:guid}/password", async (Guid id, PasswordRequest r, CredentialService s, CancellationToken ct) =>
@@ -180,14 +203,14 @@ public static class Endpoints
             var c = created.Client;
             http.Items[AuditMiddleware.NoteKey] = $"client={c.Id} name={c.Name} application={c.AppId}"; // never the secret
             return Results.Created($"/v1/clients/{c.Id}",
-                new ClientCreatedResponse(c.Id, c.Name, c.AppId, c.IsActive, c.CreatedAt, c.UpdatedAt, created.Secret));
-        });
+                new ClientCreatedResponse(c.Id, c.Name, c.AppId, c.IsActive, c.CreatedAt, c.UpdatedAt, created.Secret, c.Version));
+        }).Produces<ClientCreatedResponse>(StatusCodes.Status201Created);
         clients.MapGet("/{id:guid}", (Guid id, ClientService s, CancellationToken ct) => s.GetAsync(id, ct));
-        clients.MapPut("/{id:guid}", (Guid id, ClientRequest r, ClientService s, CancellationToken ct) => s.UpdateAsync(id, r.Name, r.IsActive, ct));
-        clients.MapMethods("/{id:guid}", ["PATCH"], (Guid id, ClientRequest r, ClientService s, CancellationToken ct) => s.PatchAsync(id, r.Name, r.IsActive, ct));
-        clients.MapDelete("/{id:guid}", async (Guid id, ClientService s, CancellationToken ct) =>
+        clients.MapPut("/{id:guid}", (HttpContext http, Guid id, ClientRequest r, ClientService s, CancellationToken ct) => s.UpdateAsync(id, r.Name, r.IsActive, IfMatch(http), ct));
+        clients.MapMethods("/{id:guid}", ["PATCH"], (HttpContext http, Guid id, ClientRequest r, ClientService s, CancellationToken ct) => s.PatchAsync(id, r.Name, r.IsActive, IfMatch(http), ct));
+        clients.MapDelete("/{id:guid}", async (HttpContext http, Guid id, ClientService s, CancellationToken ct) =>
         {
-            await s.DeleteAsync(id, ct);
+            await s.DeleteAsync(id, IfMatch(http), ct);
             return Results.NoContent();
         });
         clients.MapPost("/{id:guid}/secret", async (Guid id, ClientService s, HttpContext http, CancellationToken ct) =>

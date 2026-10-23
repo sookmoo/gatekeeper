@@ -47,6 +47,77 @@ public abstract class PostgresRepository(Factory factory)
         }
     }
 
+    private const int MaxUpdateAttempts = 20;
+    private const string LockNotAvailable = "55P03";
+
+    private static bool IsLockTimeout(Exception? ex)
+    {
+        for (; ex is not null; ex = ex.InnerException)
+            if (ex is PostgresException { SqlState: LockNotAvailable }) return true;
+        return false;
+    }
+
+    /// <summary>
+    /// Versioned update of the row with this id: loads it, refuses with <see cref="PreconditionFailedException"/> if a version is
+    /// expected and differs, applies <paramref name="change"/> (which gets the stored row and returns the new values) and writes it with
+    /// version + 1. The write is <c>UPDATE ... WHERE id = @id AND version = @loaded</c> (the version is an EF concurrency token), so a
+    /// competing write between the load and the save is detected and a conditional update then fails with 412.
+    /// An unconditional update has no version to defend, so it takes a row lock (<c>SELECT ... FOR UPDATE</c> in a transaction): unconditional
+    /// writers of one row queue up and each succeeds with its own version instead of failing under contention. Null when the row does not exist.
+    /// </summary>
+    protected static async Task<T?> UpdateVersionedAsync<T>(GatekeeperDbContext db, Guid id, long? expected, Func<T, T> change, CancellationToken ct)
+        where T : class, IVersioned
+    {
+        var table = db.Model.FindEntityType(typeof(T))!.GetTableName()!;
+        for (var attempt = 0; attempt < MaxUpdateAttempts; attempt++)
+        {
+            db.ChangeTracker.Clear();
+            await using var tx = expected is null ? await db.Database.BeginTransactionAsync(ct) : null;
+            // Bounded wait for the row lock: a stuck writer must not pin every other request behind it (503 + Retry-After instead).
+            if (tx is not null) await db.Database.ExecuteSqlRawAsync("SET LOCAL lock_timeout = '2s'", ct);
+            T? row;
+            try
+            {
+#pragma warning disable EF1002 // the table name comes from the EF model, never from input; the id is a parameter
+                row = expected is null
+                    ? (await db.Set<T>().FromSqlRaw($"SELECT * FROM \"{table}\" WHERE id = {{0}} FOR NO KEY UPDATE", id).ToListAsync(ct)).SingleOrDefault()
+#pragma warning restore EF1002
+                    : await db.Set<T>().Where(e => EF.Property<Guid>(e, "Id") == id).FirstOrDefaultAsync(ct);
+            }
+            catch (Exception ex) when (IsLockTimeout(ex))
+            {
+                throw new BusyException();
+            }
+            if (row is null) return null;
+            if (expected is { } want && want != row.Version) throw new PreconditionFailedException();
+            var loaded = row.Version;
+            db.Entry(row).CurrentValues.SetValues(change(row)); // whatever version the new values carry is overwritten next
+            db.Entry(row).Property("Version").CurrentValue = loaded + 1;
+            try
+            {
+                await db.SaveChangesAsync(ct);
+                if (tx is not null) await tx.CommitAsync(CancellationToken.None); // the row is written: do not abandon the commit half-way
+                return row;
+            }
+            catch (DbUpdateConcurrencyException)
+            {
+                // Only a conditional update (or a lock-free writer in between) gets here: look again.
+            }
+        }
+        throw new StoreUnavailableException("The record is being changed by too many requests at once. Try again.");
+    }
+
+    /// <summary>Deletes the row; with an expected version only if it still has it. False when the row does not exist.</summary>
+    protected static async Task<bool> DeleteVersionedAsync<T>(GatekeeperDbContext db, Guid id, long? expected, CancellationToken ct)
+        where T : class, IVersioned
+    {
+        var rows = db.Set<T>().Where(e => EF.Property<Guid>(e, "Id") == id);
+        if (expected is { } want) rows = rows.Where(e => EF.Property<long>(e, "Version") == want);
+        if (await rows.ExecuteDeleteAsync(ct) > 0) return true;
+        if (expected is not null && await db.Set<T>().AnyAsync(e => EF.Property<Guid>(e, "Id") == id, ct)) throw new PreconditionFailedException();
+        return false;
+    }
+
     private static PostgresException? ConstraintViolation(Exception ex) =>
         (ex is DbUpdateException { InnerException: PostgresException inner } ? inner : ex as PostgresException) is
         { SqlState: UniqueViolation or ForeignKeyViolation } pg
@@ -77,6 +148,7 @@ public sealed class PostgresAppRepository(Factory factory) : PostgresRepository(
 {
     public Task<App> AddAsync(App app, CancellationToken ct = default) => Run(async db =>
     {
+        app = app with { Version = 1 };
         db.Apps.Add(app);
         await db.SaveChangesAsync(ct);
         return app;
@@ -91,22 +163,11 @@ public sealed class PostgresAppRepository(Factory factory) : PostgresRepository(
     public Task<IReadOnlyList<App>> ListAsync(Slice? slice = null, CancellationToken ct = default) =>
         Run<IReadOnlyList<App>>(async db => await db.Apps.AsNoTracking().OrderBy(a => a.Name).Page(slice).ToListAsync(ct), ct: ct);
 
-    public Task<App?> UpdateAsync(App app, CancellationToken ct = default) => Run<App?>(async db =>
-    {
-        db.Apps.Update(app);
-        try
-        {
-            await db.SaveChangesAsync(ct);
-            return app;
-        }
-        catch (DbUpdateConcurrencyException)
-        {
-            return null; // row no longer exists
-        }
-    }, Translate(app), ct);
+    public Task<App?> UpdateAsync(App app, long? expectedVersion = null, CancellationToken ct = default) =>
+        Run(db => UpdateVersionedAsync<App>(db, app.Id, expectedVersion, _ => app, ct), Translate(app), ct);
 
-    public Task<bool> DeleteAsync(Guid id, CancellationToken ct = default) =>
-        Run(async db => await db.Apps.Where(a => a.Id == id).ExecuteDeleteAsync(ct) > 0, ct: ct);
+    public Task<bool> DeleteAsync(Guid id, long? expectedVersion = null, CancellationToken ct = default) =>
+        Run(db => DeleteVersionedAsync<App>(db, id, expectedVersion, ct), ct: ct);
 
     private static Translator Translate(App app) => (_, pg) => Task.FromResult<GatekeeperException?>(
         pg.ConstraintName == Names.AppNameIndex ? new ConflictException($"Application '{app.Name}' already exists.") : null);
@@ -116,6 +177,7 @@ public sealed class PostgresRoleRepository(Factory factory) : PostgresRepository
 {
     public Task<Role> AddAsync(Role role, CancellationToken ct = default) => Run(async db =>
     {
+        role = role with { Version = 1 };
         db.Roles.Add(role);
         await db.SaveChangesAsync(ct);
         return role;
@@ -127,22 +189,11 @@ public sealed class PostgresRoleRepository(Factory factory) : PostgresRepository
     public Task<IReadOnlyList<Role>> ListByAppAsync(Guid appId, Slice? slice = null, CancellationToken ct = default) => Run<IReadOnlyList<Role>>(async db =>
         await db.Roles.AsNoTracking().Where(r => r.AppId == appId).OrderBy(r => r.Name).ThenBy(r => r.Id).Page(slice).ToListAsync(ct), ct: ct);
 
-    public Task<Role?> UpdateAsync(Role role, CancellationToken ct = default) => Run<Role?>(async db =>
-    {
-        db.Roles.Update(role);
-        try
-        {
-            await db.SaveChangesAsync(ct);
-            return role;
-        }
-        catch (DbUpdateConcurrencyException)
-        {
-            return null;
-        }
-    }, Translate(role), ct);
+    public Task<Role?> UpdateAsync(Role role, long? expectedVersion = null, CancellationToken ct = default) =>
+        Run(db => UpdateVersionedAsync<Role>(db, role.Id, expectedVersion, _ => role, ct), Translate(role), ct);
 
-    public Task<bool> DeleteAsync(Guid id, CancellationToken ct = default) =>
-        Run(async db => await db.Roles.Where(r => r.Id == id).ExecuteDeleteAsync(ct) > 0, ct: ct);
+    public Task<bool> DeleteAsync(Guid id, long? expectedVersion = null, CancellationToken ct = default) =>
+        Run(db => DeleteVersionedAsync<Role>(db, id, expectedVersion, ct), ct: ct);
 
     private static Translator Translate(Role role) => (_, pg) => Task.FromResult<GatekeeperException?>(pg.ConstraintName switch
     {
@@ -156,6 +207,7 @@ public sealed class PostgresUserRepository(Factory factory) : PostgresRepository
 {
     public Task<User> AddAsync(User user, CancellationToken ct = default) => Run(async db =>
     {
+        user = user with { Version = 1 };
         db.Users.Add(user);
         await db.SaveChangesAsync(ct);
         return user;
@@ -173,22 +225,11 @@ public sealed class PostgresUserRepository(Factory factory) : PostgresRepository
         return await query.OrderBy(u => u.Username).Page(slice).ToListAsync(ct);
     }, ct: ct);
 
-    public Task<User?> UpdateAsync(User user, CancellationToken ct = default) => Run<User?>(async db =>
-    {
-        db.Users.Update(user);
-        try
-        {
-            await db.SaveChangesAsync(ct);
-            return user;
-        }
-        catch (DbUpdateConcurrencyException)
-        {
-            return null;
-        }
-    }, TranslateUnique(user), ct);
+    public Task<User?> UpdateAsync(User user, long? expectedVersion = null, CancellationToken ct = default) =>
+        Run(db => UpdateVersionedAsync<User>(db, user.Id, expectedVersion, _ => user, ct), TranslateUnique(user), ct);
 
-    public Task<bool> DeleteAsync(Guid id, CancellationToken ct = default) =>
-        Run(async db => await db.Users.Where(u => u.Id == id).ExecuteDeleteAsync(ct) > 0, ct: ct);
+    public Task<bool> DeleteAsync(Guid id, long? expectedVersion = null, CancellationToken ct = default) =>
+        Run(db => DeleteVersionedAsync<User>(db, id, expectedVersion, ct), ct: ct);
 
     public Task AssignRoleAsync(Guid userId, Guid roleId, CancellationToken ct = default) => Run(async db =>
     {
@@ -281,6 +322,7 @@ public sealed class PostgresClientRepository(Factory factory) : PostgresReposito
 {
     public Task<Client> AddAsync(Client client, string secretHash, CancellationToken ct = default) => Run(async db =>
     {
+        client = client with { Version = 1 };
         db.Clients.Add(client);
         db.ClientSecrets.Add(new ClientSecretRow(client.Id, secretHash, client.CreatedAt));
         await db.SaveChangesAsync(ct);
@@ -305,19 +347,15 @@ public sealed class PostgresClientRepository(Factory factory) : PostgresReposito
         return await q.OrderBy(c => c.Name).ThenBy(c => c.Id).Page(slice).ToListAsync(ct);
     }, ct: ct);
 
-    public Task<Client?> UpdateAsync(Client client, CancellationToken ct = default) => Run<Client?>(async db =>
-    {
+    public Task<Client?> UpdateAsync(Client client, long? expectedVersion = null, CancellationToken ct = default) => Run(
         // Only these columns may change: the application is fixed at creation.
-        var rows = await db.Clients.Where(c => c.Id == client.Id).ExecuteUpdateAsync(set => set
-            .SetProperty(c => c.Name, client.Name)
-            .SetProperty(c => c.IsActive, client.IsActive)
-            .SetProperty(c => c.UpdatedAt, client.UpdatedAt), ct);
-        return rows == 0 ? null : await db.Clients.AsNoTracking().FirstOrDefaultAsync(c => c.Id == client.Id, ct);
-    }, (_, pg) => Task.FromResult<GatekeeperException?>(
-        pg.ConstraintName == Names.ClientNameIndex ? new ConflictException($"Client '{client.Name}' already exists.") : null), ct);
+        db => UpdateVersionedAsync<Client>(db, client.Id, expectedVersion,
+            stored => stored with { Name = client.Name, IsActive = client.IsActive, UpdatedAt = client.UpdatedAt }, ct),
+        (_, pg) => Task.FromResult<GatekeeperException?>(
+            pg.ConstraintName == Names.ClientNameIndex ? new ConflictException($"Client '{client.Name}' already exists.") : null), ct);
 
-    public Task<bool> DeleteAsync(Guid id, CancellationToken ct = default) =>
-        Run(async db => await db.Clients.Where(c => c.Id == id).ExecuteDeleteAsync(ct) > 0, ct: ct);
+    public Task<bool> DeleteAsync(Guid id, long? expectedVersion = null, CancellationToken ct = default) =>
+        Run(db => DeleteVersionedAsync<Client>(db, id, expectedVersion, ct), ct: ct);
 
     // Every client has a secret row from creation, so a plain UPDATE both rotates and detects a missing client.
     public Task<bool> SetSecretHashAsync(Guid id, string secretHash, DateTimeOffset at, CancellationToken ct = default) => Run(async db =>

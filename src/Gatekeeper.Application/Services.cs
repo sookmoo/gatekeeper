@@ -43,26 +43,38 @@ public sealed class AppService(IAppRepository apps)
         return apps.AddAsync(new App(Guid.NewGuid(), name!), ct);
     }
 
-    public async Task<App> UpdateAsync(Guid id, string? name, CancellationToken ct = default)
+    /// <summary>
+    /// Replace. With an If-Match precondition the order is 404, 412, then validation and the reserved-name rules (400/409); without
+    /// one validation comes first, as before.
+    /// </summary>
+    public async Task<App> UpdateAsync(Guid id, string? name, Precondition? ifMatch = null, CancellationToken ct = default)
+    {
+        var expected = ifMatch is null ? null : Precondition.Require(ifMatch, (await GetAsync(id, ct)).Version);
+        return await UpdateCore(id, name, expected, ct);
+    }
+
+    private async Task<App> UpdateCore(Guid id, string? name, long? expected, CancellationToken ct)
     {
         Validation.AppName(name);
         await RejectReserved(id, "renamed", ct);
         RejectReservedName(name!);
-        return await apps.UpdateAsync(new App(id, name!), ct)
+        return await apps.UpdateAsync(new App(id, name!), expected, ct)
             ?? throw new NotFoundException($"Application {id} not found.");
     }
 
     /// <summary>Partial update: a null field is left unchanged.</summary>
-    public Task<App> PatchAsync(Guid id, string? name, CancellationToken ct = default) => PatchGate.RunAsync(async () =>
+    public Task<App> PatchAsync(Guid id, string? name, Precondition? ifMatch = null, CancellationToken ct = default) => PatchGate.RunAsync(async () =>
     {
         var existing = await GetAsync(id, ct);
-        return name is null || string.Equals(name, existing.Name, StringComparison.Ordinal) ? existing : await UpdateAsync(id, name, ct);
+        var expected = Precondition.Require(ifMatch, existing.Version);
+        return name is null || string.Equals(name, existing.Name, StringComparison.Ordinal) ? existing : await UpdateCore(id, name, expected, ct);
     }, ct);
 
-    public async Task DeleteAsync(Guid id, CancellationToken ct = default)
+    public async Task DeleteAsync(Guid id, Precondition? ifMatch = null, CancellationToken ct = default)
     {
+        var expected = ifMatch is null ? null : Precondition.Require(ifMatch, (await GetAsync(id, ct)).Version);
         await RejectReserved(id, "deleted", ct);
-        if (!await apps.DeleteAsync(id, ct)) throw new NotFoundException($"Application {id} not found.");
+        if (!await apps.DeleteAsync(id, expected, ct)) throw new NotFoundException($"Application {id} not found.");
     }
 
     // Only bootstrap-admin creates the admin app; letting anyone claim the name would hand them the admin audience.
@@ -99,28 +111,40 @@ public sealed class RoleService(IAppRepository apps, IRoleRepository roles)
         return await roles.AddAsync(new Role(Guid.NewGuid(), appId, name!, description ?? ""), ct);
     }
 
-    public async Task<Role> UpdateAsync(Guid id, string? name, string? description, CancellationToken ct = default)
+    public async Task<Role> UpdateAsync(Guid id, string? name, string? description, Precondition? ifMatch = null, CancellationToken ct = default)
     {
         var existing = await GetAsync(id, ct);
+        return await UpdateCore(existing, name, description, Precondition.Require(ifMatch, existing.Version), ct);
+    }
+
+    private async Task<Role> UpdateCore(Role existing, string? name, string? description, long? expected, CancellationToken ct)
+    {
         await RejectReservedApp(existing.AppId, "have roles changed", ct);
         Validation.RoleFields(name, description);
-        return await roles.UpdateAsync(existing with { Name = name!, Description = description ?? "" }, ct)
-            ?? throw new NotFoundException($"Role {id} not found.");
+        return await roles.UpdateAsync(existing with { Name = name!, Description = description ?? "" }, expected, ct)
+            ?? throw new NotFoundException($"Role {existing.Id} not found.");
     }
 
     /// <summary>Partial update: a null field is left unchanged (use an empty description to clear it).</summary>
-    public Task<Role> PatchAsync(Guid id, string? name, string? description, CancellationToken ct = default) => PatchGate.RunAsync(async () =>
+    public Task<Role> PatchAsync(Guid id, string? name, string? description, Precondition? ifMatch = null, CancellationToken ct = default) => PatchGate.RunAsync(async () =>
     {
         var existing = await GetAsync(id, ct);
-        return await UpdateAsync(id, name ?? existing.Name, description ?? existing.Description, ct);
+        var expected = Precondition.Require(ifMatch, existing.Version);
+        // The reserved-application rule still applies when nothing changes (409 after 412, as for any other PATCH).
+        await RejectReservedApp(existing.AppId, "have roles changed", ct);
+        // Nothing to change: write nothing, keep the version (like applications).
+        if ((name ?? existing.Name) == existing.Name && (description ?? existing.Description) == existing.Description) return existing;
+        return await UpdateCore(existing, name ?? existing.Name, description ?? existing.Description, expected, ct);
     }, ct);
 
-    public async Task DeleteAsync(Guid id, CancellationToken ct = default)
+    public async Task DeleteAsync(Guid id, Precondition? ifMatch = null, CancellationToken ct = default)
     {
+        var existing = await roles.GetAsync(id, ct);
+        var expected = existing is null ? null : Precondition.Require(ifMatch, existing.Version);
         // Other roles in the reserved app (left by older code) may be removed; the admin role may not.
-        if (await roles.GetAsync(id, ct) is { } existing && Reserved.IsAdminRole(existing.Name))
+        if (existing is not null && Reserved.IsAdminRole(existing.Name))
             await RejectReservedApp(existing.AppId, "have roles deleted", ct);
-        if (!await roles.DeleteAsync(id, ct)) throw new NotFoundException($"Role {id} not found.");
+        if (!await roles.DeleteAsync(id, expected, ct)) throw new NotFoundException($"Role {id} not found.");
     }
 
     private async Task RejectReservedApp(Guid appId, string action, CancellationToken ct)
@@ -169,24 +193,36 @@ public sealed class UserService(IUserRepository users, AdminGuard? guard = null,
     /// Runs under the admin guard and reads the user inside it, so a concurrent role assignment or kind change cannot
     /// be overwritten with a stale kind (which could leave a non-person holding the admin role).
     /// Deactivating a user ends all their sessions; moving a test user's expiry earlier caps their sessions to it.
+    /// With an If-Match precondition the order is 404, 412, then validation and the admin rules (400/409); without one validation comes first.
     /// </summary>
     public async Task<User> UpdateAsync(Guid id, string? username, string? email, string? displayName, bool? isActive,
-        UserKind? kind = null, DateTimeOffset? expiresAt = null, CancellationToken ct = default) =>
-        (await UpdateWithEffectsAsync(id, username, email, displayName, isActive, kind, expiresAt, ct)).User;
+        UserKind? kind = null, DateTimeOffset? expiresAt = null, Precondition? ifMatch = null, CancellationToken ct = default) =>
+        (await UpdateWithEffectsAsync(id, username, email, displayName, isActive, kind, expiresAt, ifMatch, ct)).User;
 
-    public Task<(User User, SessionEffects Effects)> UpdateWithEffectsAsync(Guid id, string? username, string? email, string? displayName, bool? isActive,
-        UserKind? kind = null, DateTimeOffset? expiresAt = null, CancellationToken ct = default)
+    public async Task<(User User, SessionEffects Effects)> UpdateWithEffectsAsync(Guid id, string? username, string? email, string? displayName, bool? isActive,
+        UserKind? kind = null, DateTimeOffset? expiresAt = null, Precondition? ifMatch = null, CancellationToken ct = default)
+    {
+        if (ifMatch is not null) Precondition.Require(ifMatch, (await GetAsync(id, ct)).Version); // 404, then 412, before validation
+        return await UpdateCore(id, username, email, displayName, isActive, kind, expiresAt, ifMatch, null, false, ct);
+    }
+
+    /// <param name="pinned">The version a PATCH already matched and merged its values onto: the write must still find exactly that, however many tags the header listed.</param>
+    /// <param name="patch">A PATCH that changes no value writes nothing (the version stays); the session steps still run on the saved state.</param>
+    private async Task<(User User, SessionEffects Effects)> UpdateCore(Guid id, string? username, string? email, string? displayName, bool? isActive,
+        UserKind? kind, DateTimeOffset? expiresAt, Precondition? ifMatch, long? pinned, bool patch, CancellationToken ct)
     {
         Validation.UserFields(username, email, displayName);
-        return guard is null
-            ? Apply(id, username, email, displayName, isActive, kind, expiresAt, ct)
-            : guard.ExclusiveAsync(() => Apply(id, username, email, displayName, isActive, kind, expiresAt, ct), ct);
+        return await (guard is null
+            ? Apply(id, username, email, displayName, isActive, kind, expiresAt, ifMatch, pinned, patch, ct)
+            : guard.ExclusiveAsync(() => Apply(id, username, email, displayName, isActive, kind, expiresAt, ifMatch, pinned, patch, ct), ct));
     }
 
     private async Task<(User User, SessionEffects Effects)> Apply(Guid id, string? username, string? email, string? displayName, bool? isActive,
-        UserKind? kind, DateTimeOffset? expiresAt, CancellationToken ct)
+        UserKind? kind, DateTimeOffset? expiresAt, Precondition? ifMatch, long? pinned, bool patch, CancellationToken ct)
     {
         var existing = await GetAsync(id, ct);
+        // Decided on the row as read under the guard; the store re-checks atomically.
+        var expected = pinned is { } p ? (existing.Version == p ? p : throw new PreconditionFailedException()) : Precondition.Require(ifMatch, existing.Version);
         var now = Clock.UtcNowMicros();
         var newKind = kind ?? existing.Kind;
         var newExpiry = Truncate(expiresAt);
@@ -197,7 +233,7 @@ public sealed class UserService(IUserRepository users, AdminGuard? guard = null,
             if (isActive == false && existing.IsActive) await guard.EnsureNotLastAdminAsync(id, ct);
             if (newKind != UserKind.Person && existing.Kind == UserKind.Person) await guard.EnsureNotAdministratorAsync(id, ct);
         }
-        var saved = await Save(existing, username, email, displayName, isActive, newKind, newExpiry, ct);
+        var saved = await Save(existing, username, email, displayName, isActive, newKind, newExpiry, expected, patch, ct);
         // The user row is saved first. These steps are idempotent (they act on the saved state, not on the change) and ignore
         // cancellation, so a retry of the same request repairs a half-done change and a disconnect cannot leave sessions alive.
         int revoked = 0, capped = 0;
@@ -216,21 +252,22 @@ public sealed class UserService(IUserRepository users, AdminGuard? guard = null,
 
     /// <summary>Partial update: a null field is left unchanged (use an empty display name to clear it).</summary>
     public async Task<User> PatchAsync(Guid id, string? username, string? email, string? displayName, bool? isActive,
-        UserKind? kind = null, DateTimeOffset? expiresAt = null, CancellationToken ct = default) =>
-        (await PatchWithEffectsAsync(id, username, email, displayName, isActive, kind, expiresAt, ct)).User;
+        UserKind? kind = null, DateTimeOffset? expiresAt = null, Precondition? ifMatch = null, CancellationToken ct = default) =>
+        (await PatchWithEffectsAsync(id, username, email, displayName, isActive, kind, expiresAt, ifMatch, ct)).User;
 
     public Task<(User User, SessionEffects Effects)> PatchWithEffectsAsync(Guid id, string? username, string? email, string? displayName, bool? isActive,
-        UserKind? kind = null, DateTimeOffset? expiresAt = null, CancellationToken ct = default) => PatchGate.RunAsync(async () =>
+        UserKind? kind = null, DateTimeOffset? expiresAt = null, Precondition? ifMatch = null, CancellationToken ct = default) => PatchGate.RunAsync(async () =>
     {
         var e = await GetAsync(id, ct);
-        return await UpdateWithEffectsAsync(id, username ?? e.Username, email ?? e.Email, displayName ?? e.DisplayName, isActive, kind, expiresAt, ct);
+        var pinned = Precondition.Require(ifMatch, e.Version); // 412 before the merged values are validated
+        return await UpdateCore(id, username ?? e.Username, email ?? e.Email, displayName ?? e.DisplayName, isActive, kind, expiresAt, ifMatch, pinned, true, ct);
     }, ct);
 
     private static DateTimeOffset? Truncate(DateTimeOffset? value) =>
         value is { } v ? new DateTimeOffset(v.UtcTicks - v.UtcTicks % 10, TimeSpan.Zero) : null;
 
     private async Task<User> Save(User existing, string? username, string? email, string? displayName, bool? isActive,
-        UserKind kind, DateTimeOffset? expiresAt, CancellationToken ct)
+        UserKind kind, DateTimeOffset? expiresAt, long? expectedVersion, bool skipIfUnchanged, CancellationToken ct)
     {
         var id = existing.Id;
         var updated = existing with
@@ -243,23 +280,29 @@ public sealed class UserService(IUserRepository users, AdminGuard? guard = null,
             ExpiresAt = expiresAt,
             UpdatedAt = Clock.UtcNowMicros(),
         };
-        return await users.UpdateAsync(updated, ct) ?? throw new NotFoundException($"User {id} not found.");
+        if (skipIfUnchanged && updated with { UpdatedAt = existing.UpdatedAt } == existing) return existing;
+        return await users.UpdateAsync(updated, expectedVersion, ct) ?? throw new NotFoundException($"User {id} not found.");
     }
 
-    public async Task DeleteAsync(Guid id, CancellationToken ct = default)
+    public async Task DeleteAsync(Guid id, Precondition? ifMatch = null, CancellationToken ct = default)
     {
-        if (guard is null) { await Delete(id, ct); return; }
+        if (guard is null) { await Delete(id, ifMatch, ct); return; }
         await guard.ExclusiveAsync(async () =>
         {
+            // 404 and 412 first, then the last-administrator rule (409).
+            var expected = ifMatch is null ? null : Precondition.Require(ifMatch, (await GetAsync(id, ct)).Version);
             await guard.EnsureNotLastAdminAsync(id, ct);
-            await Delete(id, ct);
+            await DeleteRow(id, expected, ct);
             return 0;
         }, ct);
     }
 
-    private async Task Delete(Guid id, CancellationToken ct)
+    private async Task Delete(Guid id, Precondition? ifMatch, CancellationToken ct) =>
+        await DeleteRow(id, ifMatch is null ? null : Precondition.Require(ifMatch, (await GetAsync(id, ct)).Version), ct);
+
+    private async Task DeleteRow(Guid id, long? expected, CancellationToken ct)
     {
-        if (!await users.DeleteAsync(id, ct)) throw new NotFoundException($"User {id} not found.");
+        if (!await users.DeleteAsync(id, expected, ct)) throw new NotFoundException($"User {id} not found.");
     }
 
     public async Task<Page<Role>> ListRolesAsync(Guid userId, Guid? appId = null, PageQuery? page = null, CancellationToken ct = default)
@@ -557,20 +600,35 @@ public sealed class ClientService(IClientRepository clients, IAppRepository apps
         return new ClientCreated(created, secret);
     }
 
-    public async Task<Client> UpdateAsync(Guid id, string? name, bool? isActive, CancellationToken ct = default)
+    /// <summary>With an If-Match precondition the order is 404, 412, then validation (400); without one validation comes first.</summary>
+    public async Task<Client> UpdateAsync(Guid id, string? name, bool? isActive, Precondition? ifMatch = null, CancellationToken ct = default)
+    {
+        var current = ifMatch is null ? null : await GetAsync(id, ct);
+        var expected = current is null ? null : Precondition.Require(ifMatch, current.Version);
+        return await UpdateCore(id, name, isActive, expected, ct);
+    }
+
+    private async Task<Client> UpdateCore(Guid id, string? name, bool? isActive, long? expected, CancellationToken ct)
     {
         Validation.ClientName(name);
         var existing = await GetAsync(id, ct);
-        return await clients.UpdateAsync(existing with { Name = name!, IsActive = isActive ?? existing.IsActive, UpdatedAt = Clock.UtcNowMicros() }, ct)
+        return await clients.UpdateAsync(existing with { Name = name!, IsActive = isActive ?? existing.IsActive, UpdatedAt = Clock.UtcNowMicros() }, expected, ct)
             ?? throw new NotFoundException($"Client {id} not found.");
     }
 
-    public Task<Client> PatchAsync(Guid id, string? name, bool? isActive, CancellationToken ct = default) => PatchGate.RunAsync(async () =>
-        await UpdateAsync(id, name ?? (await GetAsync(id, ct)).Name, isActive, ct), ct);
-
-    public async Task DeleteAsync(Guid id, CancellationToken ct = default)
+    public Task<Client> PatchAsync(Guid id, string? name, bool? isActive, Precondition? ifMatch = null, CancellationToken ct = default) => PatchGate.RunAsync(async () =>
     {
-        if (!await clients.DeleteAsync(id, ct)) throw new NotFoundException($"Client {id} not found.");
+        var existing = await GetAsync(id, ct);
+        var expected = Precondition.Require(ifMatch, existing.Version);
+        // Nothing to change: write nothing, keep the version (like applications).
+        if ((name ?? existing.Name) == existing.Name && (isActive ?? existing.IsActive) == existing.IsActive) return existing;
+        return await UpdateCore(id, name ?? existing.Name, isActive, expected, ct);
+    }, ct);
+
+    public async Task DeleteAsync(Guid id, Precondition? ifMatch = null, CancellationToken ct = default)
+    {
+        var expected = ifMatch is null ? null : Precondition.Require(ifMatch, (await GetAsync(id, ct)).Version);
+        if (!await clients.DeleteAsync(id, expected, ct)) throw new NotFoundException($"Client {id} not found.");
     }
 
     /// <summary>Replaces the secret; the old one stops working at once. Returns the new secret.</summary>

@@ -124,18 +124,18 @@ public class Slice6aReviewTests
         // cancel once the user row is saved: the session steps must not observe the token
         var cancelling = new CancelOnUpdate(r.Users, cts);
         var svc = new UserService(cancelling, null, r.Sessions, r.Roles);
-        await svc.UpdateAsync(u.Id, u.Username, u.Email, u.DisplayName, false, null, null, cts.Token);
+        await svc.UpdateAsync(u.Id, u.Username, u.Email, u.DisplayName, false, null, null, ct: cts.Token);
         Assert.True(cts.IsCancellationRequested);
         Assert.False(await Alive(r, x));
     }
 
     private sealed class CancelOnUpdate(IUserRepository inner, CancellationTokenSource cts) : IUserRepository
     {
-        public async Task<User?> UpdateAsync(User user, CancellationToken ct = default) { var u = await inner.UpdateAsync(user, ct); cts.Cancel(); return u; }
+        public async Task<User?> UpdateAsync(User user, long? expectedVersion = null, CancellationToken ct = default) { var u = await inner.UpdateAsync(user, expectedVersion, ct); cts.Cancel(); return u; }
         public Task<User> AddAsync(User user, CancellationToken ct = default) => inner.AddAsync(user, ct);
         public Task<User?> GetAsync(Guid id, CancellationToken ct = default) => inner.GetAsync(id, ct);
         public Task<IReadOnlyList<User>> ListAsync(bool? active = null, string? username = null, UserKind? kind = null, Slice? slice = null, CancellationToken ct = default) => inner.ListAsync(active, username, kind, slice, ct);
-        public Task<bool> DeleteAsync(Guid id, CancellationToken ct = default) => inner.DeleteAsync(id, ct);
+        public Task<bool> DeleteAsync(Guid id, long? expectedVersion = null, CancellationToken ct = default) => inner.DeleteAsync(id, expectedVersion, ct);
         public Task AssignRoleAsync(Guid userId, Guid roleId, CancellationToken ct = default) => inner.AssignRoleAsync(userId, roleId, ct);
         public Task<bool> RevokeRoleAsync(Guid userId, Guid roleId, CancellationToken ct = default) => inner.RevokeRoleAsync(userId, roleId, ct);
         public Task<IReadOnlyList<Role>> ListRolesAsync(Guid userId, Guid? appId = null, Slice? slice = null, CancellationToken ct = default) => inner.ListRolesAsync(userId, appId, slice, ct);

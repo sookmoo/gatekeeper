@@ -53,6 +53,7 @@ public sealed class GatekeeperDbContext(DbContextOptions<GatekeeperDbContext> op
             e.ToTable("apps");
             e.HasKey(x => x.Id);
             e.Property(x => x.Name).HasColumnType("citext").IsRequired();
+            e.Property(x => x.Version).IsConcurrencyToken().HasDefaultValue(1L);
             e.HasIndex(x => x.Name).IsUnique().HasDatabaseName(Names.AppNameIndex);
         });
 
@@ -62,6 +63,7 @@ public sealed class GatekeeperDbContext(DbContextOptions<GatekeeperDbContext> op
             e.HasKey(x => x.Id);
             e.Property(x => x.Name).HasColumnType("citext").IsRequired();
             e.Property(x => x.Description).IsRequired();
+            e.Property(x => x.Version).IsConcurrencyToken().HasDefaultValue(1L);
             e.HasOne<App>().WithMany().HasForeignKey(x => x.AppId)
                 .OnDelete(DeleteBehavior.Cascade).HasConstraintName(Names.RoleAppFk);
             e.HasIndex(x => new { x.AppId, x.Name }).IsUnique().HasDatabaseName(Names.RoleNameIndex);
@@ -78,6 +80,7 @@ public sealed class GatekeeperDbContext(DbContextOptions<GatekeeperDbContext> op
             e.Property(x => x.Username).HasColumnType("citext").IsRequired();
             e.Property(x => x.Email).HasColumnType("citext").IsRequired();
             e.Property(x => x.DisplayName).IsRequired();
+            e.Property(x => x.Version).IsConcurrencyToken().HasDefaultValue(1L);
             e.Property(x => x.Kind).HasConversion(k => k.ToString().ToLowerInvariant(), v => Enum.Parse<UserKind>(v, true))
                 .HasMaxLength(16).HasDefaultValue(UserKind.Person).IsRequired();
             e.HasIndex(x => x.Username).IsUnique().HasDatabaseName(Names.UsernameIndex);
@@ -108,6 +111,7 @@ public sealed class GatekeeperDbContext(DbContextOptions<GatekeeperDbContext> op
             e.ToTable("clients");
             e.HasKey(x => x.Id);
             e.Property(x => x.Name).HasColumnType("citext").IsRequired();
+            e.Property(x => x.Version).IsConcurrencyToken().HasDefaultValue(1L);
             e.HasOne<App>().WithMany().HasForeignKey(x => x.AppId)
                 .OnDelete(DeleteBehavior.Cascade).HasConstraintName(Names.ClientAppFk);
             e.HasIndex(x => x.Name).IsUnique().HasDatabaseName(Names.ClientNameIndex);
