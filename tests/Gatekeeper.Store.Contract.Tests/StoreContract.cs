@@ -209,10 +209,75 @@ public abstract class StoreContract : IDisposable
 
         Assert.Equal(["t4", "t3", "t2", "t1"], (await Audit.ListAsync()).Select(e => e.Target));
         Assert.Equal(["t4", "t1"], (await Audit.ListAsync(actor: "alice", action: "x")).Select(e => e.Target));
-        Assert.Equal(["t3", "t2"], (await Audit.ListAsync(slice: new Slice(1, 2))).Select(e => e.Target));
+        Assert.Equal(["t4", "t3"], (await Audit.ListAsync(take: 2)).Select(e => e.Target));
+        var third = (await Audit.ListAsync(take: 2)).Last();
+        Assert.Equal(["t2", "t1"], (await Audit.ListAsync(after: new AuditKey(third.At, third.Id))).Select(e => e.Target));
         Assert.Empty(await Audit.ListAsync(actor: "nobody"));
-        var first = (await Audit.ListAsync(slice: new Slice(0, 1))).Single();
+        var first = (await Audit.ListAsync(take: 1)).Single();
         Assert.Equal(("alice", "x", "d4", "127.0.0.1", "success"), (first.Actor, first.Action, first.Detail, first.Address, first.Outcome));
+    }
+
+    [SkippableFact]
+    public async Task Audit_keyset_pages_have_no_repeats_or_gaps_across_rows_of_one_microsecond()
+    {
+        CreateStore();
+        var t = new DateTimeOffset(2026, 3, 1, 12, 0, 0, TimeSpan.Zero).AddTicks(10);
+        // Ids where .NET's Guid order (first field as a signed int) differs from Postgres uuid order (unsigned bytes).
+        var ids = new[]
+        {
+            "80000000-0000-0000-0000-000000000000", "00000001-0000-0000-0000-000000000000", "7fffffff-ffff-ffff-ffff-ffffffffffff",
+            "ffffffff-0000-0000-0000-000000000000", "00000000-0000-0000-0000-000000000001", "00000000-0100-0000-0000-000000000000",
+            "00000000-0000-0100-0000-000000000000", "00000000-0000-0000-0100-000000000000",
+        }.Select(Guid.Parse).ToList();
+        AuditEvent Ev(Guid id, DateTimeOffset at, string actor = "a") => new(id, at, actor, "act", null, "success", null, null);
+        foreach (var id in ids) await Audit.AppendAsync(Ev(id, t));
+        var older = Guid.NewGuid();
+        var newer = Guid.NewGuid();
+        await Audit.AppendAsync(Ev(older, t.AddTicks(-10)));
+        await Audit.AppendAsync(Ev(newer, t.AddTicks(10)));
+
+        var expected = new[] { newer }.Concat(ids.OrderBy(i => i.ToString("D"), StringComparer.Ordinal).Reverse()).Append(older).ToList();
+        Assert.Equal(expected, (await Audit.ListAsync()).Select(e => e.Id));
+
+        foreach (var size in new[] { 1, 2, 3, 4 })
+        {
+            var walked = new List<Guid>();
+            AuditKey? after = null;
+            while (true)
+            {
+                var page = await Audit.ListAsync(after: after, take: size);
+                walked.AddRange(page.Select(e => e.Id));
+                if (page.Count < size) break;
+                after = new AuditKey(page[^1].At, page[^1].Id);
+            }
+            Assert.Equal(expected, walked);
+        }
+
+        // after is strict, on the exact key: nothing at or above the key comes back, equal time with a smaller id does
+        var mid = ids.OrderBy(i => i.ToString("D"), StringComparer.Ordinal).ElementAt(3);
+        var below = await Audit.ListAsync(after: new AuditKey(t, mid));
+        Assert.Equal(expected.SkipWhile(i => i != mid).Skip(1), below.Select(e => e.Id));
+        Assert.DoesNotContain(below, e => e.Id == mid || e.Id == newer);
+        Assert.Contains(below, e => e.Id == older);
+        // a key in another time zone offset means the same instant
+        Assert.Equal(below.Select(e => e.Id), (await Audit.ListAsync(after: new AuditKey(t.ToOffset(TimeSpan.FromHours(5)), mid))).Select(e => e.Id));
+    }
+
+    [SkippableFact]
+    public async Task Audit_keyset_combines_with_filters_and_new_rows_do_not_shift_pages()
+    {
+        CreateStore();
+        var t0 = new DateTimeOffset(2026, 3, 1, 0, 0, 0, TimeSpan.Zero);
+        AuditEvent Ev(int n, string actor, string action) => new(Guid.NewGuid(), t0.AddSeconds(n), actor, action, $"t{n}", "success", null, null);
+        foreach (var n in Enumerable.Range(1, 6)) await Audit.AppendAsync(Ev(n, n % 2 == 0 ? "even" : "odd", n <= 3 ? "lo" : "hi"));
+        var firstPage = await Audit.ListAsync(actor: "even", take: 2);
+        Assert.Equal(["t6", "t4"], firstPage.Select(e => e.Target));
+        await Audit.AppendAsync(Ev(7, "even", "hi")); // arrives between pages
+        await Audit.AppendAsync(Ev(8, "odd", "hi"));
+        var key = new AuditKey(firstPage[^1].At, firstPage[^1].Id);
+        Assert.Equal(["t2"], (await Audit.ListAsync(actor: "even", after: key, take: 5)).Select(e => e.Target));
+        Assert.Equal(["t2"], (await Audit.ListAsync(actor: "even", action: "lo", after: key, take: 5)).Select(e => e.Target));
+        Assert.Empty(await Audit.ListAsync(actor: "even", action: "hi", after: new AuditKey(t0.AddSeconds(4), Guid.Empty)));
     }
 
     [SkippableFact]

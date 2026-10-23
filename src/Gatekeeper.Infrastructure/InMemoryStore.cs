@@ -500,14 +500,16 @@ public sealed class InMemoryAuditRepository(InMemoryStore s) : IAuditRepository
         return Task.CompletedTask;
     }
 
-    public Task<IReadOnlyList<AuditEvent>> ListAsync(string? actor = null, string? action = null, Slice? slice = null, CancellationToken ct = default)
+    public Task<IReadOnlyList<AuditEvent>> ListAsync(string? actor = null, string? action = null, AuditKey? after = null, int? take = null, CancellationToken ct = default)
     {
         lock (s.Gate)
         {
             var q = s.Audit.AsEnumerable();
+            if (after is { } a) q = q.Where(e => AuditKey.Compare(new AuditKey(e.At, e.Id), a) < 0);
             if (actor is not null) q = q.Where(e => e.Actor == actor);
             if (action is not null) q = q.Where(e => e.Action == action);
-            return Task.FromResult(InMemoryStore.Paged(q.OrderByDescending(e => e.At).ThenByDescending(e => e.Id), slice));
+            var ordered = q.OrderByDescending(e => e.At.UtcTicks).ThenByDescending(e => e.Id, Comparer<Guid>.Create(AuditKey.CompareIds));
+            return Task.FromResult<IReadOnlyList<AuditEvent>>((take is { } n ? ordered.Take(n) : ordered).ToList());
         }
     }
 }

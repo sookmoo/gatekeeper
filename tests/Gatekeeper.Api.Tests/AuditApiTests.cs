@@ -103,6 +103,6 @@ public class AuditApiTests : IClassFixture<WebApplicationFactory<Program>>
     private sealed class ThrowingAudit : IAuditRepository
     {
         public Task AppendAsync(Gatekeeper.Domain.AuditEvent entry, CancellationToken ct = default) => throw new StoreUnavailableException("down", null);
-        public Task<IReadOnlyList<Gatekeeper.Domain.AuditEvent>> ListAsync(string? actor = null, string? action = null, Slice? slice = null, CancellationToken ct = default) => throw new StoreUnavailableException("down", null);
+        public Task<IReadOnlyList<Gatekeeper.Domain.AuditEvent>> ListAsync(string? actor = null, string? action = null, AuditKey? after = null, int? take = null, CancellationToken ct = default) => throw new StoreUnavailableException("down", null);
     }
 }

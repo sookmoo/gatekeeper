@@ -122,7 +122,11 @@ public interface ISessionRepository
 public interface IAuditRepository
 {
     Task AppendAsync(AuditEvent entry, CancellationToken ct = default);
-    Task<IReadOnlyList<AuditEvent>> ListAsync(string? actor = null, string? action = null, Slice? slice = null, CancellationToken ct = default);
+    /// <summary>
+    /// Newest first: (At, Id) descending, with ids ordered as <see cref="AuditKey.CompareIds"/> (the Postgres uuid order).
+    /// <paramref name="after"/> keeps only rows strictly before that key; <paramref name="take"/> null means all.
+    /// </summary>
+    Task<IReadOnlyList<AuditEvent>> ListAsync(string? actor = null, string? action = null, AuditKey? after = null, int? take = null, CancellationToken ct = default);
 }
 
 public interface IPasswordHasher

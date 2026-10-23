@@ -16,7 +16,7 @@ public abstract class Qa4bStoreTests : IDisposable
     private static Client NewClient(App app, string name, bool active = true) =>
         new(Guid.NewGuid(), name, app.Id, active, Clock.UtcNowMicros(), Clock.UtcNowMicros());
 
-    private static AuditEvent Ev(string actor = "a", string action = "x", DateTimeOffset? at = null, string? target = null, string? detail = null) =>
+    protected static AuditEvent Ev(string actor = "a", string action = "x", DateTimeOffset? at = null, string? target = null, string? detail = null) =>
         new(Guid.NewGuid(), at ?? Clock.UtcNowMicros(), actor, action, target, AuditEvent.Success, detail, null);
 
     [SkippableFact]
@@ -158,14 +158,15 @@ public abstract class Qa4bStoreTests : IDisposable
         Assert.Equal(9, all.Count);
         Assert.Equal("U1", all[0].Actor);
         Assert.Equal("u2", all[^1].Actor);
-        Assert.Equal(same.Select(e => e.Id).OrderDescending(), all.Skip(1).Take(7).Select(e => e.Id));
+        Assert.Equal(same.Select(e => e.Id).OrderDescending(Comparer<Guid>.Create(AuditKey.CompareIds)), all.Skip(1).Take(7).Select(e => e.Id));
         Assert.Single(await audit.ListAsync(actor: "U1"));
         Assert.Equal(8, (await audit.ListAsync(action: "A")).Count);
         Assert.Equal(7, (await audit.ListAsync("u1", "A")).Count);
         var walked = new List<Guid>();
-        for (var off = 0; ; off += 2) { var p = await audit.ListAsync(slice: new Slice(off, 2)); walked.AddRange(p.Select(e => e.Id)); if (p.Count < 2) break; }
+        AuditKey? after = null;
+        while (true) { var p = await audit.ListAsync(after: after, take: 2); walked.AddRange(p.Select(e => e.Id)); if (p.Count < 2) break; after = new AuditKey(p[^1].At, p[^1].Id); }
         Assert.Equal(all.Select(e => e.Id), walked);
-        Assert.Empty(await audit.ListAsync(slice: new Slice(50, 5)));
+        Assert.Empty(await audit.ListAsync(after: new AuditKey(all[^1].At, all[^1].Id), take: 5));
         Assert.Empty(await audit.ListAsync(actor: "%"));
         Assert.Empty(await audit.ListAsync(actor: "u_"));
     }
@@ -216,7 +217,7 @@ public abstract class Qa4bStoreTests : IDisposable
     {
         var (_, _, _, _, audit) = Open();
         await Task.WhenAll(Enumerable.Range(0, 40).Select(i => Task.Run(() => audit.AppendAsync(Ev($"u{i % 3}")))));
-        Assert.Equal(40, (await audit.ListAsync(slice: new Slice(0, 500))).Count);
+        Assert.Equal(40, (await audit.ListAsync(take: 500)).Count);
     }
 
     [SkippableFact]
@@ -237,7 +238,7 @@ public abstract class Qa4bStoreTests : IDisposable
             ("c.SetSecret", () => clients.SetSecretHashAsync(c.Id, "zz", DateTimeOffset.UtcNow, ct)),
             ("c.GetSecret", () => clients.GetSecretHashAsync(c.Id, ct)), ("c.Assign", () => clients.AssignRoleAsync(c.Id, role.Id, ct)),
             ("c.Revoke", () => clients.RevokeRoleAsync(c.Id, role.Id, ct)), ("c.Roles", () => clients.ListRolesAsync(c.Id, null, ct)),
-            ("a.Append", () => audit.AppendAsync(Ev(), ct)), ("a.List", () => audit.ListAsync(null, null, null, ct)),
+            ("a.Append", () => audit.AppendAsync(Ev(), ct)), ("a.List", () => audit.ListAsync(null, null, null, null, ct)),
         };
         var ignored = new List<string>();
         foreach (var (name, call) in calls)
@@ -288,5 +289,37 @@ public class PostgresQa4bStoreTests : Qa4bStoreTests
         foreach (var p in _providers) p.Dispose();
         foreach (var d in _dbs) d.Dispose();
         base.Dispose();
+    }
+
+    [SkippableFact]
+    public async Task Qa6c_keyset_extreme_and_adjacent_keys_and_sub_microsecond_cursors()
+    {
+        var (_, _, _, _, au) = Open();
+        var t = new DateTimeOffset(2026, 5, 1, 0, 0, 0, TimeSpan.Zero);
+        var lo = Guid.Parse("00000000-0000-0000-0000-000000000001");
+        var hi = Guid.Parse("ffffffff-ffff-ffff-ffff-fffffffffffe");
+        // rows exactly one microsecond apart (the smallest step stored), same ids reused across instants
+        var rows = new[] { Ev(at: t.AddTicks(-10)), Ev(at: t), Ev(at: t.AddTicks(10)) };
+        foreach (var r in rows) await au.AppendAsync(r);
+        Assert.Equal(3, (await au.ListAsync(after: new AuditKey(DateTimeOffset.MaxValue, Guid.Empty))).Count);
+        Assert.Equal(3, (await au.ListAsync(after: new AuditKey(new DateTimeOffset(9999, 12, 31, 23, 59, 59, TimeSpan.Zero), hi))).Count);
+        Assert.Empty(await au.ListAsync(after: new AuditKey(DateTimeOffset.MinValue, hi)));
+        Assert.Empty(await au.ListAsync(after: new AuditKey(new DateTimeOffset(1, 1, 1, 0, 0, 0, TimeSpan.Zero), Guid.Empty)));
+        // strictness on the exact key at the microsecond and with ids at the extremes
+        Assert.Equal(2, (await au.ListAsync(after: new AuditKey(t.AddTicks(10), Guid.Empty))).Count);
+        Assert.Equal(3, (await au.ListAsync(after: new AuditKey(t.AddTicks(10), hi))).Count);
+        Assert.Equal(2, (await au.ListAsync(after: new AuditKey(t.AddTicks(10), lo))).Count);
+    }
+
+    [SkippableFact]
+    public async Task Qa6c_keys_on_whole_microseconds_mean_the_same_in_both_stores()
+    {
+        // The API refuses cursors that are not whole microseconds, so the stores only ever see whole-microsecond keys.
+        var (_, _, _, _, au) = Open();
+        var t = new DateTimeOffset(2026, 5, 1, 0, 0, 0, TimeSpan.Zero);
+        var a = Ev(at: t); var b = Ev(at: t.AddTicks(10));
+        await au.AppendAsync(a); await au.AppendAsync(b);
+        Assert.Equal([a.Id], (await au.ListAsync(after: new AuditKey(t.AddTicks(10), Guid.Empty))).Select(e => e.Id));
+        Assert.Equal([b.Id, a.Id], (await au.ListAsync(after: new AuditKey(t.AddTicks(20), Guid.Empty))).Select(e => e.Id));
     }
 }

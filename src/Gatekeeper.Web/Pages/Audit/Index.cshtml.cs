@@ -29,7 +29,7 @@ public class IndexModel(GatekeeperApi api, ILogger<IndexModel> log) : PageModel
         Actor = actor ?? "";
         Action = action ?? "";
         // A cursor the API would refuse anyway (empty, too long, wrong characters) goes back to the first page without a call.
-        if (cursor is not null && (cursor.Length is 0 or > 32 || !cursor.All(c => char.IsAsciiLetterOrDigit(c) || c is '_' or '-')))
+        if (cursor is not null && (cursor.Length is 0 or > 64 || !cursor.All(c => char.IsAsciiLetterOrDigit(c) || c is '_' or '-')))
             return RedirectToPage(new { actor = Actor.Length > 0 ? Actor : null, action = Action.Length > 0 ? Action : null });
         if (Actor.Length > MaxFilter || Action.Length > MaxFilter) return Page(); // matches nothing: no call
         try

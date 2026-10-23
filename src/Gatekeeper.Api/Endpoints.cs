@@ -210,6 +210,7 @@ public static class Endpoints
         });
 
         v1.MapGet("/audit", (AuditService s, string? actor, string? action, int? limit, string? cursor, CancellationToken ct) =>
-            s.ListAsync(actor, action, PageQuery.Parse(limit, cursor), ct)).WithTags("Audit");
+            s.ListAsync(actor, action, AuditPageQuery.Parse(limit, cursor), ct)).WithTags("Audit")
+            .WithDescription("Newest first. The cursor is opaque and keyset-based (the last row's time and id): events arriving between pages cause no repeats or gaps. A cursor from another list, or an edited one, is 400.");
     }
 }

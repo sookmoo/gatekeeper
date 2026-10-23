@@ -260,14 +260,20 @@ public sealed class PostgresAuditRepository(Factory factory) : PostgresRepositor
         return 0;
     }, ct: ct);
 
-    public Task<IReadOnlyList<AuditEvent>> ListAsync(string? actor = null, string? action = null, Slice? slice = null, CancellationToken ct = default) => Run<IReadOnlyList<AuditEvent>>(async db =>
+    public Task<IReadOnlyList<AuditEvent>> ListAsync(string? actor = null, string? action = null, AuditKey? after = null, int? take = null, CancellationToken ct = default) => Run<IReadOnlyList<AuditEvent>>(async db =>
     {
         // Stored text never contains NUL or malformed Unicode (Postgres cannot even compare against it): nothing matches.
         if ((actor is not null && !Validation.IsCleanText(actor)) || (action is not null && !Validation.IsCleanText(action))) return [];
-        var q = db.AuditEvents.AsNoTracking();
+        // The keyset predicate is a row-value comparison in SQL: uuid compares as unsigned bytes, the order AuditKey.CompareIds
+        // reproduces for the in-memory store (and the order of the (at, id) indexes). The rest composes on top as a subquery.
+        IQueryable<AuditEvent> q = after is { } k
+            ? db.AuditEvents.FromSql($"SELECT * FROM audit_events WHERE (at, id) < ({k.At.ToUniversalTime()}, {k.Id})")
+            : db.AuditEvents;
+        q = q.AsNoTracking();
         if (actor is not null) q = q.Where(e => e.Actor == actor);
         if (action is not null) q = q.Where(e => e.Action == action);
-        return await q.OrderByDescending(e => e.At).ThenByDescending(e => e.Id).Page(slice).ToListAsync(ct);
+        q = q.OrderByDescending(e => e.At).ThenByDescending(e => e.Id);
+        return await (take is { } n ? q.Take(n) : q).ToListAsync(ct);
     }, ct: ct);
 }
 
