@@ -31,6 +31,12 @@ public sealed record SecretResponse(string Secret)
 
 public sealed record PasswordRequest(string? Password);
 
+/// <summary>Own password change. ToString never prints either password, so logging the object cannot leak them.</summary>
+public sealed record OwnPasswordRequest(string? CurrentPassword, string? NewPassword)
+{
+    private bool PrintMembers(System.Text.StringBuilder builder) => false;
+}
+
 /// <summary>The caller's own account (read-only).</summary>
 public sealed record MeResponse(Guid Id, string Username, string DisplayName, string Email, UserKind Kind, DateTimeOffset? ExpiresAt);
 
@@ -59,6 +65,13 @@ public static class Endpoints
     public const string AdminPolicy = "admin";
     public const string SelfPolicy = "self";
     public const string ReadyPolicy = "ready";
+
+    /// <summary>Problem extension <c>code</c> of the 403 for a wrong current password (the status alone also means "not allowed"; clients tell them apart by this).</summary>
+    public const string WrongCurrentPasswordCode = "current-password-incorrect";
+    public const string WrongCurrentPasswordText = "The current password is incorrect.";
+    /// <summary>Wrong or refused attempts per user (all addresses) and per address within the throttle window before 429.</summary>
+    public const int PasswordFailuresPerUser = 5;
+    public const int PasswordFailuresPerAddress = 20;
 
     /// <summary>Exactly person, test or shared (any case): not numbers and not comma lists, which Enum.TryParse would accept.</summary>
     private static UserKind? ParseKind(string? kind) =>
@@ -247,6 +260,13 @@ public static class Endpoints
     }
 
     /// <summary>Self-service: the caller's own account and sessions. The subject always comes from the token, never from the URL.</summary>
+    private static IResult Throttled(HttpContext http, TimeSpan wait)
+    {
+        http.Items[AuditMiddleware.SkipKey] = true;
+        http.Response.Headers.RetryAfter = ((int)Math.Ceiling(wait.TotalSeconds)).ToString();
+        return Results.Problem("Too many failed attempts. Try again later.", statusCode: StatusCodes.Status429TooManyRequests);
+    }
+
     private static void MapMe(IEndpointRouteBuilder routes)
     {
         var me = routes.MapGroup("/v1/me").RequireAuthorization(SelfPolicy).WithTags("Me");
@@ -278,6 +298,71 @@ public static class Endpoints
         }).WithDescription("Ends one of the caller's own sessions (the current one too). 404 both when there is no such session and when it belongs to another user.")
           .Produces(StatusCodes.Status204NoContent)
           .ProducesProblem(StatusCodes.Status404NotFound);
+        me.MapPut("/password", async (HttpContext http, OwnPasswordRequest r, CredentialService credentials, AdminAccessCheck access,
+                [FromKeyedServices("passwordUser")] LoginThrottle userThrottle, [FromKeyedServices("passwordAddress")] LoginThrottle addressThrottle, CancellationToken ct) =>
+            {
+                var userId = UserId(http);
+                var keep = SessionId(http);
+                var address = (http.Connection.RemoteIpAddress ?? System.Net.IPAddress.None).ToString();
+                var userKey = $"pw:{userId}";
+                http.Response.Headers.CacheControl = "no-store";
+                // Attempts are reserved atomically BEFORE any hashing (parallel requests cannot all pass a check made before the first
+                // failure is recorded). A slot stays taken, i.e. counts as a failed guess, unless the attempt succeeded or was not a guess.
+                // A throttled attempt writes no audit row: the attempts that filled the window were recorded (bounded by the limits).
+                if (!userThrottle.TryReserve(userKey, out var userWait))
+                    return Throttled(http, userWait);
+                if (!addressThrottle.TryReserve(address, out var addressWait))
+                {
+                    userThrottle.Release(userKey);
+                    return Throttled(http, addressWait);
+                }
+
+                OwnPasswordChange change;
+                try
+                {
+                    change = await credentials.ChangeOwnPasswordAsync(userId, r.CurrentPassword, r.NewPassword, keep, ct);
+                }
+                catch (ValidationException)
+                {
+                    // Rule violations are decided before the current password is looked at: they cannot be a guess, so the owner's own typos
+                    // do not use up the per-user limit. They still count per address, which bounds a flood of malformed requests.
+                    userThrottle.Release(userKey);
+                    throw;
+                }
+                catch (BusyException)
+                {
+                    // Nothing was decided; hand the slots back and write no audit row (a 503 flood must not become an audit flood).
+                    userThrottle.Release(userKey);
+                    addressThrottle.Release(address);
+                    http.Items[AuditMiddleware.SkipKey] = true;
+                    throw;
+                }
+                switch (change.Result)
+                {
+                    case OwnPasswordResult.WrongCurrent:
+                        http.Items[AuditMiddleware.SelfAuditedKey] = true; // the audit middleware writes the one failure row; no extra "forbidden" row
+                        http.Items[AuditMiddleware.NoteKey] = "reason=current-password";
+                        // 403, not 401: a client must not read this as an expired token and sign the user out.
+                        return Results.Problem(WrongCurrentPasswordText, statusCode: StatusCodes.Status403Forbidden,
+                            extensions: new Dictionary<string, object?> { ["code"] = WrongCurrentPasswordCode });
+                    case OwnPasswordResult.Unchanged:
+                        // Only reached after the current password verified, so it is not a guess: per-address only.
+                        userThrottle.Release(userKey);
+                        http.Items[AuditMiddleware.NoteKey] = "reason=same-password";
+                        return Results.ValidationProblem(new Dictionary<string, string[]> { ["newPassword"] = ["must differ from the current password."] });
+                }
+
+                userThrottle.Release(userKey);
+                addressThrottle.Release(address);
+                access.Evict(userId); // every token of the user's ended sessions stops at once on this instance
+                http.Items[AuditMiddleware.NoteKey] = $"sessionsRevoked={change.SessionsRevoked}; kept={(keep is { } k ? k.ToString() : "none")}";
+                return Results.NoContent();
+            })
+          .WithDescription("Changes the caller's own password. Needs the current password (verified like a login). 204: changed; every other session of the user ended (all of them for a token without a session). 400: the new password breaks the password rules or equals the current one. 403 with code current-password-incorrect: the current password was not accepted (a fixed answer, deliberately not 401, so clients do not treat it as an ended session). 429: too many failed attempts for this user or address (Retry-After). Neither password is ever logged or audited; the audit row has the route and the number of sessions ended.")
+          .Produces(StatusCodes.Status204NoContent)
+          .ProducesProblem(StatusCodes.Status400BadRequest)
+          .ProducesProblem(StatusCodes.Status403Forbidden)
+          .ProducesProblem(StatusCodes.Status429TooManyRequests);
         me.MapDelete("/sessions", async (HttpContext http, SessionService s, IUserRepository users, AdminAccessCheck access, CancellationToken ct) =>
             {
                 var keep = SessionId(http);

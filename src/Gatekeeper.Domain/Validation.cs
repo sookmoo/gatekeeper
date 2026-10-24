@@ -62,7 +62,7 @@ public static partial class Validation
     public const int MaxPasswordLength = 128;
 
     /// <summary>Length rules only (no composition rules). Control characters and malformed Unicode are refused.</summary>
-    public static void Password(string? password) => Throw(Check(("password", PasswordError(password))));
+    public static void Password(string? password, string field = "password") => Throw(Check((field, PasswordError(password))));
 
     private static string? PasswordError(string? value)
     {

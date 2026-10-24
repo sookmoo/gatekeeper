@@ -41,14 +41,27 @@ public sealed record SecretDto(string Secret)
     private bool PrintMembers(System.Text.StringBuilder builder) => false;
 }
 
+/// <summary>Own password change body. ToString prints nothing, so logging the object cannot leak either password.</summary>
+public sealed record OwnPasswordBody(
+    [property: System.Text.Json.Serialization.JsonPropertyName("currentPassword")] string CurrentPassword,
+    [property: System.Text.Json.Serialization.JsonPropertyName("newPassword")] string NewPassword)
+{
+    private bool PrintMembers(System.Text.StringBuilder builder) => false;
+}
+
 public sealed record AuditDto(Guid Id, DateTimeOffset At, string Actor, string Action, string? Target, string Outcome, string? Detail, string? Address);
 
 public sealed record Page<T>(List<T> Items, string? NextCursor);
 
 /// <summary>An error answered by the Gatekeeper API (or its absence): the status and a readable message.</summary>
-public sealed class ApiException(HttpStatusCode status, string message) : Exception(message)
+public sealed class ApiException(HttpStatusCode status, string message, string? code = null) : Exception(message)
 {
     public HttpStatusCode Status { get; } = status;
+
+    /// <summary>The API's machine-readable problem code, when it sent a known one (for example a wrong current password, a 403 that is not "not allowed").</summary>
+    public string? Code { get; } = code;
+
+    public const string WrongCurrentPassword = "current-password-incorrect";
 }
 
 /// <summary>The API no longer accepts this session (ended, revoked or its refresh token expired): sign in again.</summary>
@@ -192,6 +205,14 @@ public sealed class GatekeeperApi(HttpClient http, WebSessions sessions, TimePro
     public async Task<int> RevokeUserSessionsAsync(WebSession s, Guid userId, CancellationToken ct) =>
         (await SendAsync<RevokedDto>(s, HttpMethod.Delete, $"v1/users/{userId}/sessions", null, ct)).Revoked;
 
+    /// <summary>
+    /// Changes the signed-in user's own password. Both passwords only travel in the request body. The browser's address goes along as
+    /// <c>X-Forwarded-For</c> so the API's per-address throttle sees the real client. A wrong current password is a 403 with
+    /// <see cref="ApiException.WrongCurrentPassword"/> (the session stays valid); 429 means throttled.
+    /// </summary>
+    public async Task ChangeOwnPasswordAsync(WebSession s, string currentPassword, string newPassword, CancellationToken ct) =>
+        await SendAsync<object>(s, HttpMethod.Put, "v1/me/password", new OwnPasswordBody(currentPassword, newPassword), ct, forwardAddress: true);
+
     /// <summary>The signed-in user's own account (any user, not only administrators).</summary>
     public Task<MeDto> GetMeAsync(WebSession s, CancellationToken ct) =>
         SendAsync<MeDto>(s, HttpMethod.Get, "v1/me", null, ct);
@@ -252,10 +273,11 @@ public sealed class GatekeeperApi(HttpClient http, WebSessions sessions, TimePro
     public static bool IsAdminRole(AppDto app, RoleDto role) =>
         IsReserved(app) && string.Equals(role.Name, "admin", StringComparison.OrdinalIgnoreCase);
 
-    private async Task<T> SendAsync<T>(WebSession s, HttpMethod method, string path, object? body, CancellationToken ct, long? ifMatchVersion = null)
+    private async Task<T> SendAsync<T>(WebSession s, HttpMethod method, string path, object? body, CancellationToken ct, long? ifMatchVersion = null, bool forwardAddress = false)
     {
         await EnsureFreshAsync(s, ct);
         using var request = new HttpRequestMessage(method, path);
+        if (forwardAddress) ForwardClientAddress(request);
         // A write that carries a version is conditional: the API answers 412 when the resource changed since it was read.
         if (ifMatchVersion is { } v) request.Headers.TryAddWithoutValidation("If-Match", $"\"{v.ToString(System.Globalization.CultureInfo.InvariantCulture)}\"");
         if (body is not null) request.Content = JsonContent.Create(body);
@@ -348,6 +370,7 @@ public sealed class GatekeeperApi(HttpClient http, WebSessions sessions, TimePro
         using (response)
         {
             var text = await response.Content.ReadAsStringAsync(ct);
+            var code = response.StatusCode == HttpStatusCode.Forbidden && ProblemCode(text) == ApiException.WrongCurrentPassword ? ApiException.WrongCurrentPassword : null;
             throw new ApiException(response.StatusCode, response.StatusCode switch
             {
                 HttpStatusCode.Unauthorized => "Not signed in.",
@@ -357,7 +380,20 @@ public sealed class GatekeeperApi(HttpClient http, WebSessions sessions, TimePro
                 _ when (int)response.StatusCode >= 500 => "The Gatekeeper API reported an error.",
                 _ when (int)response.StatusCode is >= 300 and < 400 => "The API answered with a redirect, which is not followed.",
                 _ => Describe(text) ?? response.ReasonPhrase ?? response.StatusCode.ToString(),
-            });
+            }, code);
+        }
+    }
+
+    private static string? ProblemCode(string text)
+    {
+        try
+        {
+            var root = JsonDocument.Parse(text).RootElement;
+            return root.ValueKind == JsonValueKind.Object && root.TryGetProperty("code", out var c) && c.ValueKind == JsonValueKind.String ? c.GetString() : null;
+        }
+        catch (JsonException)
+        {
+            return null;
         }
     }
 

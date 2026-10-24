@@ -82,6 +82,9 @@ builder.Services
     .AddKeyedSingleton<LoginThrottle>("refresh", (_, _) => new LoginThrottle())
     // Dead (revoked, expired) sessions whose token is replayed: a few failures per session per window, then 429.
     .AddKeyedSingleton<LoginThrottle>("refreshSession", (_, _) => new LoginThrottle(maxPerAddress: AuthEndpoints.SessionFailuresAllowed))
+    // Own password change (slice 6g): failed attempts per user (all addresses) and per client address, then 429 without hashing.
+    .AddKeyedSingleton<LoginThrottle>("passwordUser", (_, _) => new LoginThrottle(maxPerAddress: Endpoints.PasswordFailuresPerUser))
+    .AddKeyedSingleton<LoginThrottle>("passwordAddress", (_, _) => new LoginThrottle(maxPerAddress: Endpoints.PasswordFailuresPerAddress))
     .AddSingleton<AuditService>()
     .AddSingleton<AuditRecorder>()
     .AddSingleton<LoginThrottle>()

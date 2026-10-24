@@ -23,6 +23,14 @@ public sealed class AdminAccessCheck(IUserRepository users, AdminGuard guard, IM
         cache.GetOrCreateAsync(("access", userId, sessionId), async entry =>
         {
             entry.AbsoluteExpirationRelativeToNow = CacheFor;
+            // Linked to a per-user token so Evict(userId) drops every entry of the user at once. The token entry is sliding and touched by
+            // every creation here, so it outlives all the (10 s) entries that depend on it.
+            var generation = cache.GetOrCreate(("access-gen", userId), e =>
+            {
+                e.SlidingExpiration = TimeSpan.FromSeconds(30);
+                return new CancellationTokenSource();
+            })!;
+            entry.AddExpirationToken(new Microsoft.Extensions.Primitives.CancellationChangeToken(generation.Token));
             if (sessionId is { } sid && !await sessions.IsActiveAsync(sid, ct)) return null;
             if (await users.GetAsync(userId, ct) is not { } user || !user.IsUsable(Clock.UtcNowMicros())) return null;
             // Only a person administers Gatekeeper, whatever the role table says.
@@ -33,6 +41,16 @@ public sealed class AdminAccessCheck(IUserRepository users, AdminGuard guard, IM
 
     /// <summary>Forgets the cached answer for a session that was just ended, so its tokens stop at once on this instance.</summary>
     public void Evict(Guid userId, Guid? sessionId) => cache.Remove(("access", userId, sessionId));
+
+    /// <summary>Forgets every cached answer for the user (all sessions), so their tokens are re-checked against the store at once on this instance.</summary>
+    public void Evict(Guid userId)
+    {
+        if (cache.TryGetValue(("access-gen", userId), out CancellationTokenSource? generation) && generation is not null)
+        {
+            cache.Remove(("access-gen", userId));
+            generation.Cancel();
+        }
+    }
 
     /// <summary>The token's subject and session, or null when the claims are malformed.</summary>
     public static (Guid UserId, Guid? SessionId)? Subject(System.Security.Claims.ClaimsPrincipal principal)

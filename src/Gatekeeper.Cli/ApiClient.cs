@@ -10,6 +10,14 @@ public sealed class CliException(int exitCode, string message) : Exception(messa
     public int ExitCode { get; } = exitCode;
 }
 
+/// <summary>Own password change body. ToString prints nothing, so logging the object cannot leak either password.</summary>
+public sealed record OwnPasswordBody(
+    [property: System.Text.Json.Serialization.JsonPropertyName("currentPassword")] string CurrentPassword,
+    [property: System.Text.Json.Serialization.JsonPropertyName("newPassword")] string NewPassword)
+{
+    private bool PrintMembers(System.Text.StringBuilder builder) => false;
+}
+
 public sealed class ApiClient(HttpClient http, string? bearerToken = null)
 {
     public Task<JsonElement> GetAsync(string path) => SendAsync(HttpMethod.Get, path, null);
@@ -82,6 +90,7 @@ public sealed class ApiClient(HttpClient http, string? bearerToken = null)
                 HttpStatusCode.Unauthorized when path == LoginPath => "Login failed: invalid credentials.",
                 HttpStatusCode.Unauthorized when bearerToken is not null => "Your session is invalid or has expired. Run 'gk login'.",
                 HttpStatusCode.Unauthorized => "Not logged in. Run 'gk login'.",
+                HttpStatusCode.Forbidden when WrongCurrentPassword(text) => "The current password is incorrect.",
                 HttpStatusCode.Forbidden => "You are not allowed to do that.",
                 _ => Safe.Text(Describe(text) ?? response.ReasonPhrase ?? response.StatusCode.ToString()),
             };
@@ -91,10 +100,26 @@ public sealed class ApiClient(HttpClient http, string? bearerToken = null)
                 HttpStatusCode.Conflict => 3,
                 HttpStatusCode.ServiceUnavailable => 4,
                 HttpStatusCode.Unauthorized => 5,
+                HttpStatusCode.Forbidden when WrongCurrentPassword(text) => 1, // not a sign-in problem: the session is fine
                 HttpStatusCode.Forbidden => 5,
                 _ => 1,
             };
             throw new CliException(code, message);
+        }
+    }
+
+    // The API's 403 for a wrong current password carries code "current-password-incorrect"; any other 403 means "not allowed".
+    private static bool WrongCurrentPassword(string text)
+    {
+        try
+        {
+            var root = JsonDocument.Parse(text).RootElement;
+            return root.ValueKind == JsonValueKind.Object && root.TryGetProperty("code", out var c) && c.ValueKind == JsonValueKind.String
+                   && c.GetString() == "current-password-incorrect";
+        }
+        catch (JsonException)
+        {
+            return false;
         }
     }
 
