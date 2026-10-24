@@ -338,8 +338,9 @@ public sealed class UserService(IUserRepository users, AdminGuard? guard = null,
     }
 
     /// <summary>
-    /// A user with no role in an application cannot have a legitimate session there (a login needs a role), so any that exist are
-    /// leftovers (for example from before a lazy cut-off) and must not come back to life with the new role.
+    /// A user with no role in an application cannot have a legitimate session there (a login needs a role, except the self-service
+    /// sign-in to the reserved application), so any that exist are leftovers (for example from before a lazy cut-off) and must not come back
+    /// to life with the new role. Consequence: assigning the admin role to a signed-in self-service user ends their live sessions.
     /// </summary>
     private async Task EndStaleSessionsBeforeAssignAsync(Guid userId, Guid roleId, CancellationToken ct)
     {
@@ -483,8 +484,15 @@ public sealed class AuthService(
         if (await users.GetAsync(userId, ct) is not { } user || !user.IsUsable(Clock.UtcNowMicros())) return null;
         if (await apps.GetAsync(appId, ct) is not { } app) return null;
         var names = await RoleNamesAsync(user.Id, app.Id, ct);
-        return names.Count == 0 ? null : new AuthResult(user, app, names);
+        return names.Count == 0 && !MaySignInWithoutRoles(user, app) ? null : new AuthResult(user, app, names);
     }
+
+    /// <summary>
+    /// Self-service (slice 6f): any usable person or test user may hold a token for the reserved application without a role there;
+    /// it reaches only /v1/me. Shared accounts get no self-service. Every other application still needs at least one role.
+    /// </summary>
+    public static bool MaySignInWithoutRoles(User user, App app) =>
+        string.Equals(app.Name, Reserved.AdminApp, StringComparison.OrdinalIgnoreCase) && user.Kind is (UserKind.Person or UserKind.Test);
 
     public async Task<AuthResult?> LoginAsync(string? username, string? password, string? application, CancellationToken ct = default)
     {
@@ -510,7 +518,7 @@ public sealed class AuthService(
         if (!wellFormed || user is null || stored is null || app is null || !verified || !user.IsUsable(Clock.UtcNowMicros())) return null;
 
         var names = await RoleNamesAsync(user.Id, app.Id, ct);
-        if (names.Count == 0) return null;
+        if (names.Count == 0 && !MaySignInWithoutRoles(user, app)) return null;
 
         if (hasher.NeedsRehash(stored))
         {
@@ -530,8 +538,11 @@ public sealed class AuthService(
 public sealed class AuditService(IAuditRepository audit)
 {
     public Task RecordAsync(string actor, string action, string? target, bool success, string? detail = null, string? address = null, CancellationToken ct = default) =>
+        RecordOutcomeAsync(actor, action, target, success ? AuditEvent.Success : AuditEvent.Failure, detail, address, ct);
+
+    public Task RecordOutcomeAsync(string actor, string action, string? target, string outcome, string? detail = null, string? address = null, CancellationToken ct = default) =>
         audit.AppendAsync(new AuditEvent(Guid.NewGuid(), Clock.UtcNowMicros(), Clean(actor)!, Clean(action)!, Clean(target),
-            success ? AuditEvent.Success : AuditEvent.Failure, Clean(detail), Clean(address)), ct);
+            outcome, Clean(detail), Clean(address)), ct);
 
     public async Task<Page<AuditEvent>> ListAsync(string? actor = null, string? action = null, AuditPageQuery? page = null, CancellationToken ct = default)
     {
@@ -873,6 +884,10 @@ public sealed class SessionService(ISessionRepository sessions, AuthService auth
     public Task<int> RevokeAllAsync(Guid userId, CancellationToken ct = default) =>
         sessions.RevokeAllForUserAsync(userId, Clock.UtcNowMicros(), ct);
 
+    /// <summary>Ends every active session of the user except <paramref name="keep"/> (the caller's own). Returns how many.</summary>
+    public Task<int> RevokeAllExceptAsync(Guid userId, Guid? keep, CancellationToken ct = default) =>
+        keep is { } k ? sessions.RevokeAllForUserExceptAsync(userId, k, Clock.UtcNowMicros(), ct) : RevokeAllAsync(userId, ct);
+
     // A user cannot pile up sessions without bound: past the cap the least recently used ones are ended.
     private async Task TrimAsync(Guid userId, Guid keep, DateTimeOffset now, CancellationToken ct)
     {
@@ -902,6 +917,9 @@ public sealed class SessionService(ISessionRepository sessions, AuthService auth
 
     internal static string HashToken(string token) =>
         Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(token))).ToLowerInvariant();
+
+    /// <summary>The session id a refresh token names (it proves nothing yet), or null when the token is malformed.</summary>
+    public static Guid? SessionIdOf(string? token) => TryParse(token, out var id) ? id : null;
 
     internal static bool TryParse(string? token, out Guid sessionId)
     {

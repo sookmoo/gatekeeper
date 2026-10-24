@@ -17,6 +17,8 @@ public static class CliApp
     private static readonly string[] AppFields = ["id", "name"];
     private static readonly string[] RoleFields = ["id", "name", "description"];
     private static readonly string[] SessionFields = ["id", "appId", "createdAt", "lastUsedAt", "expiresAt"];
+    private static readonly string[] OwnSessionFields = ["id", "appName", "current", "createdAt", "lastUsedAt", "expiresAt"];
+    private static readonly string[] MeFields = ["id", "username", "displayName", "email", "kind", "expiresAt"];
     private static readonly string[] ClientFields = ["id", "name", "appId", "isActive"];
     private static readonly string[] AuditFields = ["at", "outcome", "actor", "action", "target", "detail"];
     private static readonly string[] UserFields = ["id", "username", "email", "kind", "isActive", "expiresAt", "displayName"];
@@ -40,6 +42,7 @@ public static class CliApp
         root.Subcommands.Add(AuditCommands());
         root.Subcommands.Add(LoginCommand());
         root.Subcommands.Add(LogoutCommand());
+        root.Subcommands.Add(MeCommands());
 
         return await root.Parse(args).InvokeAsync(new InvocationConfiguration { Output = stdout, Error = stderr });
 
@@ -153,6 +156,28 @@ public static class CliApp
                 }
             });
             return c;
+        }
+
+        // Self-service: works for any signed-in person or test user (no administrator role needed).
+        Command MeCommands()
+        {
+            var cmd = Cmd("me", "Show your own account (and manage your own sessions)", _ => { }, async x =>
+                x.Print(await x.Api.GetAsync("/v1/me"), MeFields, single: true));
+            cmd.Subcommands.Add(Cmd("sessions", "List your own active sessions", _ => { }, async x =>
+                x.Print(await x.Api.GetListAsync("/v1/me/sessions"), OwnSessionFields)));
+            var session = new Argument<string>("session") { Description = "Session id (see 'me sessions')" };
+            cmd.Subcommands.Add(Cmd("revoke-session", "End one of your own sessions", c => c.Arguments.Add(session), async x =>
+            {
+                if (!Guid.TryParse(x.Get(session), out var sessionId)) throw new CliException(1, "The session must be a session id.");
+                await x.Api.DeleteAsync($"/v1/me/sessions/{sessionId}");
+                x.Message("revoked");
+            }));
+            cmd.Subcommands.Add(Cmd("revoke-sessions", "End all your other sessions (the one you are using stays; 'gk logout' ends that)", _ => { }, async x =>
+            {
+                var result = await x.Api.DeleteAsync("/v1/me/sessions");
+                x.Message($"revoked {result.GetProperty("revoked").GetInt32()} other session(s)");
+            }));
+            return cmd;
         }
 
         Command AppCommands()

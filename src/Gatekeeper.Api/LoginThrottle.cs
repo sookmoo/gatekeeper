@@ -44,6 +44,17 @@ public sealed class LoginThrottle(
         return wait > TimeSpan.Zero;
     }
 
+    /// <summary>Recent failures counted against the address key itself (for a non-address key such as a session bucket).</summary>
+    public int AddressFailures(string address)
+    {
+        if (!_failures.TryGetValue($"a:{Bucket(address)}", out var q)) return 0;
+        lock (q)
+        {
+            Trim(q);
+            return q.Count;
+        }
+    }
+
     public void RecordFailure(string address, string? username)
     {
         address = Bucket(address);

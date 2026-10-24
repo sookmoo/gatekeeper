@@ -18,7 +18,7 @@ public sealed class BearerSecurityTransformer : IOpenApiDocumentTransformer
             Type = SecuritySchemeType.Http,
             Scheme = "bearer",
             BearerFormat = "JWT",
-            Description = "Access token from POST /v1/auth/login for an administrator.",
+            Description = "Access token from POST /v1/auth/login for the gatekeeper application. The management routes need the administrator role (policy admin); the /v1/me routes accept any usable person or test user, with or without roles (policy self).",
         };
         document.Components.SecuritySchemes["clientBasic"] = new OpenApiSecurityScheme
         {
@@ -54,7 +54,12 @@ public sealed class BearerSecurityTransformer : IOpenApiDocumentTransformer
             }
             if (Anonymous.Contains(path) || item.Operations is null) continue;
             foreach (var op in item.Operations.Values)
+            {
                 op.Security = [new OpenApiSecurityRequirement { [new OpenApiSecuritySchemeReference("bearer", document)] = [] }];
+                // Which authorization policy guards the operation: self (any person or test user, own data only) or admin.
+                op.Extensions ??= new Dictionary<string, IOpenApiExtension>();
+                op.Extensions["x-gatekeeper-access"] = new JsonNodeExtension(System.Text.Json.Nodes.JsonValue.Create((path == "/v1/me" || path.StartsWith("/v1/me/", StringComparison.Ordinal)) ? "self" : "admin"));
+            }
         }
         // Superseded by DELETE /v1/users/{id}/sessions/{sessionId} (slice 6b); kept for existing callers.
         if (document.Paths.TryGetValue("/v1/sessions/{id}", out var old) && old.Operations is not null

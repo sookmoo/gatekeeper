@@ -31,6 +31,7 @@ public class Slice6aReviewTests
         public Task<bool> RotateAsync(Guid id, string e, string n, DateTimeOffset now, CancellationToken ct = default) => inner.RotateAsync(id, e, n, now, ct);
         public Task<bool> RevokeAsync(Guid id, DateTimeOffset now, CancellationToken ct = default) => inner.RevokeAsync(id, now, ct);
         public Task<bool> RevokeForUserAsync(Guid userId, Guid sessionId, DateTimeOffset now, CancellationToken ct = default) => inner.RevokeForUserAsync(userId, sessionId, now, ct);
+        public Task<int> RevokeAllForUserExceptAsync(Guid u, Guid keep, DateTimeOffset now, CancellationToken ct = default) => inner.RevokeAllForUserExceptAsync(u, keep, now, ct);
         public Task<int> RevokeAllForUserAsync(Guid userId, DateTimeOffset now, CancellationToken ct = default) { Boom(ref FailNextRevokeAll); return inner.RevokeAllForUserAsync(userId, now, ct); }
         public Task<int> RevokeAllForUserInAppAsync(Guid userId, Guid appId, DateTimeOffset now, CancellationToken ct = default) { Boom(ref FailNextRevokeInApp); return inner.RevokeAllForUserInAppAsync(userId, appId, now, ct); }
         public Task<int> CapExpiryForUserAsync(Guid userId, DateTimeOffset endsAt, DateTimeOffset now, CancellationToken ct = default) { Boom(ref FailNextCap); return inner.CapExpiryForUserAsync(userId, endsAt, now, ct); }

@@ -106,4 +106,60 @@ public class QaAuthServiceTests
         var r = await new AuthService(users, apps, creds, h).LoginAsync("many", "correct horse battery", "big");
         Assert.Equal(250, r!.Roles.Count);
     }
+
+    // ---- slice 6f: sign-in to the reserved application without a role there ----
+
+    private static async Task<(AuthService Auth, InMemoryUserRepository Users, IAppRepository Apps, ICredentialRepository Creds)> Reserved6f()
+    {
+        var s = new InMemoryStore();
+        var apps = new InMemoryAppRepository(s); var users = new InMemoryUserRepository(s); var creds = new InMemoryCredentialRepository(s);
+        await apps.AddAsync(new App(Guid.NewGuid(), "gatekeeper"));
+        await apps.AddAsync(new App(Guid.NewGuid(), "shop"));
+        return (new AuthService(users, apps, creds, new FakeHasher()), users, apps, creds);
+    }
+
+    private static async Task<User> AddUser(InMemoryUserRepository users, ICredentialRepository creds, string name, UserKind kind, bool active = true, DateTimeOffset? expires = null)
+    {
+        var u = await users.AddAsync(new User(Guid.NewGuid(), name, $"{name}@example.com", "", active, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, kind, expires));
+        await creds.SetAsync(u.Id, "v2:correct horse battery", DateTimeOffset.UtcNow);
+        return u;
+    }
+
+    [Fact]
+    public async Task Person_and_test_users_sign_in_to_the_reserved_app_without_roles_but_not_elsewhere()
+    {
+        var (auth, users, _, creds) = await Reserved6f();
+        var person = await AddUser(users, creds, "alice", UserKind.Person);
+        var test = await AddUser(users, creds, "tess", UserKind.Test, expires: DateTimeOffset.UtcNow.AddDays(1));
+        foreach (var name in new[] { "alice", "tess" })
+        {
+            var r = await auth.LoginAsync(name, "correct horse battery", "gatekeeper");
+            Assert.NotNull(r);
+            Assert.Empty(r!.Roles);
+            Assert.Null(await auth.LoginAsync(name, "correct horse battery", "shop"));
+        }
+        var gatekeeper = (await auth.LoginAsync("alice", "correct horse battery", "gatekeeper"))!.App;
+        Assert.NotNull(await auth.ResolveAsync(person.Id, gatekeeper.Id));
+        Assert.Null(await auth.ResolveAsync(person.Id, Guid.NewGuid()));
+        _ = test;
+    }
+
+    [Fact]
+    public async Task Shared_disabled_expired_and_wrongly_authenticated_users_still_get_nothing()
+    {
+        var (auth, users, apps, creds) = await Reserved6f();
+        var shared = await AddUser(users, creds, "team", UserKind.Shared);
+        var off = await AddUser(users, creds, "off", UserKind.Person, active: false);
+        var gone = await AddUser(users, creds, "gone", UserKind.Test, expires: DateTimeOffset.UtcNow.AddSeconds(-5));
+        var ok = await AddUser(users, creds, "ok", UserKind.Person);
+        Assert.Null(await auth.LoginAsync("team", "correct horse battery", "gatekeeper"));
+        Assert.Null(await auth.LoginAsync("off", "correct horse battery", "gatekeeper"));
+        Assert.Null(await auth.LoginAsync("gone", "correct horse battery", "gatekeeper"));
+        Assert.Null(await auth.LoginAsync("ok", "wrong password entirely", "gatekeeper"));
+        var gatekeeper = (await apps.GetByNameAsync("gatekeeper"))!;
+        Assert.Null(await auth.ResolveAsync(shared.Id, gatekeeper.Id));
+        Assert.Null(await auth.ResolveAsync(off.Id, gatekeeper.Id));
+        Assert.Null(await auth.ResolveAsync(gone.Id, gatekeeper.Id));
+        Assert.NotNull(await auth.ResolveAsync(ok.Id, gatekeeper.Id));
+    }
 }

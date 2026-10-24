@@ -7,5 +7,5 @@ public class IndexModel : PageModel
 {
     public IActionResult OnPost() => NotFound();
 
-    public IActionResult OnGet() => RedirectToPage("/Applications/Index");
+    public IActionResult OnGet() => RedirectToPage(User.IsInRole(WebSession.AdminRole) ? "/Applications/Index" : "/Account/Index");
 }

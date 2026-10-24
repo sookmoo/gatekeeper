@@ -23,6 +23,10 @@ Environment=Auth__SigningKeyPemFile=/run/secrets/gatekeeper-signing-key
 # Managed by deploy/rotate-signing-key.sh; "# no retired keys" when empty.
 Secret=gatekeeper-retired-keys,type=mount,uid=1654,mode=0400
 Environment=Auth__RetiredKeysPemFile=/run/secrets/gatekeeper-retired-keys
+# Logins and refreshes are throttled per client address. The web UI forwards the browser's address in X-Forwarded-For; the API trusts it only from
+# the addresses listed here (comma-separated; full addresses only). This is the fixed IP of gatekeeper-web on gatekeeper.network (Subnet in
+# gatekeeper.network, IP in gatekeeper-web.container); change all three together. Unset = trust nobody.
+Environment=Auth__TrustedProxies=10.89.77.10
 # The root filesystem is read-only, so give the secret a writable place to be mounted into.
 Tmpfs=/run/secrets:size=1m,mode=0755
 # Argon2 uses 64 MiB per hash and the service caps concurrent hashes; this is a backstop against exhausting the host.

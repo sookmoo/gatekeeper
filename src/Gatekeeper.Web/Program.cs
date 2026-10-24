@@ -26,14 +26,17 @@ if (!TryFlag("Gatekeeper:AllowPlainApi", out var allowPlainApi) || !TryFlag("Gat
 if (apiUri.Scheme == Uri.UriSchemeHttp && !apiUri.IsLoopback && !allowPlainApi)
     return Fail($"Refusing plain http to {apiUri.Host}: use https:// or set Gatekeeper:AllowPlainApi=true for a private network.");
 
-if (!TryNumber("Web:IdleMinutes", 30, 1, 480, out var idleMinutes) || !TryNumber("Web:AbsoluteHours", 8, 1, 72, out var absoluteHours))
+if (!TryNumber("Web:IdleMinutes", 30, 1, 480, out var idleMinutes) || !TryNumber("Web:AbsoluteHours", 8, 1, 72, out var absoluteHours)
+    || !TryNumber("Web:MaxSessions", 1000, 1, 100_000, out var maxSessions) || !TryNumber("Web:MaxSessionsPerUser", 5, 1, 100, out var maxPerUser))
     return 1;
 
+const string AdminPolicy = "admin";
 var cookies = new CookieSettings(secureCookies);
 builder.Services
     .AddSingleton(TimeProvider.System)
+    .AddHttpContextAccessor()
     .AddSingleton(cookies)
-    .AddSingleton(new WebOptions { IdleTimeout = TimeSpan.FromMinutes(idleMinutes), AbsoluteTimeout = TimeSpan.FromHours(absoluteHours) })
+    .AddSingleton(new WebOptions { IdleTimeout = TimeSpan.FromMinutes(idleMinutes), AbsoluteTimeout = TimeSpan.FromHours(absoluteHours), MaxSessions = maxSessions, MaxSessionsPerUser = maxPerUser })
     .AddSingleton<WebSessions>()
     .AddSingleton<FailureThrottle>()
     .AddHttpClient<GatekeeperApi>(c =>
@@ -54,9 +57,13 @@ builder.Services.AddAntiforgery(o =>
 });
 
 builder.Services.AddAuthentication(SessionAuthHandler.SchemeName).AddScheme<AuthenticationSchemeOptions, SessionAuthHandler>(SessionAuthHandler.SchemeName, null);
-builder.Services.AddAuthorizationBuilder().SetFallbackPolicy(new AuthorizationPolicyBuilder().RequireAuthenticatedUser().Build());
+builder.Services.AddAuthorizationBuilder()
+    .SetFallbackPolicy(new AuthorizationPolicyBuilder().RequireAuthenticatedUser().Build())
+    .AddPolicy(AdminPolicy, p => p.RequireAuthenticatedUser().RequireRole(WebSession.AdminRole));
 builder.Services.AddRazorPages(o =>
 {
+    // Everything that manages Gatekeeper is for administrators (403 for anyone else signed in); /Account, /Logout and / are for everyone.
+    foreach (var folder in new[] { "/Applications", "/Users", "/Clients", "/Audit" }) o.Conventions.AuthorizeFolder(folder, AdminPolicy);
     o.Conventions.AllowAnonymousToPage("/Login");
     o.Conventions.AllowAnonymousToPage("/Error");
 });
@@ -138,7 +145,7 @@ app.Use(async (http, next) =>
         // The API's own wording stays in the log: it is not shown to the browser.
         var detail = Gatekeeper.Web.Pages.Users.UserAccess.ForLog(ex.Message);
         app.Logger.LogWarning("API error {Status} on {Method} {Path}: {Detail}", (int)ex.Status, http.Request.Method, http.Request.Path, detail);
-        var back = http.Request.Path.StartsWithSegments("/Users") ? "/Users" : http.Request.Path.StartsWithSegments("/Applications") ? "/Applications" : http.Request.Path.StartsWithSegments("/Clients") ? "/Clients" : http.Request.Path.StartsWithSegments("/Audit") ? "/Audit" : "/";
+        var back = http.Request.Path.StartsWithSegments("/Users") ? "/Users" : http.Request.Path.StartsWithSegments("/Applications") ? "/Applications" : http.Request.Path.StartsWithSegments("/Clients") ? "/Clients" : http.Request.Path.StartsWithSegments("/Audit") ? "/Audit" : http.Request.Path.StartsWithSegments("/Account") ? "/Account" : "/";
         http.Response.StatusCode = status;
         http.Response.ContentType = "text/html; charset=utf-8";
         await http.Response.WriteAsync($"<!doctype html><meta charset=\"utf-8\"><link rel=\"stylesheet\" href=\"/site.css\"><title>Gatekeeper</title><main><p>{HtmlEncoder.Default.Encode(text)}</p>{(retry ? $"<p><a href=\"{back}\">Try again</a></p>" : $"<p><a href=\"{back}\">Back</a></p>")}</main>");

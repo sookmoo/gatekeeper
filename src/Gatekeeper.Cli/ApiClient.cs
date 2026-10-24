@@ -82,7 +82,7 @@ public sealed class ApiClient(HttpClient http, string? bearerToken = null)
                 HttpStatusCode.Unauthorized when path == LoginPath => "Login failed: invalid credentials.",
                 HttpStatusCode.Unauthorized when bearerToken is not null => "Your session is invalid or has expired. Run 'gk login'.",
                 HttpStatusCode.Unauthorized => "Not logged in. Run 'gk login'.",
-                HttpStatusCode.Forbidden => "You are not allowed to do that (administrator role required).",
+                HttpStatusCode.Forbidden => "You are not allowed to do that.",
                 _ => Safe.Text(Describe(text) ?? response.ReasonPhrase ?? response.StatusCode.ToString()),
             };
             var code = response.StatusCode switch

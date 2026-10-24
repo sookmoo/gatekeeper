@@ -10,17 +10,20 @@ public sealed record WebOptions
     public TimeSpan IdleTimeout { get; init; } = TimeSpan.FromMinutes(30);
     /// <summary>A session ends this long after login, however active it is.</summary>
     public TimeSpan AbsoluteTimeout { get; init; } = TimeSpan.FromHours(8);
+    /// <summary>All web sessions together. When the table is full and nothing has expired, new sign-ins are refused (503) rather than ending other people's sessions.</summary>
     public int MaxSessions { get; init; } = 1000;
+    /// <summary>Web sessions of one user (browsers); a further sign-in ends that user's oldest one.</summary>
+    public int MaxSessionsPerUser { get; init; } = 5;
 }
 
 /// <summary>The applications as read at one moment: the ones a client can belong to, and every name.</summary>
 public sealed record AppListSnapshot(DateTimeOffset At, List<AppDto> Choices, Dictionary<Guid, string> Names);
 
-/// <summary>The Gatekeeper tokens of one signed-in administrator. Immutable: a refresh swaps the whole record.</summary>
+/// <summary>The Gatekeeper tokens of one signed-in user. Immutable: a refresh swaps the whole record.</summary>
 public sealed record Tokens(string Access, DateTimeOffset AccessExpiresAt, string Refresh, DateTimeOffset RefreshExpiresAt);
 
 /// <summary>
-/// One signed-in administrator. The browser only ever holds the opaque session id (in an HttpOnly cookie); the access and
+/// One signed-in user (administrator or not). The browser only ever holds the opaque session id (in an HttpOnly cookie); the access and
 /// refresh tokens stay here, on the server.
 /// </summary>
 public sealed class WebSession(string id, string username, Tokens tokens, DateTimeOffset createdAt)
@@ -32,8 +35,19 @@ public sealed class WebSession(string id, string username, Tokens tokens, DateTi
     public string Username { get; } = username;
     /// <summary>The signed-in user's id: the <c>sub</c> claim of the current access token (null if it cannot be read). Unlike the username it survives a rename.</summary>
     public Guid? UserId => GuidClaim(Tokens.Access, "sub");
-    /// <summary>The id of this administrator's API (refresh) session: the <c>sid</c> claim of the access token.</summary>
+    /// <summary>The id of this user's API (refresh) session: the <c>sid</c> claim of the access token.</summary>
     public Guid? ApiSessionId => GuidClaim(Tokens.Access, "sid");
+    /// <summary>
+    /// Whether the current access token carries the admin role. Only decides what the UI offers (pages, navigation); the API checks
+    /// the real role on every call, so a stale or forged claim cannot give more than a refusal.
+    /// </summary>
+    public bool IsAdmin => Payload(Tokens.Access, root =>
+        root.TryGetProperty("roles", out var roles)
+        && (roles.ValueKind == System.Text.Json.JsonValueKind.Array
+            ? roles.EnumerateArray().Any(r => r.ValueKind == System.Text.Json.JsonValueKind.String && r.GetString() == AdminRole)
+            : roles.ValueKind == System.Text.Json.JsonValueKind.String && roles.GetString() == AdminRole));
+
+    public const string AdminRole = "admin";
     /// <summary>The lifetime of an access token as the operator set it: <c>exp</c> minus <c>iat</c> of this session's token (null if it cannot be read).</summary>
     public TimeSpan? AccessLifetime => Lifetime(Tokens.Access);
     public DateTimeOffset CreatedAt { get; } = createdAt;
@@ -134,6 +148,9 @@ public sealed class WebSession(string id, string username, Tokens tokens, DateTi
     internal void Touch(DateTimeOffset now) => Interlocked.Exchange(ref _lastSeenTicks, now.UtcTicks);
 }
 
+/// <summary>The web session table is full of live sessions: the sign-in is refused (503) so nobody else is signed out.</summary>
+public sealed class WebSessionLimitException : Exception;
+
 /// <summary>In-memory server-side sessions, looked up by a SHA-256 of the cookie value. A restart signs everyone out.</summary>
 public sealed class WebSessions(TimeProvider time, WebOptions? options = null)
 {
@@ -143,18 +160,35 @@ public sealed class WebSessions(TimeProvider time, WebOptions? options = null)
 
     public int Count => _sessions.Count;
 
-    public WebSession Create(string username, Tokens tokens)
+    private readonly object _createLock = new();
+
+    /// <summary>
+    /// Starts a web session. One user keeps at most <see cref="WebOptions.MaxSessionsPerUser"/>: the user's own oldest go first, nobody else's.
+    /// When the whole table is full, expired sessions are reclaimed; if it is still full the sign-in is refused with <see cref="WebSessionLimitException"/>.
+    /// Sessions ended to make room are added to <paramref name="evicted"/> so the caller can end their API sessions.
+    /// </summary>
+    public WebSession Create(string username, Tokens tokens, List<WebSession>? evicted = null)
     {
         var now = time.GetUtcNow();
-        Sweep(now);
-        if (_sessions.Count >= _options.MaxSessions)
-            foreach (var oldest in _sessions.Values.OrderBy(s => s.LastSeen).Take(Math.Max(1, _sessions.Count - _options.MaxSessions + 1)).ToList())
-                Remove(oldest.Id);
         var id = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)).TrimEnd('=').Replace('+', '-').Replace('/', '_');
         var session = new WebSession(id, username, tokens, now);
-        _sessions[Key(id)] = session;
+        lock (_createLock)
+        {
+            Sweep(now, force: true);
+            // The user's own surplus goes first; only if the table is still full after that is the sign-in refused (and then nothing is evicted).
+            var mine = _sessions.Values.Where(s => SameUser(s, session)).OrderBy(s => s.CreatedAt).ToList();
+            var surplus = mine.Take(Math.Max(0, mine.Count - _options.MaxSessionsPerUser + 1)).ToList();
+            if (_sessions.Count - surplus.Count >= _options.MaxSessions) throw new WebSessionLimitException();
+            foreach (var old in surplus)
+                if (Remove(old.Id) is { } removed) evicted?.Add(removed);
+            _sessions[Key(id)] = session;
+        }
         return session;
     }
+
+    // The user id from the token when it can be read (survives renames and case), else the name as typed, case-folded.
+    private static bool SameUser(WebSession a, WebSession b) =>
+        a.UserId is { } x && b.UserId is { } y ? x == y : string.Equals(a.Username, b.Username, StringComparison.OrdinalIgnoreCase);
 
     /// <summary>The live session for a cookie value (and counts the request as activity), or null.</summary>
     public WebSession? Find(string? id)
@@ -175,10 +209,12 @@ public sealed class WebSessions(TimeProvider time, WebOptions? options = null)
     private bool Expired(WebSession s, DateTimeOffset now) =>
         now - s.LastSeen > _options.IdleTimeout || now - s.CreatedAt > _options.AbsoluteTimeout || s.Tokens.RefreshExpiresAt <= now;
 
-    private void Sweep(DateTimeOffset now)
+    private void Sweep(DateTimeOffset now, bool force = false)
     {
         var last = Interlocked.Read(ref _lastSweepTicks);
-        if (now.UtcTicks - last < TimeSpan.TicksPerSecond * 30 || Interlocked.CompareExchange(ref _lastSweepTicks, now.UtcTicks, last) != last) return;
+        if (!force && (now.UtcTicks - last < TimeSpan.TicksPerSecond * 30 || Interlocked.CompareExchange(ref _lastSweepTicks, now.UtcTicks, last) != last)) return;
+        // Forced sweeps only run when the table is at its limit, so they stay cheap.
+        if (force && _sessions.Count < _options.MaxSessions) return;
         foreach (var (key, s) in _sessions)
             if (Expired(s, now)) _sessions.TryRemove(key, out _);
     }

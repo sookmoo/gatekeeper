@@ -155,7 +155,8 @@ public class Slice6bApiTests : IClassFixture<WebApplicationFactory<Program>>
     public void Every_management_endpoint_requires_the_admin_policy()
     {
         var sources = _factory.Services.GetRequiredService<Microsoft.AspNetCore.Routing.EndpointDataSource>().Endpoints.OfType<Microsoft.AspNetCore.Routing.RouteEndpoint>();
-        var open = sources.Where(e => e.RoutePattern.RawText is { } t && t.StartsWith("/v1") && !t.StartsWith("/v1/auth")
+        // /v1/me is the self-service group (policy "self", see Slice6fApiTests); everything else must be admin.
+        var open = sources.Where(e => e.RoutePattern.RawText is { } t && t.StartsWith("/v1") && !t.StartsWith("/v1/auth") && !t.StartsWith("/v1/me")
                 && !e.Metadata.OfType<Microsoft.AspNetCore.Authorization.IAuthorizeData>().Any(a => a.Policy == Endpoints.AdminPolicy))
             .Select(e => e.RoutePattern.RawText).ToList();
         Assert.Empty(open);

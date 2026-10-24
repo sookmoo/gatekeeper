@@ -7,6 +7,8 @@ After=gatekeeper-api.service
 ContainerName=gatekeeper-web
 Image=ghcr.io/sookmoo/gatekeeper-web:latest
 Network=gatekeeper.network
+# Fixed address inside the Subnet of gatekeeper.network: the API trusts X-Forwarded-For from exactly this address (Auth__TrustedProxies).
+IP=10.89.77.10
 # Loopback only on the host: the UI speaks plain HTTP (passwords, a session cookie). Put a TLS proxy in front to expose it.
 PublishPort=127.0.0.1:5090:8080
 Environment=Gatekeeper__AllowNonLoopback=true

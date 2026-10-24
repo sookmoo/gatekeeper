@@ -5,4 +5,11 @@
 }
 <h1>@Model.Heading</h1>
 <p>@Model.Text</p>
-<p><a href="/Applications">Back to the applications</a></p>
+@if (User.IsInRole(WebSession.AdminRole))
+{
+    <p><a href="/Applications">Back to the applications</a></p>
+}
+else
+{
+    <p><a href="/">Back</a></p>
+}
