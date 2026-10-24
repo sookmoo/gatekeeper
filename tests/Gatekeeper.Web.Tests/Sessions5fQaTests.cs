@@ -354,7 +354,7 @@ public class Sessions5fQaTests : IClassFixture<WebFixture>
                 var payload = _real!.Split('.')[1].Replace('-', '+').Replace('_', '/');
                 payload = payload.PadRight(payload.Length + (4 - payload.Length % 4) % 4, '=');
                 var claims = JsonDocument.Parse(Convert.FromBase64String(payload)).RootElement;
-                var noSid = JsonSerializer.Serialize(new { sub = claims.GetProperty("sub").GetString() });
+                var noSid = JsonSerializer.Serialize(new { sub = claims.GetProperty("sub").GetString(), roles = new[] { "admin" } });
                 var fake = "e30." + Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(noSid)).TrimEnd('=').Replace('+', '-').Replace('/', '_') + ".sig";
                 var rewritten = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(await resp.Content.ReadAsStringAsync(ct))!;
                 var copy = rewritten.ToDictionary(kv => kv.Key, kv => (object)kv.Value);

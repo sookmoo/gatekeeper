@@ -1,0 +1,25 @@
+@page "/Account/Sessions/RevokeOthers"
+@model Gatekeeper.Web.Pages.Account.Sessions.RevokeOthersModel
+@using Gatekeeper.Web.Pages.Users.Sessions
+@{
+    ViewData["Title"] = "Revoke all other sessions";
+}
+<h1>Revoke all other sessions</h1>
+@if (Model.Error is not null)
+{
+    <p class="error" role="alert">@Model.Error</p>
+}
+@if (Model.Count == 0)
+{
+    <p>You have no other active sessions.</p>
+    <p><a href="/Account">Back to your account</a></p>
+}
+else
+{
+    <p>Revoke your @Model.Count other active @(Model.Count == 1 ? "session" : "sessions")? Your current session stays; end it by signing out.</p>
+    <p>@SessionAccess.LifetimeNote(Model.Lifetime, includeRefreshNote: false)</p>
+    <form method="post">
+        <button type="submit" class="danger">Revoke all other sessions</button>
+        <a href="/Account">Cancel</a>
+    </form>
+}

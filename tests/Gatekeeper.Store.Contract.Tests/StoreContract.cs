@@ -130,6 +130,34 @@ public abstract class StoreContract : IDisposable
     }
 
     [SkippableFact]
+    public async Task Revoke_all_except_ends_every_other_active_session_of_that_user_only()
+    {
+        var (apps, _, users) = CreateStore();
+        var app = await apps.AddAsync(NewApp("shop"));
+        var alice = await users.AddAsync(NewUser("alice"));
+        var bob = await users.AddAsync(NewUser("bob"));
+        var now = new DateTimeOffset(2026, 10, 12, 12, 0, 0, TimeSpan.Zero);
+        Session New(User u, TimeSpan life) => new(Guid.NewGuid(), u.Id, app.Id, now, now, now + life, null);
+        var keep = New(alice, TimeSpan.FromDays(30));
+        var other1 = New(alice, TimeSpan.FromDays(30));
+        var other2 = New(alice, TimeSpan.FromDays(30));
+        var expired = New(alice, TimeSpan.FromMinutes(1));
+        var bobs = New(bob, TimeSpan.FromDays(30));
+        foreach (var x in new[] { keep, other1, other2, expired, bobs }) await Sessions.AddAsync(x, "h" + x.Id);
+        var later = now.AddHours(1);
+
+        Assert.Equal(2, await Sessions.RevokeAllForUserExceptAsync(alice.Id, keep.Id, later));
+        Assert.Equal(0, await Sessions.RevokeAllForUserExceptAsync(alice.Id, keep.Id, later));
+        Assert.Equal([keep.Id], (await Sessions.ListActiveByUserAsync(alice.Id, later)).Select(x => x.Id));
+        Assert.Equal([bobs.Id], (await Sessions.ListActiveByUserAsync(bob.Id, later)).Select(x => x.Id));
+        Assert.Equal(later, (await Sessions.GetAsync(other1.Id))!.RevokedAt);
+        Assert.Null((await Sessions.GetAsync(expired.Id))!.RevokedAt); // already over: left alone
+        // Somebody else's session id as "keep" protects nothing of this user's.
+        Assert.Equal(1, await Sessions.RevokeAllForUserExceptAsync(alice.Id, bobs.Id, later));
+        Assert.Empty(await Sessions.ListActiveByUserAsync(alice.Id, later));
+    }
+
+    [SkippableFact]
     public async Task Sessions_rotate_by_compare_and_set_revoke_expire_and_cascade()
     {
         var (apps, _, users) = CreateStore();

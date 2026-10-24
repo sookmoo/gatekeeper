@@ -50,9 +50,20 @@ dotnet bin/Debug/net10.0/Gatekeeper.Api.dll           # serve, uses Gatekeeper
   locked out from another address. At most a few passwords are hashed at once; beyond that the API answers `503` quickly.
 - Consuming systems verify tokens offline with the public keys at `GET /.well-known/jwks.json`: check the signature
   (ES256 only), `iss`, `aud` (your application's name), `exp` and `typ` (`at+jwt`), then read `roles`.
-  Use `sub` (not `preferred_username`) to identify the user. The management API re-checks that the token's user is still an
-  active administrator (cached for 10 s), so demoting or deactivating an admin takes effect almost immediately; tokens for
+  Use `sub` (not `preferred_username`) to identify the user. The management API re-checks on every request that the token's user is
+  still usable and still holds the admin role (cached for 10 s): a deactivated user or an ended session is `401`, a user who is no longer
+  an administrator is `403`, so demoting or deactivating an admin takes effect almost immediately; tokens for
   other applications stay valid until `exp`, so keep consumers' acceptance windows short.
+- **Self-service.** (Signing in to `gatekeeper` without a role needs `"refresh": true`; without it the login is a `400`, so a role-less token always has a session that can be ended. Assigning the admin role to a signed-in self-service user ends their live `gatekeeper` sessions, so they sign in again. A `403` on a `/v1` route for a valid token is audited with outcome `forbidden`; zero-role logins and refreshes carry `roles=none`.) Any usable `person` or `test` user may sign in to the reserved application `gatekeeper` (login and refresh) without
+  holding a role there; the token then has `"roles": []` and only opens `/v1/me`. Every other application still needs at least one role,
+  `shared` accounts get no self-service (one member could lock the others out; an administrator manages them), and a disabled, expired or
+  unknown user and a wrong password are the same uniform `401` as before. Routes: `GET /v1/me` (id, username, displayName, email, kind, expiresAt),
+  `GET /v1/me/sessions` (own active sessions; `current` marks the session of the token, `appName` names the application),
+  `DELETE /v1/me/sessions/{id}` (404 both for an unknown session and for another user's; ending the current one ends the token's session),
+  `DELETE /v1/me/sessions` (ends all **other** sessions, answers `{"revoked": n}`; the current one ends by signing out or by its id; a token without a session ends all).
+  Policies: `admin` (the token carries the admin role **and** the store still says so; a self token is `403` on every management route) and `self`
+  (any usable person or test user, administrators included). Audit rows of `/v1/me` writes name the user as actor. `/health/ready` still trusts the signed admin role claim
+  alone (it must answer while the store is down); a self token has no role and gets `403` there. OpenAPI marks each operation with `x-gatekeeper-access` (`self` or `admin`).
 - The management API (`/v1/applications`, `/v1/roles`, `/v1/users`, `/v1/clients`, `/v1/audit`) needs a token for the application `gatekeeper`
   with the role `admin`. That application and role are reserved: they cannot be renamed or deleted, no other application can take the name, the role API refuses (409) every create, change or
   delete of a role in `gatekeeper` (`bootstrap-admin` and the dev seed set up `admin` directly), and the
@@ -205,7 +216,11 @@ The CLI sends no `If-Match` yet (a `--if-version` option is deferred). The Web U
 
 ## Administration UI
 
-`src/Gatekeeper.Web` is a small server-rendered web UI (Razor Pages, no JavaScript) in its own container. It signs administrators in
+`src/Gatekeeper.Web` is a small server-rendered web UI (Razor Pages, no JavaScript) in its own container. Any person or test user may sign in
+("Invalid credentials." for every failure); administrators land on the applications, everyone else on `/Account`: a read-only profile and their
+own sessions with revoke one / revoke all other sessions (each behind a confirmation page; revoking the current session also ends the web
+session). The navigation of a non-administrator shows only Account, and every management page answers 403 to them (the UI decides from the
+role claim of the token only to choose pages; the API checks the real role on every call). It signs administrators in
 through the API and works as their session: the browser only holds an `HttpOnly`, `SameSite=Strict` cookie, while the access and refresh
 tokens stay on the server. Every call to the API carries the signed-in administrator's own token, so the audit trail names the person.
 Today it covers sign in/out, applications (list, create, rename, delete), roles (the reserved application's roles are shown read-only),
@@ -243,9 +258,14 @@ dotnet run --project src/Gatekeeper.Web                                   # term
 
 On Quadlet: `systemctl --user start gatekeeper-web.service`, then open http://127.0.0.1:5090 and sign in as an administrator.
 Settings: `Gatekeeper__ApiUrl` (default `http://127.0.0.1:5080`, a path prefix is kept; plain http to a non-loopback host needs
-`Gatekeeper__AllowPlainApi=true`), `Web__IdleMinutes` (30), `Web__AbsoluteHours` (8). Like the API, the UI refuses to listen on a
+`Gatekeeper__AllowPlainApi=true`), `Web__IdleMinutes` (30), `Web__AbsoluteHours` (8), `Web__MaxSessionsPerUser` (5: a further sign-in ends that user's oldest web session) and `Web__MaxSessions` (1000: when the table is full of live sessions, new sign-ins get `503` instead of ending other people's sessions; expired ones are reclaimed first). Like the API, the UI refuses to listen on a
 non-loopback address unless `Gatekeeper__AllowNonLoopback=true`; it speaks plain HTTP, so publish it on loopback or put TLS in front.
 Sessions live in memory: restarting the UI signs everyone out. Bad settings stop startup with a message.
+
+The API throttles logins and refreshes per client address, and it only sees this container. The UI therefore sends the browser's address as
+`X-Forwarded-For` on login and refresh, and the API uses it **only** when the connection comes from an address listed in `Auth__TrustedProxies`
+(default: nobody is trusted, the header is ignored and all browsers share the UI's address and limit). The Quadlet files pin this: `gatekeeper.network` has `Subnet=10.89.77.0/24`, `gatekeeper-web.container` has `IP=10.89.77.10` and `gatekeeper-api.container` sets `Auth__TrustedProxies=10.89.77.10` (change the three together; the API refuses shorthand such as `10`). Otherwise set `Auth__TrustedProxies` on the API to the
+address it sees the UI container connect from (the API takes the last hop of the header, so a browser cannot choose its address). A refresh token that proved its session (hash matched) but whose session is revoked or expired, or whose user is gone, does not count towards the per-address flood limit; it is counted per session instead: after 5 failures within 15 minutes that session's token answers `429` (no store access), and only the first 3 failures write audit rows.
 
 Behind a TLS proxy:
 - Set `Web__TrustedProxies` to the address the **container sees** the proxy connection from (with rootless Podman usually the network
@@ -277,6 +297,8 @@ saved in `$XDG_STATE_HOME/gatekeeper/token.json` (mode 0600), sent only to the s
 The CLI refuses plain `http://` to non-local hosts (override: `GATEKEEPER_ALLOW_INSECURE=1`), never follows redirects, and
 strips control characters from server text before printing. `gk user set-password <user>` sets a password.
 `gk client ...` manages service identities and `gk audit list` reads the audit trail.
+`gk me` shows your own account, `gk me sessions` lists your own active sessions and `gk me revoke-session <id>` ends one and `gk me revoke-sessions` ends all your other sessions (like `gk user revoke-sessions`, it asks no confirmation); these work for
+any signed-in person or test user, administrator or not (`gk login --user <name>` needs no role).
 `gk login` keeps a session (see "Sessions"): the saved login holds a refresh token and renews itself; `gk logout` ends it on the server.
 
 Server URL: `--url` or `GATEKEEPER_URL` (default `http://localhost:5080`).

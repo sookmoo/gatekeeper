@@ -189,6 +189,136 @@
         }
       }
     },
+    "/v1/me": {
+      "get": {
+        "tags": [
+          "Me"
+        ],
+        "description": "The caller's own account. Works with any token for the gatekeeper audience whose user is a usable person or test user (an administrator's token too).",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MeResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": [ ]
+          }
+        ],
+        "x-gatekeeper-access": "self"
+      }
+    },
+    "/v1/me/sessions": {
+      "get": {
+        "tags": [
+          "Me"
+        ],
+        "description": "The caller's own active sessions, newest first. current is true for the session the token came from (a token without a session has none).",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "pattern": "^-?(?:0|[1-9]\\d*)$",
+              "type": [
+                "integer",
+                "string"
+              ],
+              "format": "int32"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PageOfOwnSession"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": [ ]
+          }
+        ],
+        "x-gatekeeper-access": "self"
+      },
+      "delete": {
+        "tags": [
+          "Me"
+        ],
+        "description": "Ends all of the caller's other active sessions; the session of the token stays (it ends by signing out or DELETE /v1/me/sessions/{id}).",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "bearer": [ ]
+          }
+        ],
+        "x-gatekeeper-access": "self"
+      }
+    },
+    "/v1/me/sessions/{id}": {
+      "delete": {
+        "tags": [
+          "Me"
+        ],
+        "description": "Ends one of the caller's own sessions (the current one too). 404 both when there is no such session and when it belongs to another user.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "No Content"
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": [ ]
+          }
+        ],
+        "x-gatekeeper-access": "self"
+      }
+    },
     "/v1/applications": {
       "get": {
         "tags": [
@@ -231,7 +361,8 @@
           {
             "bearer": [ ]
           }
-        ]
+        ],
+        "x-gatekeeper-access": "admin"
       },
       "post": {
         "tags": [
@@ -271,7 +402,8 @@
           {
             "bearer": [ ]
           }
-        ]
+        ],
+        "x-gatekeeper-access": "admin"
       }
     },
     "/v1/applications/{id}": {
@@ -314,7 +446,8 @@
           {
             "bearer": [ ]
           }
-        ]
+        ],
+        "x-gatekeeper-access": "admin"
       },
       "put": {
         "tags": [
@@ -383,7 +516,8 @@
           {
             "bearer": [ ]
           }
-        ]
+        ],
+        "x-gatekeeper-access": "admin"
       },
       "patch": {
         "tags": [
@@ -452,7 +586,8 @@
           {
             "bearer": [ ]
           }
-        ]
+        ],
+        "x-gatekeeper-access": "admin"
       },
       "delete": {
         "tags": [
@@ -496,7 +631,8 @@
           {
             "bearer": [ ]
           }
-        ]
+        ],
+        "x-gatekeeper-access": "admin"
       }
     },
     "/v1/applications/{id}/roles": {
@@ -550,7 +686,8 @@
           {
             "bearer": [ ]
           }
-        ]
+        ],
+        "x-gatekeeper-access": "admin"
       },
       "post": {
         "tags": [
@@ -601,7 +738,8 @@
           {
             "bearer": [ ]
           }
-        ]
+        ],
+        "x-gatekeeper-access": "admin"
       }
     },
     "/v1/roles/{id}": {
@@ -644,7 +782,8 @@
           {
             "bearer": [ ]
           }
-        ]
+        ],
+        "x-gatekeeper-access": "admin"
       },
       "put": {
         "tags": [
@@ -713,7 +852,8 @@
           {
             "bearer": [ ]
           }
-        ]
+        ],
+        "x-gatekeeper-access": "admin"
       },
       "patch": {
         "tags": [
@@ -782,7 +922,8 @@
           {
             "bearer": [ ]
           }
-        ]
+        ],
+        "x-gatekeeper-access": "admin"
       },
       "delete": {
         "tags": [
@@ -826,7 +967,8 @@
           {
             "bearer": [ ]
           }
-        ]
+        ],
+        "x-gatekeeper-access": "admin"
       }
     },
     "/v1/users": {
@@ -892,7 +1034,8 @@
           {
             "bearer": [ ]
           }
-        ]
+        ],
+        "x-gatekeeper-access": "admin"
       },
       "post": {
         "tags": [
@@ -932,7 +1075,8 @@
           {
             "bearer": [ ]
           }
-        ]
+        ],
+        "x-gatekeeper-access": "admin"
       }
     },
     "/v1/users/{id}": {
@@ -975,7 +1119,8 @@
           {
             "bearer": [ ]
           }
-        ]
+        ],
+        "x-gatekeeper-access": "admin"
       },
       "put": {
         "tags": [
@@ -1045,7 +1190,8 @@
           {
             "bearer": [ ]
           }
-        ]
+        ],
+        "x-gatekeeper-access": "admin"
       },
       "patch": {
         "tags": [
@@ -1115,7 +1261,8 @@
           {
             "bearer": [ ]
           }
-        ]
+        ],
+        "x-gatekeeper-access": "admin"
       },
       "delete": {
         "tags": [
@@ -1159,7 +1306,8 @@
           {
             "bearer": [ ]
           }
-        ]
+        ],
+        "x-gatekeeper-access": "admin"
       }
     },
     "/v1/users/{id}/password": {
@@ -1197,7 +1345,8 @@
           {
             "bearer": [ ]
           }
-        ]
+        ],
+        "x-gatekeeper-access": "admin"
       }
     },
     "/v1/users/{id}/sessions": {
@@ -1261,7 +1410,8 @@
           {
             "bearer": [ ]
           }
-        ]
+        ],
+        "x-gatekeeper-access": "admin"
       },
       "delete": {
         "tags": [
@@ -1294,7 +1444,8 @@
           {
             "bearer": [ ]
           }
-        ]
+        ],
+        "x-gatekeeper-access": "admin"
       }
     },
     "/v1/users/{id}/sessions/{sessionId}": {
@@ -1349,7 +1500,8 @@
           {
             "bearer": [ ]
           }
-        ]
+        ],
+        "x-gatekeeper-access": "admin"
       },
       "delete": {
         "tags": [
@@ -1395,7 +1547,8 @@
           {
             "bearer": [ ]
           }
-        ]
+        ],
+        "x-gatekeeper-access": "admin"
       }
     },
     "/v1/users/{id}/roles": {
@@ -1457,7 +1610,8 @@
           {
             "bearer": [ ]
           }
-        ]
+        ],
+        "x-gatekeeper-access": "admin"
       }
     },
     "/v1/users/{id}/roles/{roleId}": {
@@ -1494,7 +1648,8 @@
           {
             "bearer": [ ]
           }
-        ]
+        ],
+        "x-gatekeeper-access": "admin"
       },
       "delete": {
         "tags": [
@@ -1530,7 +1685,8 @@
           {
             "bearer": [ ]
           }
-        ]
+        ],
+        "x-gatekeeper-access": "admin"
       }
     },
     "/v1/sessions/{id}": {
@@ -1567,7 +1723,8 @@
           {
             "bearer": [ ]
           }
-        ]
+        ],
+        "x-gatekeeper-access": "admin"
       }
     },
     "/v1/clients": {
@@ -1620,7 +1777,8 @@
           {
             "bearer": [ ]
           }
-        ]
+        ],
+        "x-gatekeeper-access": "admin"
       },
       "post": {
         "tags": [
@@ -1660,7 +1818,8 @@
           {
             "bearer": [ ]
           }
-        ]
+        ],
+        "x-gatekeeper-access": "admin"
       }
     },
     "/v1/clients/{id}": {
@@ -1703,7 +1862,8 @@
           {
             "bearer": [ ]
           }
-        ]
+        ],
+        "x-gatekeeper-access": "admin"
       },
       "put": {
         "tags": [
@@ -1772,7 +1932,8 @@
           {
             "bearer": [ ]
           }
-        ]
+        ],
+        "x-gatekeeper-access": "admin"
       },
       "patch": {
         "tags": [
@@ -1841,7 +2002,8 @@
           {
             "bearer": [ ]
           }
-        ]
+        ],
+        "x-gatekeeper-access": "admin"
       },
       "delete": {
         "tags": [
@@ -1885,7 +2047,8 @@
           {
             "bearer": [ ]
           }
-        ]
+        ],
+        "x-gatekeeper-access": "admin"
       }
     },
     "/v1/clients/{id}/secret": {
@@ -1913,7 +2076,8 @@
           {
             "bearer": [ ]
           }
-        ]
+        ],
+        "x-gatekeeper-access": "admin"
       }
     },
     "/v1/clients/{id}/roles": {
@@ -1967,7 +2131,8 @@
           {
             "bearer": [ ]
           }
-        ]
+        ],
+        "x-gatekeeper-access": "admin"
       }
     },
     "/v1/clients/{id}/roles/{roleId}": {
@@ -2004,7 +2169,8 @@
           {
             "bearer": [ ]
           }
-        ]
+        ],
+        "x-gatekeeper-access": "admin"
       },
       "delete": {
         "tags": [
@@ -2039,7 +2205,8 @@
           {
             "bearer": [ ]
           }
-        ]
+        ],
+        "x-gatekeeper-access": "admin"
       }
     },
     "/v1/audit": {
@@ -2099,7 +2266,8 @@
           {
             "bearer": [ ]
           }
-        ]
+        ],
+        "x-gatekeeper-access": "admin"
       }
     }
   },
@@ -2400,6 +2568,98 @@
           }
         }
       },
+      "MeResponse": {
+        "required": [
+          "id",
+          "username",
+          "displayName",
+          "email",
+          "kind",
+          "expiresAt"
+        ],
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "username": {
+            "type": "string"
+          },
+          "displayName": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/UserKind"
+          },
+          "expiresAt": {
+            "type": [
+              "null",
+              "string"
+            ],
+            "format": "date-time"
+          }
+        }
+      },
+      "OwnSession": {
+        "required": [
+          "id",
+          "userId",
+          "appId",
+          "appName",
+          "createdAt",
+          "lastUsedAt",
+          "expiresAt",
+          "revokedAt",
+          "current"
+        ],
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "userId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "appId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "appName": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "lastUsedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "expiresAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "revokedAt": {
+            "type": [
+              "null",
+              "string"
+            ],
+            "format": "date-time"
+          },
+          "current": {
+            "type": "boolean"
+          }
+        }
+      },
       "PageOfApp": {
         "required": [
           "items",
@@ -2453,6 +2713,27 @@
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/Client"
+            }
+          },
+          "nextCursor": {
+            "type": [
+              "null",
+              "string"
+            ]
+          }
+        }
+      },
+      "PageOfOwnSession": {
+        "required": [
+          "items",
+          "nextCursor"
+        ],
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OwnSession"
             }
           },
           "nextCursor": {
@@ -2749,6 +3030,14 @@
           }
         }
       },
+      "UserKind": {
+        "enum": [
+          "person",
+          "test",
+          "shared"
+        ],
+        "type": "string"
+      },
       "UserRequest": {
         "required": [
           "username",
@@ -2803,7 +3092,7 @@
     "securitySchemes": {
       "bearer": {
         "type": "http",
-        "description": "Access token from POST /v1/auth/login for an administrator.",
+        "description": "Access token from POST /v1/auth/login for the gatekeeper application. The management routes need the administrator role (policy admin); the /v1/me routes accept any usable person or test user, with or without roles (policy self).",
         "scheme": "bearer",
         "bearerFormat": "JWT"
       },
@@ -2817,6 +3106,9 @@
   "tags": [
     {
       "name": "Auth"
+    },
+    {
+      "name": "Me"
     },
     {
       "name": "Applications"

@@ -22,6 +22,21 @@ public sealed class AuditRecorder(AuditService audit, ILogger<AuditRecorder> log
         }
     }
 
+    /// <summary>A valid token that an authorization policy refused (403) on a /v1 route: actor = sub, action = the route, outcome forbidden.</summary>
+    public async Task RecordForbiddenAsync(HttpContext http)
+    {
+        try
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            await audit.RecordOutcomeAsync(ActorOf(http), AuditMiddleware.Describe(http, out var target), target, Gatekeeper.Domain.AuditEvent.Forbidden,
+                "status 403", http.Connection.RemoteIpAddress?.ToString(), cts.Token);
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            logger.LogError("Could not write audit event for a forbidden request: {Type}", ex.GetType().Name);
+        }
+    }
+
     public Task RecordAsync(string actor, string action, string? target, bool success, string? detail = null) =>
         audit.RecordAsync(actor, action, target, success, detail);
 
@@ -49,6 +64,15 @@ public sealed partial class AuditMiddleware(RequestDelegate next)
     [System.Text.RegularExpressions.GeneratedRegex(@"\{([^{}:]+):[^{}]*\}")]
     private static partial System.Text.RegularExpressions.Regex RouteConstraint();
 
+    /// <summary>The audit action of a request ("PUT /v1/users/{id}/password") and its target (the route values).</summary>
+    public static string Describe(HttpContext http, out string target)
+    {
+        var pattern = (http.GetEndpoint() as RouteEndpoint)?.RoutePattern.RawText ?? http.Request.Path.Value ?? "";
+        target = string.Join(" ", http.Request.RouteValues.Select(kv => $"{kv.Key}={kv.Value}"));
+        // Readable and stable: drop route constraints ({id:guid} -> {id}) so filters can be typed by hand.
+        return $"{http.Request.Method} {RouteConstraint().Replace(pattern.TrimEnd('/'), "{$1}")}";
+    }
+
     public async Task InvokeAsync(HttpContext http)
     {
         var path = http.Request.Path;
@@ -61,10 +85,7 @@ public sealed partial class AuditMiddleware(RequestDelegate next)
         }
 
         var recorder = http.RequestServices.GetRequiredService<AuditRecorder>();
-        var pattern = (http.GetEndpoint() as RouteEndpoint)?.RoutePattern.RawText ?? path.Value ?? "";
-        // Readable and stable: drop route constraints ({id:guid} -> {id}) so filters can be typed by hand.
-        var action = $"{http.Request.Method} {RouteConstraint().Replace(pattern.TrimEnd('/'), "{$1}")}";
-        var target = string.Join(" ", http.Request.RouteValues.Select(kv => $"{kv.Key}={kv.Value}"));
+        var action = Describe(http, out var target);
         var actor = AuditRecorder.ActorOf(http);
         try
         {
@@ -86,5 +107,21 @@ public sealed partial class AuditMiddleware(RequestDelegate next)
         var status = http.Response.StatusCode;
         await recorder.RecordAsync(http, actor, action, target, status is >= 200 and < 300,
             http.Items[NoteKey] is string note ? $"status {status}; {note}" : $"status {status}");
+    }
+}
+
+/// <summary>
+/// Records a 403 on a /v1 route for an authenticated caller (a valid token the policy refused, for example a self-service token on a
+/// management route). Sits before authorization, so it sees the refusal; 401s are still not recorded.
+/// </summary>
+public sealed class ForbiddenAuditMiddleware(RequestDelegate next)
+{
+    public async Task InvokeAsync(HttpContext http)
+    {
+        await next(http);
+        var path = http.Request.Path;
+        if (http.Response.StatusCode == StatusCodes.Status403Forbidden && path.StartsWithSegments("/v1") && !path.StartsWithSegments("/v1/auth")
+            && http.User.Identity?.IsAuthenticated == true)
+            await http.RequestServices.GetRequiredService<AuditRecorder>().RecordForbiddenAsync(http);
     }
 }

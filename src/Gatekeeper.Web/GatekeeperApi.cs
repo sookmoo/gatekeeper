@@ -15,6 +15,14 @@ public sealed record SessionDto(Guid Id, Guid UserId, Guid AppId, DateTimeOffset
 
 public sealed record RevokedDto(int Revoked);
 
+public sealed record MeDto(Guid Id, string Username, string DisplayName, string Email, string Kind, DateTimeOffset? ExpiresAt);
+
+/// <summary>One of the signed-in user's own sessions; <see cref="Current"/> marks the one this UI session runs on.</summary>
+public sealed record OwnSessionDto(Guid Id, Guid AppId, string? AppName, DateTimeOffset CreatedAt, DateTimeOffset LastUsedAt, DateTimeOffset ExpiresAt, DateTimeOffset? RevokedAt, bool Current)
+{
+    public SessionDto AsSession(Guid userId) => new(Id, userId, AppId, CreatedAt, LastUsedAt, ExpiresAt, RevokedAt);
+}
+
 public sealed record ClientDto(Guid Id, string Name, Guid AppId, bool IsActive, DateTimeOffset CreatedAt, DateTimeOffset UpdatedAt, long Version = 0);
 
 /// <summary>A new client with its one-time secret. ToString never prints the secret, so logging the object cannot leak it.</summary>
@@ -50,7 +58,7 @@ public sealed class SessionEndedException : Exception;
 /// Calls the Gatekeeper API as the signed-in administrator: every request carries that administrator's own access token,
 /// so the audit trail names the real person. The access token is renewed with the refresh token when it is about to expire.
 /// </summary>
-public sealed class GatekeeperApi(HttpClient http, WebSessions sessions, TimeProvider time)
+public sealed class GatekeeperApi(HttpClient http, WebSessions sessions, TimeProvider time, IHttpContextAccessor? context = null)
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     private static readonly TimeSpan RenewBefore = TimeSpan.FromSeconds(30);
@@ -58,14 +66,30 @@ public sealed class GatekeeperApi(HttpClient http, WebSessions sessions, TimePro
     /// <summary>The reserved application whose "admin" role grants access to this UI.</summary>
     public const string AdminApplication = "gatekeeper";
 
-    public async Task<WebSession> LoginAsync(string username, string password, CancellationToken ct)
+    /// <param name="replacing">The web session the browser came with: dropped (and its API session ended) once the new sign-in succeeded, before the capacity check.</param>
+    public async Task<WebSession> LoginAsync(string username, string password, CancellationToken ct, WebSession? replacing = null)
     {
         using var request = new HttpRequestMessage(HttpMethod.Post, "v1/auth/login")
         {
             Content = JsonContent.Create(new { username, password, application = AdminApplication, refresh = true }),
         };
+        ForwardClientAddress(request);
         var tokens = await ReadTokensAsync(await SendRawAsync(request, ct), ct);
-        return sessions.Create(username, tokens);
+        var ended = new List<WebSession>();
+        if (replacing is not null && sessions.Remove(replacing.Id) is { } gone) ended.Add(gone);
+        try
+        {
+            var created = sessions.Create(username, tokens, ended);
+            foreach (var old in ended) await LogoutAsync(old, CancellationToken.None); // best effort: their API sessions end too
+            return created;
+        }
+        catch (WebSessionLimitException)
+        {
+            // The API session just started would be orphaned: end it, then refuse.
+            ended.Add(new WebSession("-", username, tokens, time.GetUtcNow()));
+            foreach (var old in ended) await LogoutAsync(old, CancellationToken.None);
+            throw;
+        }
     }
 
     public async Task LogoutAsync(WebSession session, CancellationToken ct)
@@ -78,7 +102,7 @@ public sealed class GatekeeperApi(HttpClient http, WebSessions sessions, TimePro
             };
             using var response = await SendRawAsync(request, ct);
         }
-        catch (ApiException)
+        catch (Exception ex) when (ex is ApiException or HttpRequestException or TaskCanceledException or OperationCanceledException)
         {
             // best effort: the session is dropped here either way and the refresh token expires on its own
         }
@@ -168,6 +192,21 @@ public sealed class GatekeeperApi(HttpClient http, WebSessions sessions, TimePro
     public async Task<int> RevokeUserSessionsAsync(WebSession s, Guid userId, CancellationToken ct) =>
         (await SendAsync<RevokedDto>(s, HttpMethod.Delete, $"v1/users/{userId}/sessions", null, ct)).Revoked;
 
+    /// <summary>The signed-in user's own account (any user, not only administrators).</summary>
+    public Task<MeDto> GetMeAsync(WebSession s, CancellationToken ct) =>
+        SendAsync<MeDto>(s, HttpMethod.Get, "v1/me", null, ct);
+
+    /// <summary>The signed-in user's own active sessions (at most 20 can exist, so one page of 200 holds them all).</summary>
+    public async Task<List<OwnSessionDto>> ListOwnSessionsAsync(WebSession s, CancellationToken ct) =>
+        (await SendAsync<Page<OwnSessionDto>>(s, HttpMethod.Get, "v1/me/sessions?limit=200", null, ct)).Items;
+
+    public async Task RevokeOwnSessionAsync(WebSession s, Guid sessionId, CancellationToken ct) =>
+        await SendAsync<object>(s, HttpMethod.Delete, $"v1/me/sessions/{sessionId}", null, ct);
+
+    /// <summary>Ends all other sessions of the signed-in user and returns how many.</summary>
+    public async Task<int> RevokeOtherOwnSessionsAsync(WebSession s, CancellationToken ct) =>
+        (await SendAsync<RevokedDto>(s, HttpMethod.Delete, "v1/me/sessions", null, ct)).Revoked;
+
     public Task<Page<ClientDto>> ListClientsAsync(WebSession s, Guid? appId, string? cursor, int limit, CancellationToken ct) =>
         SendAsync<Page<ClientDto>>(s, HttpMethod.Get, $"v1/clients?limit={limit}" + (appId is { } a ? $"&application={a}" : "") + (cursor is null ? "" : $"&cursor={Uri.EscapeDataString(cursor)}"), null, ct);
 
@@ -234,6 +273,17 @@ public sealed class GatekeeperApi(HttpClient http, WebSessions sessions, TimePro
         }
     }
 
+    /// <summary>
+    /// Login and refresh are throttled by the API per client address. The API only sees this server, so the browser's address goes along as
+    /// <c>X-Forwarded-For</c> (replacing whatever the browser sent: this server has already resolved the real client). The API honours it only
+    /// from the proxies it is configured to trust (<c>Auth__TrustedProxies</c>); otherwise it is ignored.
+    /// </summary>
+    private void ForwardClientAddress(HttpRequestMessage request)
+    {
+        if (context?.HttpContext?.Connection.RemoteIpAddress is { } address)
+            request.Headers.TryAddWithoutValidation("X-Forwarded-For", (address.IsIPv4MappedToIPv6 ? address.MapToIPv4() : address).ToString());
+    }
+
     private async Task EnsureFreshAsync(WebSession s, CancellationToken ct)
     {
         if (s.Tokens.AccessExpiresAt - RenewBefore > time.GetUtcNow()) return;
@@ -246,6 +296,7 @@ public sealed class GatekeeperApi(HttpClient http, WebSessions sessions, TimePro
             {
                 Content = JsonContent.Create(new { refreshToken = current.Refresh }),
             };
+            ForwardClientAddress(request);
             try
             {
                 s.Tokens = await ReadTokensAsync(await SendRawAsync(request, ct), ct);

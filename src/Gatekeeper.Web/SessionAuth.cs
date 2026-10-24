@@ -19,7 +19,9 @@ public sealed class SessionAuthHandler(IOptionsMonitor<AuthenticationSchemeOptio
     {
         if (sessions.Find(Request.Cookies[cookies.SessionName]) is not { } session) return Task.FromResult(AuthenticateResult.NoResult());
         Context.Items[ItemKey] = session;
-        var identity = new ClaimsIdentity([new Claim(ClaimTypes.Name, session.Username)], SchemeName);
+        var claims = new List<Claim> { new(ClaimTypes.Name, session.Username) };
+        if (session.IsAdmin) claims.Add(new Claim(ClaimTypes.Role, WebSession.AdminRole));
+        var identity = new ClaimsIdentity(claims, SchemeName);
         return Task.FromResult(AuthenticateResult.Success(new AuthenticationTicket(new ClaimsPrincipal(identity), SchemeName)));
     }
 

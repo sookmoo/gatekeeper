@@ -41,6 +41,10 @@ public sealed class WebFixture : IDisposable
         });
     }
 
+    /// <summary>An unsigned token the UI reads as an administrator's (the API refuses it): for tests that need the UI to treat a session as admin without a real login.</summary>
+    public static string FakeAdminToken() =>
+        "e30." + Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes("{\"roles\":[\"admin\"]}")).TrimEnd('=').Replace('+', '-').Replace('/', '_') + ".sig";
+
     /// <summary>A browser: keeps cookies, never follows redirects (so they can be asserted).</summary>
     public HttpClient Browser() => Web.CreateClient(new WebApplicationFactoryClientOptions { AllowAutoRedirect = false, HandleCookies = true });
 

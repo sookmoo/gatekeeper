@@ -343,7 +343,7 @@ public class AuthApiTests
         var (id1, _, token1) = await SecondAdmin(f, admin);
         Assert.Equal(HttpStatusCode.NoContent, (await admin.DeleteAsync($"/v1/users/{id1}/roles/{role}")).StatusCode); // not the last admin
         var c1 = f.CreateClient(); c1.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token1);
-        Assert.Equal(HttpStatusCode.Unauthorized, (await c1.GetAsync("/v1/applications")).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await c1.GetAsync("/v1/applications")).StatusCode); // still a valid self-service token, no longer an administrator
 
         var (id2, name2, token2) = await SecondAdmin(f, admin);
         var current = await (await admin.GetAsync($"/v1/users/{id2}")).Content.ReadFromJsonAsync<JsonElement>();
