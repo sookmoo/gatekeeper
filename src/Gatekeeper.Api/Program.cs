@@ -80,6 +80,8 @@ builder.Services
     .AddSingleton<ClientAuthService>()
     .AddKeyedSingleton<LoginThrottle>("client", (_, _) => new LoginThrottle())
     .AddKeyedSingleton<LoginThrottle>("refresh", (_, _) => new LoginThrottle())
+    // Dead (revoked, expired) sessions whose token is replayed: a few failures per session per window, then 429.
+    .AddKeyedSingleton<LoginThrottle>("refreshSession", (_, _) => new LoginThrottle(maxPerAddress: AuthEndpoints.SessionFailuresAllowed))
     .AddSingleton<AuditService>()
     .AddSingleton<AuditRecorder>()
     .AddSingleton<LoginThrottle>()
@@ -181,15 +183,12 @@ if (!migrateOnly && !bootstrap)
                 // The readiness probe must keep answering when the store is down or unmigrated, so it relies on the
                 // signed admin token alone; it only reveals whether the service is ready.
                 if (ctx.Request.Path.StartsWithSegments("/health/ready")) return;
-                Guid? sessionId = null;
-                if (ctx.Principal?.FindFirst(TokenService.SessionClaim)?.Value is { } sidText)
-                {
-                    if (!Guid.TryParse(sidText, out var sid)) { ctx.Fail("Invalid session."); return; }
-                    sessionId = sid;
-                }
-                if (!Guid.TryParse(ctx.Principal?.FindFirst("sub")?.Value, out var userId)
-                    || !await access.IsAdminAsync(userId, sessionId, ctx.HttpContext.RequestAborted))
-                    ctx.Fail("The user is no longer an active administrator.");
+                // Only liveness of the subject is decided here (unknown, disabled or expired user, ended session: 401). What the
+                // subject may do (admin role, self-service) is decided by the policies, so a valid token without the admin role is 403.
+                if (ctx.Principal is null || AdminAccessCheck.Subject(ctx.Principal) is not var (userId, sessionId))
+                    ctx.Fail("Invalid token.");
+                else if (await access.StateAsync(userId, sessionId, ctx.HttpContext.RequestAborted) is null)
+                    ctx.Fail("The user is no longer active.");
             },
         };
         o.TokenValidationParameters = new TokenValidationParameters
@@ -212,7 +211,15 @@ if (!migrateOnly && !bootstrap)
         };
     });
     builder.Services.AddAuthorizationBuilder()
-        .AddPolicy(Endpoints.AdminPolicy, p => p.RequireAuthenticatedUser().RequireRole(Reserved.AdminRole));
+        // Management API: the admin role claim AND a store check (AccessHandler). Self-service: any usable person or test user.
+        .AddPolicy(Endpoints.AdminPolicy, p => p.RequireAuthenticatedUser().RequireRole(Reserved.AdminRole).AddRequirements(new AdminRequirement()))
+        .AddPolicy(Endpoints.SelfPolicy, p => p.RequireAuthenticatedUser().RequireClaim("aud", Reserved.AdminApp).AddRequirements(new SelfRequirement()))
+        // The readiness probe deliberately trusts the signed admin role claim alone (it must answer while the store is down).
+        .AddPolicy(Endpoints.ReadyPolicy, p => p.RequireAuthenticatedUser().RequireRole(Reserved.AdminRole))
+        // Fail closed: an endpoint added without a policy needs an administrator. Public routes say AllowAnonymous explicitly.
+        .SetFallbackPolicy(new Microsoft.AspNetCore.Authorization.AuthorizationPolicyBuilder()
+            .RequireAuthenticatedUser().RequireRole(Reserved.AdminRole).AddRequirements(new AdminRequirement()).Build());
+    builder.Services.AddSingleton<Microsoft.AspNetCore.Authorization.IAuthorizationHandler, AccessHandler>();
 }
 
 var proxies = (builder.Configuration["Auth:TrustedProxies"] ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
@@ -221,7 +228,8 @@ if (proxies.Length > 0)
     var parsed = new List<System.Net.IPAddress>();
     foreach (var p in proxies)
     {
-        if (!System.Net.IPAddress.TryParse(p, out var ip)) return Fail($"Auth:TrustedProxies contains an invalid address '{p}'.");
+        // IPAddress.TryParse also accepts shorthand such as "10" (0.0.0.10): insist on a full address.
+        if (!(p.Contains('.') || p.Contains(':')) || !System.Net.IPAddress.TryParse(p, out var ip)) return Fail($"Auth:TrustedProxies contains an invalid address '{p}'.");
         parsed.Add(ip);
     }
     builder.Services.Configure<Microsoft.AspNetCore.Builder.ForwardedHeadersOptions>(o =>
@@ -270,12 +278,23 @@ if (proxies.Length > 0) app.UseForwardedHeaders(); // before anything that reads
 app.UseExceptionHandler();
 app.UseStatusCodePages();
 app.UseMiddleware<ErrorMappingMiddleware>();
+// Nothing matched: a plain 404 for everyone (the fallback policy below is for endpoints, and must not turn unknown URLs into 401/403).
+app.Use(async (http, next) =>
+{
+    var endpoint = http.GetEndpoint();
+    if (endpoint is null) { http.Response.StatusCode = StatusCodes.Status404NotFound; return; }
+    // The router's "405 HTTP Method Not Supported" endpoint has no policy: run it as it is (it answers 405 with an Allow header) instead of
+    // letting the fallback policy answer 401/403. Real endpoints still go through authorization.
+    if (endpoint.DisplayName?.StartsWith("405", StringComparison.Ordinal) == true && endpoint.RequestDelegate is { } handler) { await handler(http); return; }
+    await next();
+});
 app.UseAuthentication();
+app.UseMiddleware<ForbiddenAuditMiddleware>();
 app.UseAuthorization();
 app.UseMiddleware<AuditMiddleware>();
-app.MapOpenApi("/openapi/{documentName}.json");
-app.MapGet("/health", () => Results.Ok(new { status = "ok" })).ExcludeFromDescription();
-// It queries the store and reveals its state, so it needs an admin token; the answer is still cached briefly.
+app.MapOpenApi("/openapi/{documentName}.json").AllowAnonymous();
+app.MapGet("/health", () => Results.Ok(new { status = "ok" })).ExcludeFromDescription().AllowAnonymous();
+// It queries the store and reveals its state, so it needs an admin token (role claim only, see ReadyPolicy); the answer is still cached briefly.
 var readyLock = new object();
 var readyAt = DateTimeOffset.MinValue;
 var readyResult = false;
@@ -287,7 +306,7 @@ app.MapGet("/health/ready", async (IReadinessProbe probe, CancellationToken ct) 
         if (!cached) lock (readyLock) (readyAt, readyResult) = (DateTimeOffset.UtcNow, ready);
         return ready ? Results.Ok(new { status = "ready" }) : Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
     })
-    .RequireAuthorization(Endpoints.AdminPolicy)
+    .RequireAuthorization(Endpoints.ReadyPolicy)
     .ExcludeFromDescription();
 app.MapApi();
 app.MapAuth();

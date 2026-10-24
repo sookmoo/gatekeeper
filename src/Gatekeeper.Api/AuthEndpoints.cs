@@ -38,6 +38,9 @@ public static class AuthEndpoints
     }
 
     private const int SlowDownAfterFailures = 20;
+    /// <summary>Failures of one dead session's token per window before 429 (and audit rows written for the first of them only).</summary>
+    public const int SessionFailuresAllowed = 5;
+    private const int SessionFailuresAudited = 3;
 
     public static void MapAuth(this IEndpointRouteBuilder routes)
     {
@@ -69,6 +72,14 @@ public static class AuthEndpoints
                     return Results.Problem("Invalid credentials.", statusCode: StatusCodes.Status401Unauthorized);
                 }
 
+                // A self-service token (no roles) always comes with a refresh session, so ending the session ends the token. A session-less
+                // one could not be revoked before it expires. Asked after the password was verified, so it reveals nothing a success would not.
+                if (result.Roles.Count == 0 && r.Refresh != true)
+                {
+                    await audit.RecordAsync(http, result.User.Id.ToString(), "auth.login", result.App.Name, false, "roles=none; refresh=false");
+                    return Results.ValidationProblem(new Dictionary<string, string[]> { ["refresh"] = ["Signing in without roles needs refresh=true."] });
+                }
+
                 (Session Session, string Token, AuthResult Auth)? started = r.Refresh == true ? await sessions.StartAsync(result, ct) : null;
                 if (r.Refresh == true && started is null)
                 {
@@ -79,7 +90,7 @@ public static class AuthEndpoints
                     return Results.Problem("Invalid credentials.", statusCode: StatusCodes.Status401Unauthorized);
                 }
                 throttle.RecordSuccess(address, r.Username);
-                await audit.RecordAsync(http, result.User.Id.ToString(), "auth.login", result.App.Name, true);
+                await audit.RecordAsync(http, result.User.Id.ToString(), "auth.login", result.App.Name, true, result.Roles.Count == 0 ? "roles=none" : null);
                 // With a session, the token carries the roles read after it was stored.
                 var (token, expires) = tokens.Issue(started?.Auth ?? result, sessionId: started?.Session.Id);
                 http.Response.Headers.CacheControl = "no-store";
@@ -90,7 +101,7 @@ public static class AuthEndpoints
 
         // Trade a refresh token for a new access token and a new refresh token (the old one stops working).
         routes.MapPost("/v1/auth/refresh", async (RefreshRequest r, SessionService sessions, TokenService tokens, [FromKeyedServices("refresh")] LoginThrottle throttle,
-                HttpContext http, AuditRecorder audit, CancellationToken ct) =>
+                [FromKeyedServices("refreshSession")] LoginThrottle sessionThrottle, HttpContext http, AuditRecorder audit, CancellationToken ct) =>
             {
                 var address = (http.Connection.RemoteIpAddress ?? IPAddress.None).ToString();
                 if (throttle.IsBlocked(address, null, out var retryAfter))
@@ -98,20 +109,39 @@ public static class AuthEndpoints
                     http.Response.Headers.RetryAfter = ((int)Math.Ceiling(retryAfter.TotalSeconds)).ToString();
                     return Results.Problem("Too many failed attempts. Try again later.", statusCode: StatusCodes.Status429TooManyRequests);
                 }
+                // A token naming a session that already failed too often is refused before the store is touched or an audit row is written.
+                var named = SessionService.SessionIdOf(r.RefreshToken);
+                var sessionKey = named is { } n ? $"s:{n}" : null;
+                if (sessionKey is not null && sessionThrottle.IsBlocked(sessionKey, null, out var sessionWait))
+                {
+                    http.Response.Headers.RetryAfter = ((int)Math.Ceiling(sessionWait.TotalSeconds)).ToString();
+                    return Results.Problem("Too many failed attempts. Try again later.", statusCode: StatusCodes.Status429TooManyRequests);
+                }
 
                 var result = await sessions.RefreshAsync(r.RefreshToken, ct);
                 if (result.Failure is not null || result.Auth is null || result.Session is null || result.Token is null)
                 {
                     // Losing a race against a parallel refresh of the same token is not an attack.
-                    if (result.Failure != "raced") throttle.RecordFailure(address, null);
+                    // Per-address flood counter: unproven tokens and replays. A token that proved its session (hash matched) but whose session is
+                    // over or whose user is gone is a stale client, not guessing: it is counted per session instead, a few times, then 429.
+                    var stale = result.SessionId is not null && result.Failure is not ("reuse" or "raced");
+                    if (result.Failure != "raced" && !stale) throttle.RecordFailure(address, null);
+                    var audited = true;
+                    if (stale)
+                    {
+                        sessionThrottle.RecordFailure($"s:{result.SessionId}", null);
+                        audited = sessionThrottle.AddressFailures($"s:{result.SessionId}") <= SessionFailuresAudited;
+                    }
                     // The session is only named when the caller proved it holds a token of it (the session id itself is public in the sid claim).
-                    await audit.RecordAsync(http, result.Session?.UserId.ToString() ?? "anonymous", "auth.refresh",
-                        result.SessionId?.ToString(), false, result.Failure ?? "invalid");
+                    if (audited)
+                        await audit.RecordAsync(http, result.Session?.UserId.ToString() ?? "anonymous", "auth.refresh",
+                            result.SessionId?.ToString(), false, result.Failure ?? "invalid");
                     http.Response.Headers.WWWAuthenticate = "Bearer";
                     return Results.Problem("Invalid refresh token.", statusCode: StatusCodes.Status401Unauthorized);
                 }
 
-                await audit.RecordAsync(http, result.Auth.User.Id.ToString(), "auth.refresh", result.Auth.App.Name, true, $"session={result.Session.Id}");
+                await audit.RecordAsync(http, result.Auth.User.Id.ToString(), "auth.refresh", result.Auth.App.Name, true,
+                    $"session={result.Session.Id}" + (result.Auth.Roles.Count == 0 ? "; roles=none" : ""));
                 var (token, expires) = tokens.Issue(result.Auth, sessionId: result.Session.Id);
                 http.Response.Headers.CacheControl = "no-store";
                 return Results.Ok(new LoginResponse(token, "Bearer", (int)(expires - DateTimeOffset.UtcNow).TotalSeconds,

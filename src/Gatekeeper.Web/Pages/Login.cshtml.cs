@@ -11,7 +11,7 @@ public class LoginModel(GatekeeperApi api, FailureThrottle throttle, WebSessions
     public string? Error { get; private set; }
     public bool Ended => Request.Query.ContainsKey("ended");
 
-    public IActionResult OnGet() => User.Identity?.IsAuthenticated == true ? RedirectToPage("/Applications/Index") : Page();
+    public IActionResult OnGet() => User.Identity?.IsAuthenticated == true ? RedirectToPage(User.IsInRole(WebSession.AdminRole) ? "/Applications/Index" : "/Account/Index") : Page();
 
     public async Task<IActionResult> OnPostAsync(CancellationToken ct)
     {
@@ -31,18 +31,28 @@ public class LoginModel(GatekeeperApi api, FailureThrottle throttle, WebSessions
 
         try
         {
-            var session = await api.LoginAsync(Username.Trim(), Password, ct);
+            // A fresh id at every sign-in: whatever cookie the browser came with is never reused (its session ends once this one succeeded).
+            var came = sessions.Find(SessionCookie.Read(HttpContext));
+            var session = await api.LoginAsync(Username.Trim(), Password, ct, came);
             throttle.RecordSuccess(address, Username);
-            // A fresh id at every sign-in: whatever cookie the browser came with is never reused.
-            if (sessions.Remove(SessionCookie.Read(HttpContext)) is { } replaced) await api.LogoutAsync(replaced, ct);
             SessionCookie.Set(HttpContext, session);
-            return RedirectToPage("/Applications/Index");
+            // Administrators land on the management pages, everyone else on their own account.
+            return RedirectToPage(session.IsAdmin ? "/Applications/Index" : "/Account/Index");
+        }
+        catch (WebSessionLimitException)
+        {
+            // Nobody else is signed out to make room: refuse and say so.
+            Response.StatusCode = StatusCodes.Status503ServiceUnavailable;
+            Response.Headers.RetryAfter = "60";
+            Error = "Too many people are signed in right now. Try again later.";
+            Password = null;
+            return Page();
         }
         catch (ApiException ex) when (ex.Status == HttpStatusCode.Unauthorized)
         {
             throttle.RecordFailure(address, Username);
-            // One message for a wrong password, an unknown user and a user without administrator access.
-            Error = "Invalid credentials, or not an administrator.";
+            // One message for a wrong password, an unknown user and a disabled or expired account.
+            Error = "Invalid credentials.";
             Password = null;
             return Page();
         }

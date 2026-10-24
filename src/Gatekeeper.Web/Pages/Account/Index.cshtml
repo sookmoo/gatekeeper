@@ -1,0 +1,64 @@
+@page "/Account"
+@model Gatekeeper.Web.Pages.Account.IndexModel
+@using Gatekeeper.Web.Pages.Users.Sessions
+@{
+    ViewData["Title"] = "Account";
+}
+<h1>Account</h1>
+@if (Model.Done is not null)
+{
+    <p class="notice">@Model.Done</p>
+}
+<table>
+    <tbody>
+        <tr><th>Username</th><td>@Model.Me.Username</td></tr>
+        <tr><th>Display name</th><td>@Model.Me.DisplayName</td></tr>
+        <tr><th>Email</th><td>@Model.Me.Email</td></tr>
+        <tr><th>Kind</th><td>@Model.Me.Kind</td></tr>
+        @if (Model.Me.ExpiresAt is { } expires)
+        {
+            <tr><th>Expires</th><td>@SessionAccess.Time(expires)</td></tr>
+        }
+    </tbody>
+</table>
+<p class="hint">Your details are managed by an administrator.</p>
+<h2>Your sessions</h2>
+<p>@SessionAccess.LifetimeNote(Model.Lifetime, includeRefreshNote: false)</p>
+@if (Model.Items.Count == 0)
+{
+    <p>No active sessions.</p>
+}
+else
+{
+    @if (Model.Items.Count(r => !r.Session.Current && r.State == "active") > 0)
+    {
+        <p><a class="button" href="/Account/Sessions/RevokeOthers">Revoke all other sessions</a></p>
+    }
+    <table>
+        <thead><tr><th>Application</th><th>Created</th><th>Last used</th><th>Expires</th><th>State</th><th></th></tr></thead>
+        <tbody>
+        @foreach (var r in Model.Items)
+        {
+            <tr>
+                <td>@(r.Session.AppName ?? "(unknown)")</td>
+                <td>@SessionAccess.Time(r.Session.CreatedAt)</td>
+                <td>@SessionAccess.Time(r.Session.LastUsedAt)</td>
+                <td>@SessionAccess.Time(r.Session.ExpiresAt)</td>
+                <td>
+                    @r.State
+                    @if (r.Session.Current)
+                    {
+                        <span>(your current session)</span>
+                    }
+                </td>
+                <td>
+                    @if (r.State == "active")
+                    {
+                        <a href="/Account/Sessions/Revoke/@r.Session.Id">Revoke</a>
+                    }
+                </td>
+            </tr>
+        }
+        </tbody>
+    </table>
+}

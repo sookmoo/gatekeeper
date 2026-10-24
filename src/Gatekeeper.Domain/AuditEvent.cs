@@ -9,5 +9,7 @@ public sealed record AuditEvent(
 {
     public const string Success = "success";
     public const string Failure = "failure";
+    /// <summary>A valid token was refused by an authorization policy (403).</summary>
+    public const string Forbidden = "forbidden";
     public const int MaxField = 200;
 }

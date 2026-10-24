@@ -31,6 +31,12 @@ public sealed record SecretResponse(string Secret)
 
 public sealed record PasswordRequest(string? Password);
 
+/// <summary>The caller's own account (read-only).</summary>
+public sealed record MeResponse(Guid Id, string Username, string DisplayName, string Email, UserKind Kind, DateTimeOffset? ExpiresAt);
+
+/// <summary>A session as its owner sees it; <see cref="Current"/> is true for the session the caller's token came from.</summary>
+public sealed record OwnSession(Guid Id, Guid UserId, Guid AppId, string? AppName, DateTimeOffset CreatedAt, DateTimeOffset LastUsedAt, DateTimeOffset ExpiresAt, DateTimeOffset? RevokedAt, bool Current);
+
 /// <summary>Adds the strong ETag (<c>"&lt;version&gt;"</c>) to every successful answer that carries a versioned resource (single-resource GET/PUT/PATCH and POST create).</summary>
 public sealed class ETagFilter : IEndpointFilter
 {
@@ -51,6 +57,8 @@ public sealed class ETagFilter : IEndpointFilter
 public static class Endpoints
 {
     public const string AdminPolicy = "admin";
+    public const string SelfPolicy = "self";
+    public const string ReadyPolicy = "ready";
 
     /// <summary>Exactly person, test or shared (any case): not numbers and not comma lists, which Enum.TryParse would accept.</summary>
     private static UserKind? ParseKind(string? kind) =>
@@ -90,6 +98,7 @@ public static class Endpoints
 
     public static void MapApi(this IEndpointRouteBuilder routes)
     {
+        MapMe(routes);
         var v1 = routes.MapGroup("/v1").RequireAuthorization(AdminPolicy).AddEndpointFilter<ETagFilter>();
 
         var apps = v1.MapGroup("/applications").WithTags("Applications");
@@ -235,5 +244,49 @@ public static class Endpoints
         v1.MapGet("/audit", (AuditService s, string? actor, string? action, int? limit, string? cursor, CancellationToken ct) =>
             s.ListAsync(actor, action, AuditPageQuery.Parse(limit, cursor), ct)).WithTags("Audit")
             .WithDescription("Newest first. The cursor is opaque and keyset-based (the last row's time and id): events arriving between pages cause no repeats or gaps. A cursor from another list, or an edited one, is 400.");
+    }
+
+    /// <summary>Self-service: the caller's own account and sessions. The subject always comes from the token, never from the URL.</summary>
+    private static void MapMe(IEndpointRouteBuilder routes)
+    {
+        var me = routes.MapGroup("/v1/me").RequireAuthorization(SelfPolicy).WithTags("Me");
+        static Guid UserId(HttpContext http) => AdminAccessCheck.Subject(http.User)!.Value.UserId;
+        static Guid? SessionId(HttpContext http) => AdminAccessCheck.Subject(http.User)!.Value.SessionId;
+
+        me.MapGet("/", async (HttpContext http, IUserRepository users, CancellationToken ct) =>
+        {
+            var u = await users.GetAsync(UserId(http), ct) ?? throw new NotFoundException("User not found.");
+            http.Response.Headers.CacheControl = "no-store";
+            return new MeResponse(u.Id, u.Username, u.DisplayName, u.Email, u.Kind, u.ExpiresAt);
+        }).WithDescription("The caller's own account. Works with any token for the gatekeeper audience whose user is a usable person or test user (an administrator's token too).");
+        me.MapGet("/sessions", async (HttpContext http, SessionService s, IUserRepository users, IAppRepository apps, int? limit, string? cursor, CancellationToken ct) =>
+        {
+            var current = SessionId(http);
+            var page = await s.ListAsync(UserId(http), users, PageQuery.Parse(limit, cursor), ct);
+            // Application names for the owner's own sessions (the admin application lookup is not open to a self token).
+            var names = new Dictionary<Guid, string?>();
+            foreach (var appId in page.Items.Select(x => x.AppId).Distinct())
+                names[appId] = (await apps.GetAsync(appId, ct))?.Name;
+            http.Response.Headers.CacheControl = "no-store";
+            return new Page<OwnSession>(page.Items.Select(x => new OwnSession(x.Id, x.UserId, x.AppId, names[x.AppId], x.CreatedAt, x.LastUsedAt, x.ExpiresAt, x.RevokedAt, x.Id == current)).ToList(), page.NextCursor);
+        }).WithDescription("The caller's own active sessions, newest first. current is true for the session the token came from (a token without a session has none).");
+        me.MapDelete("/sessions/{id:guid}", async (HttpContext http, Guid id, SessionService s, AdminAccessCheck access, CancellationToken ct) =>
+        {
+            await s.RevokeForUserAsync(UserId(http), id, ct);
+            access.Evict(UserId(http), id); // a token of the ended session stops at once, not after the 10 s cache
+            return Results.NoContent();
+        }).WithDescription("Ends one of the caller's own sessions (the current one too). 404 both when there is no such session and when it belongs to another user.")
+          .Produces(StatusCodes.Status204NoContent)
+          .ProducesProblem(StatusCodes.Status404NotFound);
+        me.MapDelete("/sessions", async (HttpContext http, SessionService s, IUserRepository users, AdminAccessCheck access, CancellationToken ct) =>
+            {
+                var keep = SessionId(http);
+                var before = await s.ListAsync(UserId(http), users, new PageQuery(0, PageQuery.MaxLimit), ct);
+                var revoked = await s.RevokeAllExceptAsync(UserId(http), keep, ct);
+                foreach (var x in before.Items.Where(x => x.Id != keep)) access.Evict(x.UserId, x.Id);
+                http.Items[AuditMiddleware.NoteKey] = $"revoked={revoked}; kept={(keep is { } k ? k.ToString() : "none")}";
+                return Results.Ok(new RevokedResponse(revoked));
+            })
+          .WithDescription("Ends all of the caller's other active sessions; the session of the token stays (it ends by signing out or DELETE /v1/me/sessions/{id}).");
     }
 }

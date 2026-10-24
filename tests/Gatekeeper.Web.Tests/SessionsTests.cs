@@ -45,19 +45,52 @@ public class SessionsTests
     }
 
     [Fact]
-    public void The_number_of_sessions_is_bounded_and_the_least_recently_used_go_first()
+    public void One_user_signing_in_many_times_only_ends_their_own_oldest_sessions()
     {
         var time = new FakeTimeProvider();
-        var s = new WebSessions(time, new WebOptions { MaxSessions = 3 });
-        var first = s.Create("a", T(time)); time.Advance(TimeSpan.FromSeconds(1));
-        var second = s.Create("b", T(time)); time.Advance(TimeSpan.FromSeconds(1));
-        var third = s.Create("c", T(time)); time.Advance(TimeSpan.FromSeconds(1));
-        s.Find(first.Id); time.Advance(TimeSpan.FromSeconds(1));
-        s.Create("d", T(time));
+        var s = new WebSessions(time, new WebOptions { MaxSessions = 100, MaxSessionsPerUser = 2 });
+        var bob = s.Create("bob", T(time)); time.Advance(TimeSpan.FromSeconds(1));
+        var a1 = s.Create("alice", T(time)); time.Advance(TimeSpan.FromSeconds(1));
+        var a2 = s.Create("Alice", T(time)); time.Advance(TimeSpan.FromSeconds(1)); // same user, other case
+        var a3 = s.Create("alice", T(time));
+        Assert.Null(s.Find(a1.Id));
+        Assert.NotNull(s.Find(a2.Id));
+        Assert.NotNull(s.Find(a3.Id));
+        for (var i = 0; i < 20; i++) { time.Advance(TimeSpan.FromSeconds(1)); s.Create("alice", T(time)); }
+        Assert.NotNull(s.Find(bob.Id)); // never evicted by someone else's sign-ins
         Assert.Equal(3, s.Count);
-        Assert.Null(s.Find(second.Id));
-        Assert.NotNull(s.Find(first.Id));
-        Assert.NotNull(s.Find(third.Id));
+    }
+
+    [Fact]
+    public void A_full_table_refuses_new_sign_ins_instead_of_ending_other_sessions_but_reclaims_expired_ones()
+    {
+        var time = new FakeTimeProvider();
+        var s = new WebSessions(time, new WebOptions { MaxSessions = 3, MaxSessionsPerUser = 5, IdleTimeout = TimeSpan.FromMinutes(30) });
+        var one = s.Create("a", T(time)); var two = s.Create("b", T(time)); var three = s.Create("c", T(time));
+        Assert.Throws<WebSessionLimitException>(() => s.Create("d", T(time)));
+        Assert.NotNull(s.Find(one.Id)); Assert.NotNull(s.Find(two.Id)); Assert.NotNull(s.Find(three.Id));
+        Assert.Equal(3, s.Count);
+        time.Advance(TimeSpan.FromMinutes(31)); // all idle past the timeout: reclaimable
+        Assert.NotNull(s.Create("d", T(time)));
+        Assert.Equal(1, s.Count);
+    }
+
+    [Fact]
+    public void A_user_signing_in_again_at_a_full_table_makes_room_with_their_own_oldest_session()
+    {
+        var time = new FakeTimeProvider();
+        var s = new WebSessions(time, new WebOptions { MaxSessions = 2, MaxSessionsPerUser = 1 });
+        var mine = s.Create("a", T(time)); time.Advance(TimeSpan.FromSeconds(1));
+        var theirs = s.Create("b", T(time));
+        var evicted = new List<WebSession>();
+        var again = s.Create("a", T(time), evicted);
+        Assert.Equal([mine], evicted);
+        Assert.Null(s.Find(mine.Id));
+        Assert.NotNull(s.Find(theirs.Id));
+        Assert.NotNull(s.Find(again.Id));
+        // Someone new is still refused and nothing is evicted for them.
+        Assert.Throws<WebSessionLimitException>(() => s.Create("c", T(time), evicted));
+        Assert.Equal(2, s.Count);
     }
 
     [Fact]

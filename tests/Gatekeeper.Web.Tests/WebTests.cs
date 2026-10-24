@@ -45,7 +45,7 @@ public class WebTests : IClassFixture<WebFixture>
     }
 
     [Fact]
-    public async Task Wrong_credentials_and_non_administrators_get_the_same_message_and_no_session()
+    public async Task Wrong_credentials_get_the_same_message_and_no_session()
     {
         var name = Unique("plain");
         using (var admin = _f.Api.CreateClient())
@@ -56,13 +56,13 @@ public class WebTests : IClassFixture<WebFixture>
             await admin.PutAsJsonAsync($"/v1/users/{user.GetProperty("id").GetString()}/password", new { password = "an ordinary password" });
         }
 
-        foreach (var (user, pw) in new[] { (name, "an ordinary password"), (WebFixture.AdminName, "wrong password here"), ("nobody", "whatever password") })
+        foreach (var (user, pw) in new[] { (name, "a wrong password here"), (WebFixture.AdminName, "wrong password here"), ("nobody", "whatever password") })
         {
             var b = _f.Browser();
             var r = await WebFixture.PostFormAsync(b, "/Login", new() { ["Username"] = user, ["Password"] = pw });
             Assert.Equal(HttpStatusCode.OK, r.StatusCode);
             var html = await r.Content.ReadAsStringAsync();
-            Assert.Contains("Invalid credentials, or not an administrator.", html);
+            Assert.Contains("Invalid credentials.", html);
             Assert.DoesNotContain(pw, html);
             Assert.False(r.Headers.TryGetValues("Set-Cookie", out var c) && c.Any(x => x.StartsWith("gk_session=")));
             Assert.Equal(HttpStatusCode.Redirect, (await b.GetAsync("/Applications")).StatusCode);

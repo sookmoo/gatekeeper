@@ -1,0 +1,21 @@
+@page "/Account/Sessions/Revoke/{sessionId:guid}"
+@model Gatekeeper.Web.Pages.Account.Sessions.RevokeModel
+@using Gatekeeper.Web.Pages.Users.Sessions
+@{
+    ViewData["Title"] = "Revoke a session";
+}
+<h1>Revoke a session</h1>
+@if (Model.Error is not null)
+{
+    <p class="error" role="alert">@Model.Error</p>
+}
+@if (Model.Session.Current)
+{
+    <p class="error" role="alert">This is your current session. Revoking it signs you out at once.</p>
+}
+<p>Revoke your session in application <strong>@(Model.Session.AppName ?? "(unknown)")</strong>, created @SessionAccess.Time(Model.Session.CreatedAt), expires @SessionAccess.Time(Model.Session.ExpiresAt)?</p>
+<p>@SessionAccess.LifetimeNote(Model.Lifetime, includeRefreshNote: false)</p>
+<form method="post">
+    <button type="submit" class="danger">Revoke</button>
+    <a href="/Account">Cancel</a>
+</form>

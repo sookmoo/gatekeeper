@@ -35,7 +35,7 @@ public class Sec5aTests
 
         var sessions = f.Web.Services.GetRequiredService<WebSessions>();
         var s = sessions.Find(sid)!;
-        s.Tokens = s.Tokens with { Access = "garbage", AccessExpiresAt = DateTimeOffset.UtcNow.AddMinutes(10) };
+        s.Tokens = s.Tokens with { Access = WebFixture.FakeAdminToken(), AccessExpiresAt = DateTimeOffset.UtcNow.AddMinutes(10) };
 
         var r = new HttpRequestMessage(HttpMethod.Get, "/Applications");
         r.Headers.Add("Cookie", "gk_session=" + sid);
@@ -58,7 +58,7 @@ public class Sec5aTests
         using var down = new WebFixture(false, s => s.AddHttpClient<GatekeeperApi>().ConfigurePrimaryHttpMessageHandler(() => new DownHandler()));
         var sessions = down.Web.Services.GetRequiredService<WebSessions>();
         var raw = down.Web.CreateClient(new() { AllowAutoRedirect = false, HandleCookies = false });
-        var s0 = sessions.Create("web-admin", new Tokens("a", DateTimeOffset.UtcNow.AddMinutes(10), "r", DateTimeOffset.UtcNow.AddHours(1)));
+        var s0 = sessions.Create("web-admin", new Tokens(WebFixture.FakeAdminToken(), DateTimeOffset.UtcNow.AddMinutes(10), "r", DateTimeOffset.UtcNow.AddHours(1)));
         var req = new HttpRequestMessage(HttpMethod.Get, "/Applications");
         req.Headers.Add("Cookie", "gk_session=" + s0.Id);
         var resp = await raw.SendAsync(req);
