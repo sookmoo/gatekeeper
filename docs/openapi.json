@@ -1751,44 +1751,6 @@
         "x-gatekeeper-access": "admin"
       }
     },
-    "/v1/sessions/{id}": {
-      "delete": {
-        "tags": [
-          "Sessions"
-        ],
-        "description": "Deprecated: use DELETE /v1/users/{id}/sessions/{sessionId}, which is scoped to the owner. The audit note names the owner (user=<id>). The response carries a Deprecation header and a Link to the successor route; it will be removed once no client uses it.",
-        "parameters": [
-          {
-            "name": "id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "format": "uuid"
-            }
-          }
-        ],
-        "responses": {
-          "404": {
-            "description": "Not Found",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ProblemDetails"
-                }
-              }
-            }
-          }
-        },
-        "deprecated": true,
-        "security": [
-          {
-            "bearer": [ ]
-          }
-        ],
-        "x-gatekeeper-access": "admin"
-      }
-    },
     "/v1/clients": {
       "get": {
         "tags": [
@@ -3201,9 +3163,6 @@
     },
     {
       "name": "Users"
-    },
-    {
-      "name": "Sessions"
     },
     {
       "name": "Clients"

@@ -113,7 +113,7 @@ dotnet bin/Debug/net10.0/Gatekeeper.Api.dll           # serve, uses Gatekeeper
 - `POST /v1/auth/logout {"refreshToken"}` ends the session (always `204`). A new password ends all of that user's sessions.
   Admins: `GET /v1/users/{id}/sessions`, `DELETE /v1/users/{id}/sessions` (all),
   `GET|DELETE /v1/users/{id}/sessions/{sessionId}` (one; 404 both when unknown and when it is another user's; the audit row names user
-  and session), `DELETE /v1/sessions/{id}` (deprecated: unscoped, answers with `Deprecation: true` and a `Link` to the scoped route, the audit note names the owner as `user=<id>`; to be removed once no client uses it); CLI
+  and session). **Breaking change (slice 7b):** the deprecated unscoped `DELETE /v1/sessions/{id}` is removed and now answers `404` like any unknown path; use `DELETE /v1/users/{id}/sessions/{sessionId}`. CLI
   `gk user sessions|revoke-sessions <user>`, `gk user revoke-session <user> <session>`. The management API also checks the token's session, so ending an admin's session ends
   their access within ~10 s without waiting for `exp`. This only covers tokens that carry a `sid`, i.e. logins with `refresh`; a plain
   login token has no session and stays valid until `exp` (an administrator who is deactivated or loses the role is still rejected within ~10 s)

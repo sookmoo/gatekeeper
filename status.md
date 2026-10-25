@@ -463,6 +463,12 @@ Checked in the code (2026-10-25): neither the CLI nor the Web calls the deprecat
 - Migrations: none. Review: QA; security only a short check (removal of an admin-only route).
 - Acceptance: the old route is gone from the served and committed OpenAPI, 404 for any id, every other session route unchanged.
 
+#### Slice 7b result (implemented 2026-10-25 on `feat/slice-7b-remove-session-route`, not committed, not yet reviewed)
+- Removed: the `DELETE /v1/sessions/{id}` route (and its `user=<owner>` note, `Deprecation`/`Link` headers), the deprecation handling in `BearerSecurityTransformer`, the path and the now-unused top-level `Sessions` tag in `docs/openapi.json`. The unused unscoped `SessionService.RevokeAsync(Guid)` is deleted (security review, Low). README notes the breaking change (Q7b-1).
+- 404 for every caller: verified in `Slice6bApiTests.Old_unscoped_route_is_gone_and_revokes_nothing` (admin, non-admin and anonymous tokens, DELETE and GET, existing and random ids: always 404 without a `Deprecation` header; the session still lives). The fallback policy does not turn it into 401/403, same as any other unknown path.
+- Tests adapted to the scoped route: `SessionApiTests`, `Qa4cApiTests` (route and OpenAPI status check), `Slice6bApiTests` (old-route tests replaced; session-routes-need-admin and OpenAPI tests), `Slice6bQaTests` (old-route parts removed; committed OpenAPI test now asserts the path is absent and nothing is deprecated), `Sessions5fQaTests` (Web). The route-table policy test needed no change.
+- Results: `scripts/test-pg.sh` all green: Domain 51, Application 162, Store.Contract 197 (1 skipped), Web 464, Cli 103, Api 678, 0 failures.
+
 ### Slice 7c: database trigger that enforces the version bump (6d follow-up)
 - Scope: one `BEFORE UPDATE` trigger function per table (`apps`, `roles`, `users`, `clients`): if any own column differs (the columns that bump the version under Q6d-3) or the writer changed `version` itself, set `NEW.version := OLD.version + 1`; otherwise keep `OLD.version`. This keeps today's results identical (the app already writes loaded + 1 under `WHERE version = loaded`, so EF's tracked value matches), makes writes from old instances, operators' SQL or future code bump correctly, and lets the README rule "old and new instances must not run side by side across a migration" be dropped for versions. Columns that must not bump: `sessions_valid_after` (7a) and `updated_at`-only changes (Q7c-1). Owner-defined functions; the app role cannot alter or drop them (test as the app role, as for the audit trigger).
 - Order: after 7a, so the excluded column list is final.
@@ -512,4 +518,4 @@ Checked in the code (2026-10-25): neither the CLI nor the Web calls the deprecat
 
 ## Next action
 
-Slice 7a (per-user session cut-off) is implemented on `feat/slice-7a-session-cutoff` (uncommitted, together with the approved plan edits in this file); see "Slice 7a result". Review fixes are in (see "Review round"). Reviews are done (two rounds). Next: ask the user before commit, push or PR. After 7a: 7b to 7f in the order of the plan. Federation/broker (backlog items 1 and 2) remain paused.
+Slice 7b (remove the deprecated unscoped session route) is implemented on `feat/slice-7b-remove-session-route` (uncommitted); see "Slice 7b result". Next: QA and a short security review, then ask the user before commit, push or PR. After 7b: 7c to 7f in the order of the plan. Federation/broker (backlog items 1 and 2) remain paused.

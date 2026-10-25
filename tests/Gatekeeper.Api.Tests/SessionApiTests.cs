@@ -216,8 +216,8 @@ public class SessionApiTests : IClassFixture<WebApplicationFactory<Program>>
         Assert.DoesNotContain(t1, raw);
 
         var one = list[0].GetProperty("id").GetGuid();
-        Assert.Equal(HttpStatusCode.NoContent, (await _admin.DeleteAsync($"/v1/sessions/{one}")).StatusCode);
-        Assert.Equal(HttpStatusCode.NotFound, (await _admin.DeleteAsync($"/v1/sessions/{Guid.NewGuid()}")).StatusCode);
+        Assert.Equal(HttpStatusCode.NoContent, (await _admin.DeleteAsync($"/v1/users/{p.UserId}/sessions/{one}")).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await _admin.DeleteAsync($"/v1/users/{p.UserId}/sessions/{Guid.NewGuid()}")).StatusCode);
         Assert.Equal(1, (await _admin.GetFromJsonAsync<JsonElement>($"/v1/users/{p.UserId}/sessions")).GetProperty("items").GetArrayLength());
 
         var all = await _admin.DeleteAsync($"/v1/users/{p.UserId}/sessions");
