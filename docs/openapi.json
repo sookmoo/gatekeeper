@@ -98,6 +98,7 @@
         "tags": [
           "Auth"
         ],
+        "description": "RFC 7662-style. active is false for a token whose user was deactivated or reactivated, whose password was changed or reset, or whose sessions were ended all at once after the token's sign-in began (the user's session cut-off), also for a token without a session. A token carries auth_time (when the sign-in began, in seconds; older tokens are judged by iat); the answer repeats it when the token has it. A sign-in in the same second as a cut-off is treated as before it (sign in again). Guarantee for a token without a session: it is refused when its sign-in was stamped before the change committed, up to the store's clock reading taken as the last write of the change; a sign-in stamped in the few microseconds between that reading and the commit that still verified the old password is not caught and its token lives until exp (a session is always closed completely).",
         "requestBody": {
           "content": {
             "application/json": {
@@ -324,7 +325,7 @@
         "tags": [
           "Me"
         ],
-        "description": "Changes the caller's own password. Needs the current password (verified like a login). 204: changed; every other session of the user ended (all of them for a token without a session). 400: the new password breaks the password rules or equals the current one. 403 with code current-password-incorrect: the current password was not accepted (a fixed answer, deliberately not 401, so clients do not treat it as an ended session). 429: too many failed attempts for this user or address (Retry-After). Neither password is ever logged or audited; the audit row has the route and the number of sessions ended.",
+        "description": "Changes the caller's own password. Needs the current password (verified like a login). 204: changed; every other session of the user ended (all of them for a token without a session, which then ends too), the session of the token is kept, and the user's session cut-off is raised in the same write (a sign-in that began before it cannot keep a session). 400: the new password breaks the password rules or equals the current one. 403 with code current-password-incorrect: the current password was not accepted (a fixed answer, deliberately not 401, so clients do not treat it as an ended session). 429: too many failed attempts for this user or address (Retry-After). Neither password is ever logged or audited; the audit row has the route and the number of sessions ended.",
         "requestBody": {
           "content": {
             "application/json": {
@@ -1185,7 +1186,7 @@
         "tags": [
           "Users"
         ],
-        "description": "Setting isActive from true to false ends all of the user's sessions at once. Moving a test user's expiresAt earlier (or making a person a test user) caps active sessions to the new expiry; a later extension does not lengthen them.",
+        "description": "Setting isActive from true to false ends all of the user's sessions at once. Setting it back to true (or extending the expiry of an expired test user so the account is usable again) does not bring them back: the same write raises the user's session cut-off, so every session and every access token without a session that was authenticated before that moment stays refused. Moving a test user's expiresAt earlier (or making a person a test user) caps active sessions to the new expiry; a later extension does not lengthen them.",
         "parameters": [
           {
             "name": "id",
@@ -1256,7 +1257,7 @@
         "tags": [
           "Users"
         ],
-        "description": "Setting isActive from true to false ends all of the user's sessions at once. Moving a test user's expiresAt earlier (or making a person a test user) caps active sessions to the new expiry; a later extension does not lengthen them.",
+        "description": "Setting isActive from true to false ends all of the user's sessions at once. Setting it back to true (or extending the expiry of an expired test user so the account is usable again) does not bring them back: the same write raises the user's session cut-off, so every session and every access token without a session that was authenticated before that moment stays refused. Moving a test user's expiresAt earlier (or making a person a test user) caps active sessions to the new expiry; a later extension does not lengthen them.",
         "parameters": [
           {
             "name": "id",
@@ -1374,6 +1375,7 @@
         "tags": [
           "Users"
         ],
+        "description": "Sets the user's password. Unless it is the user's first password, the same write raises the user's session cut-off: every session and every access token without a session that was authenticated before it stops working, and a sign-in that began before it (for example one that had just verified the old password) cannot keep a session. The audit note carries sessionsCutOff=<time>. The user's version does not change. Guarantee for a token without a session: it is refused when its sign-in was stamped before the change committed, up to the store's clock reading taken as the last write of the change; a sign-in stamped in the few microseconds between that reading and the commit that still verified the old password is not caught and its token lives until exp (a session is always closed completely).",
         "parameters": [
           {
             "name": "id",
@@ -1476,6 +1478,7 @@
         "tags": [
           "Users"
         ],
+        "description": "Ends all of the user's sessions and raises the user's session cut-off in one step: a sign-in that is still being completed, and access tokens without a session issued before now, are refused as well. The audit note carries sessionsCutOff=<time>. The user's version does not change.",
         "parameters": [
           {
             "name": "id",

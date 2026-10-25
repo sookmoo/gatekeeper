@@ -22,4 +22,8 @@ public sealed class PreconditionFailedException() : GatekeeperException("The res
 public sealed class ConflictException(string message) : GatekeeperException(message);
 
 /// <summary>Too much password hashing is queued; the caller may retry shortly (HTTP 503).</summary>
-public sealed class BusyException() : GatekeeperException("The server is busy. Try again shortly.");
+public sealed class BusyException() : GatekeeperException("The server is busy. Try again shortly.")
+{
+    /// <summary>True when the caller's password had already been verified (a guess was spent): such an attempt is audited and keeps its throttle slot.</summary>
+    public bool AfterVerification { get; init; }
+}

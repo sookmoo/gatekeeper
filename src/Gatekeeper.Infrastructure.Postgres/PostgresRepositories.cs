@@ -50,7 +50,7 @@ public abstract class PostgresRepository(Factory factory)
     private const int MaxUpdateAttempts = 20;
     private const string LockNotAvailable = "55P03";
 
-    private static bool IsLockTimeout(Exception? ex)
+    protected static bool IsLockTimeout(Exception? ex)
     {
         for (; ex is not null; ex = ex.InnerException)
             if (ex is PostgresException { SqlState: LockNotAvailable }) return true;
@@ -65,14 +65,16 @@ public abstract class PostgresRepository(Factory factory)
     /// An unconditional update has no version to defend, so it takes a row lock (<c>SELECT ... FOR UPDATE</c> in a transaction): unconditional
     /// writers of one row queue up and each succeeds with its own version instead of failing under contention. Null when the row does not exist.
     /// </summary>
-    protected static async Task<T?> UpdateVersionedAsync<T>(GatekeeperDbContext db, Guid id, long? expected, Func<T, T> change, CancellationToken ct)
+    /// <param name="sameTransaction">An extra statement that must commit or roll back with the update (it runs after the row is saved); a conditional update then also runs in a transaction.</param>
+    protected static async Task<T?> UpdateVersionedAsync<T>(GatekeeperDbContext db, Guid id, long? expected, Func<T, T> change, CancellationToken ct,
+        Func<T, Task>? sameTransaction = null)
         where T : class, IVersioned
     {
         var table = db.Model.FindEntityType(typeof(T))!.GetTableName()!;
         for (var attempt = 0; attempt < MaxUpdateAttempts; attempt++)
         {
             db.ChangeTracker.Clear();
-            await using var tx = expected is null ? await db.Database.BeginTransactionAsync(ct) : null;
+            await using var tx = expected is null || sameTransaction is not null ? await db.Database.BeginTransactionAsync(ct) : null;
             // Bounded wait for the row lock: a stuck writer must not pin every other request behind it (503 + Retry-After instead).
             if (tx is not null) await db.Database.ExecuteSqlRawAsync("SET LOCAL lock_timeout = '2s'", ct);
             T? row;
@@ -96,8 +98,13 @@ public abstract class PostgresRepository(Factory factory)
             try
             {
                 await db.SaveChangesAsync(ct);
+                if (sameTransaction is not null) await sameTransaction(row);
                 if (tx is not null) await tx.CommitAsync(CancellationToken.None); // the row is written: do not abandon the commit half-way
                 return row;
+            }
+            catch (Exception ex) when (tx is not null && IsLockTimeout(ex))
+            {
+                throw new BusyException();
             }
             catch (DbUpdateConcurrencyException)
             {
@@ -105,6 +112,64 @@ public abstract class PostgresRepository(Factory factory)
             }
         }
         throw new StoreUnavailableException("The record is being changed by too many requests at once. Try again.");
+    }
+
+    /// <summary>
+    /// Raises the user's session cut-off to at least <paramref name="to"/> (GREATEST ignores NULL, so a first cut-off is just stored). It never
+    /// lowers it and does not touch the version: sessions are a separate resource from the user's own fields.
+    /// </summary>
+    protected static Task<int> RaiseCutOffAsync(GatekeeperDbContext db, Guid userId, DateTimeOffset to, CancellationToken ct) =>
+        db.Database.ExecuteSqlInterpolatedAsync($"UPDATE users SET sessions_valid_after = GREATEST(sessions_valid_after, {to}) WHERE id = {userId}", ct);
+
+    /// <summary>
+    /// A password change's effect on sessions, inside the caller's transaction (see <see cref="ICredentialRepository"/>): lock the user row, raise the
+    /// cut-off only if it really rises (<c>cut</c> greater than the stored one), re-stamp the kept session only then and only if it still counted under the
+    /// old cut-off (never to an earlier stamp), and revoke every other active session of the user.
+    /// </summary>
+    protected static async Task EndSessionsAsync(GatekeeperDbContext db, Guid userId, DateTimeOffset cut, DateTimeOffset at, Guid? keep, CancellationToken ct)
+    {
+        var stored = await db.Database.SqlQuery<DateTimeOffset?>($"SELECT sessions_valid_after AS \"Value\" FROM users WHERE id = {userId} FOR NO KEY UPDATE").ToListAsync(ct);
+        if (stored.Count == 0) return; // no such user
+        var prev = stored[0];
+        // Revoke first; the cut-off is the LAST write before the commit and is at least the clock now, so a sign-in stamped after the caller read its
+        // clock but before this point is cut off too.
+        if (keep is { } kept)
+            await db.Database.ExecuteSqlInterpolatedAsync($"UPDATE sessions SET revoked_at = {at} WHERE user_id = {userId} AND id <> {kept} AND revoked_at IS NULL AND expires_at > {at}", ct);
+        else
+            await db.Database.ExecuteSqlInterpolatedAsync($"UPDATE sessions SET revoked_at = {at} WHERE user_id = {userId} AND revoked_at IS NULL AND expires_at > {at}", ct);
+        var now = Clock.UtcNowMicros();
+        if (now > cut) cut = now;
+        if (prev is not { } p || cut > p)
+        {
+            await db.Database.ExecuteSqlInterpolatedAsync($"UPDATE users SET sessions_valid_after = {cut} WHERE id = {userId}", ct);
+            if (keep is { } k)
+            {
+                var restamp = cut.AddTicks(10); // one microsecond after the cut-off: strictly later, so it alone survives
+                if (prev is { } old)
+                    await db.Database.ExecuteSqlInterpolatedAsync(
+                        $"UPDATE sessions SET authenticated_at = GREATEST(authenticated_at, {restamp}) WHERE id = {k} AND user_id = {userId} AND revoked_at IS NULL AND expires_at > {at} AND authenticated_at > {old}", ct);
+                else
+                    await db.Database.ExecuteSqlInterpolatedAsync(
+                        $"UPDATE sessions SET authenticated_at = GREATEST(authenticated_at, {restamp}) WHERE id = {k} AND user_id = {userId} AND revoked_at IS NULL AND expires_at > {at}", ct);
+            }
+        }
+    }
+
+    /// <summary>Runs the work in one transaction with a bounded wait for row locks (503 instead of a stuck request).</summary>
+    protected static async Task<T> InTransactionAsync<T>(GatekeeperDbContext db, Func<Task<T>> work, CancellationToken ct)
+    {
+        await using var tx = await db.Database.BeginTransactionAsync(ct);
+        try
+        {
+            await db.Database.ExecuteSqlRawAsync("SET LOCAL lock_timeout = '2s'", ct);
+            var result = await work();
+            await tx.CommitAsync(CancellationToken.None); // written: do not abandon the commit half-way
+            return result;
+        }
+        catch (Exception ex) when (IsLockTimeout(ex))
+        {
+            throw new BusyException();
+        }
     }
 
     /// <summary>Deletes the row; with an expected version only if it still has it. False when the row does not exist.</summary>
@@ -226,7 +291,17 @@ public sealed class PostgresUserRepository(Factory factory) : PostgresRepository
     }, ct: ct);
 
     public Task<User?> UpdateAsync(User user, long? expectedVersion = null, CancellationToken ct = default) =>
-        Run(db => UpdateVersionedAsync<User>(db, user.Id, expectedVersion, _ => user, ct), TranslateUnique(user), ct);
+        Run(db => UpdateVersionedAsync<User>(db, user.Id, expectedVersion,
+            // The cut-off column is never part of this UPDATE (it keeps the stored value); a requested rise is a GREATEST statement in the
+            // same transaction, so a rise made by someone else in between cannot be undone by a stale copy.
+            stored => user with { SessionsValidAfter = stored.SessionsValidAfter }, ct,
+            user.SessionsValidAfter is not { } rise ? null : async saved =>
+            {
+                // Only a real raise writes (the caller passes the value it read on every update; that is not a raise).
+                if (saved.SessionsValidAfter is { } had && had >= rise) return;
+                await RaiseCutOffAsync(db, user.Id, rise, ct);
+                db.Entry(saved).Property(nameof(User.SessionsValidAfter)).CurrentValue = rise;
+            }), TranslateUnique(user), ct);
 
     public Task<bool> DeleteAsync(Guid id, long? expectedVersion = null, CancellationToken ct = default) =>
         Run(db => DeleteVersionedAsync<User>(db, id, expectedVersion, ct), ct: ct);
@@ -275,17 +350,40 @@ public sealed class PostgresUserRepository(Factory factory) : PostgresRepository
 
 public sealed class PostgresCredentialRepository(Factory factory) : PostgresRepository(factory), ICredentialRepository
 {
-    public Task SetAsync(Guid userId, string hash, DateTimeOffset at, CancellationToken ct = default) => Run(async db =>
+    public Task SetAsync(Guid userId, string hash, DateTimeOffset at, DateTimeOffset? cutOffAt = null, CancellationToken ct = default) => Run(async db =>
     {
-        await db.Database.ExecuteSqlInterpolatedAsync(
+        Task<int> Upsert() => db.Database.ExecuteSqlInterpolatedAsync(
             $"INSERT INTO user_credentials (user_id, hash, updated_at) VALUES ({userId}, {hash}, {at}) ON CONFLICT (user_id) DO UPDATE SET hash = EXCLUDED.hash, updated_at = EXCLUDED.updated_at", ct);
-        return 0;
+        if (cutOffAt is not { } cut)
+        {
+            await Upsert();
+            return 0;
+        }
+        // The new hash, the cut-off and the revoke of the sessions commit together, under the credential row lock (a sign-in inserting a session
+        // under a share lock on this row either finishes first and is revoked here, or waits and then sees the new hash).
+        return await InTransactionAsync(db, async () =>
+        {
+            var existed = (await db.Database.SqlQuery<int>($"SELECT 1 AS \"Value\" FROM user_credentials WHERE user_id = {userId} FOR UPDATE").ToListAsync(ct)).Count > 0;
+            await Upsert();
+            if (existed) await EndSessionsAsync(db, userId, cut, at, null, ct); // a first password has nothing to end
+            return 0;
+        }, ct);
     }, (_, pg) => Task.FromResult<GatekeeperException?>(
         pg.ConstraintName == Names.CredentialUserFk ? new NotFoundException($"User {userId} not found.") : null), ct);
 
-    public Task<bool> ReplaceHashAsync(Guid userId, string expectedHash, string newHash, DateTimeOffset at, CancellationToken ct = default) => Run(async db =>
-        await db.Database.ExecuteSqlInterpolatedAsync(
-            $"UPDATE user_credentials SET hash = {newHash}, updated_at = {at} WHERE user_id = {userId} AND hash = {expectedHash}", ct) > 0, ct: ct);
+    public Task<bool> ReplaceHashAsync(Guid userId, string expectedHash, string newHash, DateTimeOffset at, DateTimeOffset? cutOffAt = null, Guid? keepSession = null, CancellationToken ct = default) => Run(async db =>
+    {
+        Task<int> Replace() => db.Database.ExecuteSqlInterpolatedAsync(
+            $"UPDATE user_credentials SET hash = {newHash}, updated_at = {at} WHERE user_id = {userId} AND hash = {expectedHash}", ct);
+        if (cutOffAt is not { } cut) return await Replace() > 0;
+        // Hash, cut-off, re-stamp of the kept session and revoke of the others are one transaction (the compare-and-set decides all of it).
+        return await InTransactionAsync(db, async () =>
+        {
+            if (await Replace() == 0) return false;
+            await EndSessionsAsync(db, userId, cut, at, keepSession, ct);
+            return true;
+        }, ct);
+    }, ct: ct);
 
     public Task<string?> GetHashAsync(Guid userId, CancellationToken ct = default) =>
         Run<string?>(db => db.Credentials.AsNoTracking().Where(c => c.UserId == userId).Select(c => c.Hash).FirstOrDefaultAsync(ct), ct: ct);
@@ -388,21 +486,37 @@ public sealed class PostgresClientRepository(Factory factory) : PostgresReposito
 
 public sealed class PostgresSessionRepository(Factory factory) : PostgresRepository(factory), ISessionRepository
 {
-    public Task AddAsync(Session x, string tokenHash, CancellationToken ct = default) => Run(async db =>
+    private static SessionRow RowOf(Session x, string tokenHash) => new()
     {
-        db.Sessions.Add(new SessionRow
-        {
-            Id = x.Id, UserId = x.UserId, AppId = x.AppId, CreatedAt = x.CreatedAt, LastUsedAt = x.LastUsedAt,
-            ExpiresAt = x.ExpiresAt, RevokedAt = x.RevokedAt, TokenHash = tokenHash,
-        });
-        await db.SaveChangesAsync(ct);
-        return 0;
-    }, async (lookup, pg) =>
+        Id = x.Id, UserId = x.UserId, AppId = x.AppId, CreatedAt = x.CreatedAt, LastUsedAt = x.LastUsedAt,
+        ExpiresAt = x.ExpiresAt, RevokedAt = x.RevokedAt, AuthenticatedAt = x.Stamp, TokenHash = tokenHash,
+    };
+
+    private static Translator TranslateAdd(Session x) => async (lookup, pg) =>
     {
         if (pg.SqlState != "23503") return null;
         if (!await lookup.Users.AnyAsync(u => u.Id == x.UserId)) return new NotFoundException($"User {x.UserId} not found.");
         return new NotFoundException($"Application {x.AppId} not found.");
-    }, ct);
+    };
+
+    public Task AddAsync(Session x, string tokenHash, CancellationToken ct = default) => Run(async db =>
+    {
+        db.Sessions.Add(RowOf(x, tokenHash));
+        await db.SaveChangesAsync(ct);
+        return 0;
+    }, TranslateAdd(x), ct);
+
+    public Task<bool> AddForCredentialAsync(Session x, string tokenHash, string credentialHash, CancellationToken ct = default) => Run(db => InTransactionAsync(db, async () =>
+    {
+        // FOR SHARE blocks a concurrent password change (its UPDATE needs FOR NO KEY UPDATE) until this insert commits, and waits for one in
+        // progress, after which the row no longer matches and nothing is inserted.
+        var current = (await db.Database.SqlQuery<int>(
+            $"SELECT 1 AS \"Value\" FROM user_credentials WHERE user_id = {x.UserId} AND hash = {credentialHash} FOR SHARE").ToListAsync(ct)).Count > 0;
+        if (!current) return false;
+        db.Sessions.Add(RowOf(x, tokenHash));
+        await db.SaveChangesAsync(ct);
+        return true;
+    }, ct), TranslateAdd(x), ct);
 
     public Task<Session?> GetAsync(Guid id, CancellationToken ct = default) => Run<Session?>(async db =>
         (await db.Sessions.AsNoTracking().FirstOrDefaultAsync(s => s.Id == id, ct))?.ToDomain(), ct: ct);
@@ -417,12 +531,17 @@ public sealed class PostgresSessionRepository(Factory factory) : PostgresReposit
     public Task<IReadOnlyList<Session>> ListActiveByUserAsync(Guid userId, DateTimeOffset now, Slice? slice = null, CancellationToken ct = default) => Run<IReadOnlyList<Session>>(async db =>
         (await db.Sessions.AsNoTracking()
             .Where(s => s.UserId == userId && s.RevokedAt == null && s.ExpiresAt > now)
+            .Where(s => !db.Users.Any(u => u.Id == s.UserId && u.SessionsValidAfter != null && s.AuthenticatedAt <= u.SessionsValidAfter))
             .OrderByDescending(s => s.CreatedAt).ThenByDescending(s => s.Id).Page(slice).ToListAsync(ct))
         .Select(s => s.ToDomain()).ToList(), ct: ct);
 
     public Task<bool> RotateAsync(Guid id, string expectedHash, string newHash, DateTimeOffset now, CancellationToken ct = default) => Run(async db =>
         await db.Database.ExecuteSqlInterpolatedAsync(
-            $"UPDATE sessions SET previous_token_hash = token_hash, token_hash = {newHash}, last_used_at = {now} WHERE id = {id} AND token_hash = {expectedHash} AND revoked_at IS NULL AND expires_at > {now}", ct) > 0, ct: ct);
+            $"""
+            UPDATE sessions SET previous_token_hash = token_hash, token_hash = {newHash}, last_used_at = {now}
+            WHERE id = {id} AND token_hash = {expectedHash} AND revoked_at IS NULL AND expires_at > {now}
+              AND NOT EXISTS (SELECT 1 FROM users u WHERE u.id = sessions.user_id AND u.sessions_valid_after IS NOT NULL AND sessions.authenticated_at <= u.sessions_valid_after)
+            """, ct) > 0, ct: ct);
 
     public Task<bool> RevokeAsync(Guid id, DateTimeOffset now, CancellationToken ct = default) => Run(async db =>
         await db.Database.ExecuteSqlInterpolatedAsync(
@@ -435,6 +554,13 @@ public sealed class PostgresSessionRepository(Factory factory) : PostgresReposit
     public Task<int> RevokeAllForUserAsync(Guid userId, DateTimeOffset now, CancellationToken ct = default) => Run(db =>
         db.Database.ExecuteSqlInterpolatedAsync(
             $"UPDATE sessions SET revoked_at = {now} WHERE user_id = {userId} AND revoked_at IS NULL AND expires_at > {now}", ct), ct: ct);
+
+    public Task<int> RevokeAllAndCutOffAsync(Guid userId, DateTimeOffset now, CancellationToken ct = default) => Run(db => InTransactionAsync(db, async () =>
+    {
+        if (await RaiseCutOffAsync(db, userId, now, ct) == 0) return 0; // no such user
+        return await db.Database.ExecuteSqlInterpolatedAsync(
+            $"UPDATE sessions SET revoked_at = {now} WHERE user_id = {userId} AND revoked_at IS NULL AND expires_at > {now}", ct);
+    }, ct), ct: ct);
 
     public Task<int> RevokeAllForUserExceptAsync(Guid userId, Guid keep, DateTimeOffset now, CancellationToken ct = default) => Run(db =>
         db.Database.ExecuteSqlInterpolatedAsync(

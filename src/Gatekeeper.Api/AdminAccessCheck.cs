@@ -6,7 +6,7 @@ using Microsoft.Extensions.Caching.Memory;
 namespace Gatekeeper.Api;
 
 /// <summary>What the store says about a token's subject right now (a usable user whose session, if any, is still active).</summary>
-public sealed record AccessState(UserKind Kind, bool IsAdmin);
+public sealed record AccessState(UserKind Kind, bool IsAdmin, DateTimeOffset? SessionsValidAfter = null);
 
 /// <summary>
 /// Access tokens live 15 minutes, so on every request the token's subject is re-checked against the store: still usable
@@ -19,7 +19,18 @@ public sealed class AdminAccessCheck(IUserRepository users, AdminGuard guard, IM
 
     /// <param name="sessionId">The token's sid, if it came from a refresh session: a revoked or expired session ends the token.</param>
     /// <returns>Null when the user is gone, disabled or expired, or the session has ended.</returns>
-    public Task<AccessState?> StateAsync(Guid userId, Guid? sessionId, CancellationToken ct) =>
+    public Task<AccessState?> StateAsync(Guid userId, Guid? sessionId, CancellationToken ct) => StateAsync(userId, sessionId, null, ct);
+
+    /// <param name="authTime">For a token without a session: its <c>auth_time</c> (or <c>iat</c>) in seconds. The token is refused when the user's session cut-off is not older than that (see <see cref="User.TokenCountsAfterCutOff"/>). Ignored for a token with a session: the session row says.</param>
+    public async Task<AccessState?> StateAsync(Guid userId, Guid? sessionId, long? authTime, CancellationToken ct)
+    {
+        var state = await CachedStateAsync(userId, sessionId, ct);
+        // Decided outside the cache: the answer depends on the token, not only on the user.
+        if (state is not null && sessionId is null && !User.TokenCountsAfterCutOff(state.SessionsValidAfter, authTime)) return null;
+        return state;
+    }
+
+    private Task<AccessState?> CachedStateAsync(Guid userId, Guid? sessionId, CancellationToken ct) =>
         cache.GetOrCreateAsync(("access", userId, sessionId), async entry =>
         {
             entry.AbsoluteExpirationRelativeToNow = CacheFor;
@@ -31,12 +42,12 @@ public sealed class AdminAccessCheck(IUserRepository users, AdminGuard guard, IM
                 return new CancellationTokenSource();
             })!;
             entry.AddExpirationToken(new Microsoft.Extensions.Primitives.CancellationChangeToken(generation.Token));
-            if (sessionId is { } sid && !await sessions.IsActiveAsync(sid, ct)) return null;
             if (await users.GetAsync(userId, ct) is not { } user || !user.IsUsable(Clock.UtcNowMicros())) return null;
+            if (sessionId is { } sid && !await sessions.IsActiveAsync(sid, user, ct)) return null;
             // Only a person administers Gatekeeper, whatever the role table says.
             var admin = user.Kind == UserKind.Person && await guard.AdminRoleIdAsync(ct) is { } adminRole
                         && (await users.ListRolesAsync(userId, slice: new Slice(0, 10_000), ct: ct)).Any(r => r.Id == adminRole);
-            return (AccessState?)new AccessState(user.Kind, admin);
+            return (AccessState?)new AccessState(user.Kind, admin, user.SessionsValidAfter);
         })!;
 
     /// <summary>Forgets the cached answer for a session that was just ended, so its tokens stop at once on this instance.</summary>
@@ -51,6 +62,13 @@ public sealed class AdminAccessCheck(IUserRepository users, AdminGuard guard, IM
             generation.Cancel();
         }
     }
+
+    /// <summary>When the token's sign-in began, in whole seconds: <c>auth_time</c>, or <c>iat</c> for a token issued before that claim existed. Null when it has neither (or they are malformed).</summary>
+    public static long? AuthTime(System.Security.Claims.ClaimsPrincipal principal) =>
+        long.TryParse(principal.FindFirst(TokenService.AuthTimeClaim)?.Value, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var t)
+            ? t
+            : principal.FindFirst(TokenService.AuthTimeClaim) is null
+              && long.TryParse(principal.FindFirst("iat")?.Value, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var iat) ? iat : null;
 
     /// <summary>The token's subject and session, or null when the claims are malformed.</summary>
     public static (Guid UserId, Guid? SessionId)? Subject(System.Security.Claims.ClaimsPrincipal principal)
@@ -80,7 +98,7 @@ public sealed class AccessHandler(AdminAccessCheck access) : IAuthorizationHandl
         {
             if (requirement is not (AdminRequirement or SelfRequirement)) continue;
             if (context.User.Identity?.IsAuthenticated != true || AdminAccessCheck.Subject(context.User) is not var (userId, sid)
-                || await access.StateAsync(userId, sid, ct) is not { } state) continue;
+                || await access.StateAsync(userId, sid, AdminAccessCheck.AuthTime(context.User), ct) is not { } state) continue;
             var ok = requirement is AdminRequirement
                 ? state.IsAdmin && context.User.IsInRole(Reserved.AdminRole)
                 : state.Kind is UserKind.Person or UserKind.Test;

@@ -19,12 +19,14 @@ public class Slice6aReviewApiTests
     {
         public volatile bool Armed;
         public Task AddAsync(Session s, string h, CancellationToken ct = default) => inner.AddAsync(s, h, ct);
+        public Task<bool> AddForCredentialAsync(Session s, string h, string c, CancellationToken ct = default) => inner.AddForCredentialAsync(s, h, c, ct);
         public Task<Session?> GetAsync(Guid id, CancellationToken ct = default) => inner.GetAsync(id, ct);
         public Task<SessionHashes?> GetHashesAsync(Guid id, CancellationToken ct = default) => inner.GetHashesAsync(id, ct);
         public Task<IReadOnlyList<Session>> ListActiveByUserAsync(Guid u, DateTimeOffset now, Slice? slice = null, CancellationToken ct = default) => inner.ListActiveByUserAsync(u, now, slice, ct);
         public Task<bool> RotateAsync(Guid id, string e, string n, DateTimeOffset now, CancellationToken ct = default) => inner.RotateAsync(id, e, n, now, ct);
         public Task<bool> RevokeAsync(Guid id, DateTimeOffset now, CancellationToken ct = default) => inner.RevokeAsync(id, now, ct);
         public Task<bool> RevokeForUserAsync(Guid userId, Guid sessionId, DateTimeOffset now, CancellationToken ct = default) => inner.RevokeForUserAsync(userId, sessionId, now, ct);
+        public Task<int> RevokeAllAndCutOffAsync(Guid u, DateTimeOffset now, CancellationToken ct = default) => inner.RevokeAllAndCutOffAsync(u, now, ct);
         public Task<int> RevokeAllForUserExceptAsync(Guid u, Guid keep, DateTimeOffset now, CancellationToken ct = default) => inner.RevokeAllForUserExceptAsync(u, keep, now, ct);
         public Task<int> RevokeAllForUserAsync(Guid u, DateTimeOffset now, CancellationToken ct = default)
         {
@@ -40,12 +42,14 @@ public class Slice6aReviewApiTests
     {
         public Func<Task>? Hook;
         public async Task AddAsync(Session s, string h, CancellationToken ct = default) { await inner.AddAsync(s, h, ct); if (Hook is { } k) { Hook = null; await k(); } }
+        public async Task<bool> AddForCredentialAsync(Session s, string h, string c, CancellationToken ct = default) { var ok = await inner.AddForCredentialAsync(s, h, c, ct); if (ok && Hook is { } k) { Hook = null; await k(); } return ok; }
         public Task<Session?> GetAsync(Guid id, CancellationToken ct = default) => inner.GetAsync(id, ct);
         public Task<SessionHashes?> GetHashesAsync(Guid id, CancellationToken ct = default) => inner.GetHashesAsync(id, ct);
         public Task<IReadOnlyList<Session>> ListActiveByUserAsync(Guid u, DateTimeOffset now, Slice? slice = null, CancellationToken ct = default) => inner.ListActiveByUserAsync(u, now, slice, ct);
         public Task<bool> RotateAsync(Guid id, string e, string n, DateTimeOffset now, CancellationToken ct = default) => inner.RotateAsync(id, e, n, now, ct);
         public Task<bool> RevokeAsync(Guid id, DateTimeOffset now, CancellationToken ct = default) => inner.RevokeAsync(id, now, ct);
         public Task<bool> RevokeForUserAsync(Guid userId, Guid sessionId, DateTimeOffset now, CancellationToken ct = default) => inner.RevokeForUserAsync(userId, sessionId, now, ct);
+        public Task<int> RevokeAllAndCutOffAsync(Guid u, DateTimeOffset now, CancellationToken ct = default) => inner.RevokeAllAndCutOffAsync(u, now, ct);
         public Task<int> RevokeAllForUserExceptAsync(Guid u, Guid keep, DateTimeOffset now, CancellationToken ct = default) => inner.RevokeAllForUserExceptAsync(u, keep, now, ct);
         public Task<int> RevokeAllForUserAsync(Guid u, DateTimeOffset now, CancellationToken ct = default) => inner.RevokeAllForUserAsync(u, now, ct);
         public Task<int> RevokeAllForUserInAppAsync(Guid u, Guid a, DateTimeOffset now, CancellationToken ct = default) => inner.RevokeAllForUserInAppAsync(u, a, now, ct);
@@ -113,7 +117,9 @@ public class Slice6aReviewApiTests
         try { await admin.PatchAsJsonAsync($"/v1/users/{id}", new { isActive = false }); } catch (OperationCanceledException) { }
         // saved, but the revoke step did not finish
         Assert.False((await admin.GetFromJsonAsync<JsonElement>($"/v1/users/{id}")).GetProperty("isActive").GetBoolean());
-        Assert.Equal(1, (await admin.GetFromJsonAsync<JsonElement>($"/v1/users/{id}/sessions")).GetProperty("items").GetArrayLength());
+        // 7a: the revoke step did not finish, but the cut-off was written with the deactivation: the session no longer lists as active
+        // (its row is still unrevoked, so the repeat below still counts and revokes it).
+        Assert.Equal(0, (await admin.GetFromJsonAsync<JsonElement>($"/v1/users/{id}/sessions")).GetProperty("items").GetArrayLength());
         var audit = await admin.GetStringAsync("/v1/audit?limit=20");
         Assert.Contains("cancelled", audit);
 

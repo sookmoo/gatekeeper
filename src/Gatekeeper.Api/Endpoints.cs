@@ -102,9 +102,12 @@ public static class Endpoints
     private static async Task<User> Noted(HttpContext http, Task<(User User, SessionEffects Effects)> change)
     {
         var (u, fx) = await change;
+        // A raised cut-off or ended sessions end tokens of the user: forget the cached access answers so that this instance acts at once.
+        if (fx.CutOff is not null || fx.Revoked > 0) http.RequestServices.GetRequiredService<AdminAccessCheck>().Evict(u.Id);
         var note = UserNote(u);
         if (fx.Revoked > 0) note += $" sessionsRevoked={fx.Revoked}";
         if (fx.Capped > 0) note += $" sessionsCapped={fx.Capped}";
+        if (fx.CutOff is { } cut) note += $" sessionsCutOff={cut.UtcDateTime:O}";
         http.Items[AuditMiddleware.NoteKey] = note;
         return u;
     }
@@ -159,20 +162,24 @@ public static class Endpoints
         users.MapGet("/{id:guid}", (Guid id, UserService s, CancellationToken ct) => s.GetAsync(id, ct));
         users.MapPut("/{id:guid}", (HttpContext http, Guid id, UserRequest r, UserService s, CancellationToken ct) =>
             Noted(http, s.UpdateWithEffectsAsync(id, r.Username, r.Email, r.DisplayName, r.IsActive, r.Kind, r.ExpiresAt, IfMatch(http), ct)))
-            .WithDescription("Setting isActive from true to false ends all of the user's sessions at once. Moving a test user's expiresAt earlier (or making a person a test user) caps active sessions to the new expiry; a later extension does not lengthen them.");
+            .WithDescription("Setting isActive from true to false ends all of the user's sessions at once. Setting it back to true (or extending the expiry of an expired test user so the account is usable again) does not bring them back: the same write raises the user's session cut-off, so every session and every access token without a session that was authenticated before that moment stays refused. Moving a test user's expiresAt earlier (or making a person a test user) caps active sessions to the new expiry; a later extension does not lengthen them.");
         users.MapMethods("/{id:guid}", ["PATCH"], (HttpContext http, Guid id, UserRequest r, UserService s, CancellationToken ct) =>
             Noted(http, s.PatchWithEffectsAsync(id, r.Username, r.Email, r.DisplayName, r.IsActive, r.Kind, r.ExpiresAt, IfMatch(http), ct)))
-            .WithDescription("Setting isActive from true to false ends all of the user's sessions at once. Moving a test user's expiresAt earlier (or making a person a test user) caps active sessions to the new expiry; a later extension does not lengthen them.");
+            .WithDescription("Setting isActive from true to false ends all of the user's sessions at once. Setting it back to true (or extending the expiry of an expired test user so the account is usable again) does not bring them back: the same write raises the user's session cut-off, so every session and every access token without a session that was authenticated before that moment stays refused. Moving a test user's expiresAt earlier (or making a person a test user) caps active sessions to the new expiry; a later extension does not lengthen them.");
         users.MapDelete("/{id:guid}", async (HttpContext http, Guid id, UserService s, CancellationToken ct) =>
         {
             await s.DeleteAsync(id, IfMatch(http), ct);
             return Results.NoContent();
         });
-        users.MapPut("/{id:guid}/password", async (Guid id, PasswordRequest r, CredentialService s, CancellationToken ct) =>
+        users.MapPut("/{id:guid}/password", async (HttpContext http, Guid id, PasswordRequest r, CredentialService s, AdminAccessCheck access, CancellationToken ct) =>
         {
-            await s.SetPasswordAsync(id, r.Password, ct);
+            DateTimeOffset? cutOff;
+            try { cutOff = await s.SetPasswordAsync(id, r.Password, ct); }
+            finally { access.Evict(id); } // this instance acts at once (also when a step after the store write failed); others follow after their 10 s cache
+            if (cutOff is { } cut) http.Items[AuditMiddleware.NoteKey] = $"sessionsCutOff={cut.UtcDateTime:O}";
             return Results.NoContent();
-        });
+        }).WithDescription("Sets the user's password. Unless it is the user's first password, the same write raises the user's session cut-off: every session and every access token without a session that was authenticated before it stops working, and a sign-in that began before it (for example one that had just verified the old password) cannot keep a session. The audit note carries sessionsCutOff=<time>. The user's version does not change."
+            + " Guarantee for a token without a session: it is refused when its sign-in was stamped before the change committed, up to the store's clock reading taken as the last write of the change; a sign-in stamped in the few microseconds between that reading and the commit that still verified the old password is not caught and its token lives until exp (a session is always closed completely).");
         users.MapGet("/{id:guid}/sessions", (Guid id, SessionService s, IUserRepository u, int? limit, string? cursor, CancellationToken ct) =>
             s.ListAsync(id, u, PageQuery.Parse(limit, cursor), ct)).ProducesProblem(StatusCodes.Status404NotFound);
         users.MapGet("/{id:guid}/sessions/{sessionId:guid}", (Guid id, Guid sessionId, SessionService s, CancellationToken ct) =>
@@ -186,11 +193,15 @@ public static class Endpoints
         }).WithDescription("Ends one session of the user. 404 both when there is no such session and when it belongs to another user. The audit target names the user and session ids.")
           .Produces(StatusCodes.Status204NoContent)
           .ProducesProblem(StatusCodes.Status404NotFound);
-        users.MapDelete("/{id:guid}/sessions", async (Guid id, SessionService s, UserService u, CancellationToken ct) =>
+        users.MapDelete("/{id:guid}/sessions", async (HttpContext http, Guid id, SessionService s, UserService u, AdminAccessCheck access, CancellationToken ct) =>
         {
             await u.GetAsync(id, ct); // 404 for an unknown user
-            return Results.Ok(new RevokedResponse(await s.RevokeAllAsync(id, ct)));
-        }).ProducesProblem(StatusCodes.Status404NotFound);
+            var (revoked, cutOff) = await s.RevokeAllAndCutOffAsync(id, ct);
+            access.Evict(id);
+            http.Items[AuditMiddleware.NoteKey] = $"revoked={revoked}; sessionsCutOff={cutOff.UtcDateTime:O}";
+            return Results.Ok(new RevokedResponse(revoked));
+        }).WithDescription("Ends all of the user's sessions and raises the user's session cut-off in one step: a sign-in that is still being completed, and access tokens without a session issued before now, are refused as well. The audit note carries sessionsCutOff=<time>. The user's version does not change.")
+          .ProducesProblem(StatusCodes.Status404NotFound);
         users.MapGet("/{id:guid}/roles", (Guid id, UserService s, Guid? application, int? limit, string? cursor, CancellationToken ct) =>
             s.ListRolesAsync(id, application, PageQuery.Parse(limit, cursor), ct));
         users.MapPut("/{id:guid}/roles/{roleId:guid}", async (Guid id, Guid roleId, UserService s, CancellationToken ct) =>
@@ -329,6 +340,13 @@ public static class Endpoints
                     userThrottle.Release(userKey);
                     throw;
                 }
+                catch (BusyException busy) when (busy.AfterVerification)
+                {
+                    // The current password was verified (a guess was spent) and the write could not run: keep both throttle slots, so these
+                    // rows are bounded by the same limits, and let the audit middleware record the failure.
+                    http.Items[AuditMiddleware.NoteKey] = "reason=busy";
+                    throw;
+                }
                 catch (BusyException)
                 {
                     // Nothing was decided; hand the slots back and write no audit row (a 503 flood must not become an audit flood).
@@ -355,10 +373,11 @@ public static class Endpoints
                 userThrottle.Release(userKey);
                 addressThrottle.Release(address);
                 access.Evict(userId); // every token of the user's ended sessions stops at once on this instance
-                http.Items[AuditMiddleware.NoteKey] = $"sessionsRevoked={change.SessionsRevoked}; kept={(keep is { } k ? k.ToString() : "none")}";
+                http.Items[AuditMiddleware.NoteKey] = $"sessionsRevoked={change.SessionsRevoked}; kept={(keep is { } k ? k.ToString() : "none")}"
+                    + (change.CutOff is { } cut ? $"; sessionsCutOff={cut.UtcDateTime:O}" : "");
                 return Results.NoContent();
             })
-          .WithDescription("Changes the caller's own password. Needs the current password (verified like a login). 204: changed; every other session of the user ended (all of them for a token without a session). 400: the new password breaks the password rules or equals the current one. 403 with code current-password-incorrect: the current password was not accepted (a fixed answer, deliberately not 401, so clients do not treat it as an ended session). 429: too many failed attempts for this user or address (Retry-After). Neither password is ever logged or audited; the audit row has the route and the number of sessions ended.")
+          .WithDescription("Changes the caller's own password. Needs the current password (verified like a login). 204: changed; every other session of the user ended (all of them for a token without a session, which then ends too), the session of the token is kept, and the user's session cut-off is raised in the same write (a sign-in that began before it cannot keep a session). 400: the new password breaks the password rules or equals the current one. 403 with code current-password-incorrect: the current password was not accepted (a fixed answer, deliberately not 401, so clients do not treat it as an ended session). 429: too many failed attempts for this user or address (Retry-After). Neither password is ever logged or audited; the audit row has the route and the number of sessions ended.")
           .Produces(StatusCodes.Status204NoContent)
           .ProducesProblem(StatusCodes.Status400BadRequest)
           .ProducesProblem(StatusCodes.Status403Forbidden)

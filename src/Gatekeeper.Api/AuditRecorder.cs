@@ -111,7 +111,7 @@ public sealed partial class AuditMiddleware(RequestDelegate next)
         catch (Exception ex)
         {
             // Domain exceptions are turned into responses by the outer error middleware; record what went wrong.
-            await recorder.RecordAsync(http, actor, action, target, false, ex.GetType().Name);
+            await recorder.RecordAsync(http, actor, action, target, false, http.Items[NoteKey] is string failNote ? $"{ex.GetType().Name}; {failNote}" : ex.GetType().Name);
             throw;
         }
         if (http.Items.ContainsKey(SkipKey)) return;

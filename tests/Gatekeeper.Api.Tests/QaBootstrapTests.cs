@@ -85,6 +85,10 @@ public class QaBootstrapTests
         // a second administrator reuses the existing app and role (no duplicates, no conflict)
         var second = RunApi(["bootstrap-admin", "root2", "root2@example.com"], pg.Env, "second admin pw 33\r\n");
         Assert.True(second.Code == 0, second.Err);
+        // The repair above reset root1's password, which (7a) ends root1's token without a session. root2 has only its first password, so its token is good.
+        var secondLogin = await anon.PostAsJsonAsync("/v1/auth/login", new { username = "root2", password = "second admin pw 33", application = "gatekeeper" });
+        admin = pg.Factory.CreateClient();
+        admin.DefaultRequestHeaders.Authorization = new("Bearer", (await secondLogin.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("accessToken").GetString()!);
         var apps = await (await admin.GetAsync("/v1/applications")).Content.ReadFromJsonAsync<JsonElement>();
         Assert.Equal(1, apps.GetProperty("items").EnumerateArray().Count(a => a.GetProperty("name").GetString() == "gatekeeper"));
         var gk = apps.GetProperty("items").EnumerateArray().First(a => a.GetProperty("name").GetString() == "gatekeeper").GetProperty("id").GetGuid();

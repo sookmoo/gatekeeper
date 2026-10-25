@@ -12,6 +12,8 @@ namespace Gatekeeper.Application;
 // UpdateAsync and DeleteAsync take an optional expectedVersion: the write then only happens if the row still has that version,
 // decided atomically with the write; otherwise PreconditionFailedException is thrown and nothing changes. A missing row wins
 // over a wrong version (null/false), and a version mismatch wins over a uniqueness conflict. Null means unconditional.
+// A user also carries SessionsValidAfter (the session cut-off): it only ever rises. UpdateAsync stores max(stored, passed) in the same
+// write as the other fields, and writing the cut-off alone (credentials, RevokeAllAndCutOffAsync) never changes the version.
 
 public interface IAppRepository
 {
@@ -56,11 +58,22 @@ public interface IUserRepository
 /// </summary>
 public interface ICredentialRepository
 {
-    Task SetAsync(Guid userId, string hash, DateTimeOffset at, CancellationToken ct = default);
+    /// <summary>
+    /// With <paramref name="cutOffAt"/>, in the same atomic write (one transaction under the credential row lock; the version does not change): every active
+    /// session of the user is revoked and, as the last write before the commit, the user's session cut-off is raised to at least that time and at least the
+    /// store's own clock reading then (so a sign-in stamped after the caller read its clock but before the commit is cut off too). Only when the user already had a password:
+    /// a first password raises and revokes nothing (there is nothing to end).
+    /// </summary>
+    Task SetAsync(Guid userId, string hash, DateTimeOffset at, DateTimeOffset? cutOffAt = null, CancellationToken ct = default);
     Task<string?> GetHashAsync(Guid userId, CancellationToken ct = default);
 
-    /// <summary>Compare-and-set: replaces the hash only if it still equals <paramref name="expectedHash"/>. Returns whether it did.</summary>
-    Task<bool> ReplaceHashAsync(Guid userId, string expectedHash, string newHash, DateTimeOffset at, CancellationToken ct = default);
+    /// <summary>
+    /// Compare-and-set: replaces the hash only if it still equals <paramref name="expectedHash"/>. Returns whether it did. With
+    /// <paramref name="cutOffAt"/>, in the same atomic step: every active session of the user except <paramref name="keepSession"/> is revoked, and the cut-off
+    /// is raised to at least that time (never lowered). When the cut-off really rises, the kept session (if it is the user's, active and still counts
+    /// under the cut-off as it was) is re-stamped to one microsecond after the new cut-off, never to an earlier stamp, so that it alone survives it.
+    /// </summary>
+    Task<bool> ReplaceHashAsync(Guid userId, string expectedHash, string newHash, DateTimeOffset at, DateTimeOffset? cutOffAt = null, Guid? keepSession = null, CancellationToken ct = default);
 }
 
 /// <summary>
@@ -100,20 +113,29 @@ public interface ISessionRepository
     Task AddAsync(Session session, string tokenHash, CancellationToken ct = default);
     Task<Session?> GetAsync(Guid id, CancellationToken ct = default);
     Task<SessionHashes?> GetHashesAsync(Guid id, CancellationToken ct = default);
-    /// <summary>Newest first; only sessions that are neither revoked nor expired at <paramref name="now"/>.</summary>
+    /// <summary>Newest first; only sessions that are neither revoked nor expired at <paramref name="now"/> and that count after the user's cut-off.</summary>
     Task<IReadOnlyList<Session>> ListActiveByUserAsync(Guid userId, DateTimeOffset now, Slice? slice = null, CancellationToken ct = default);
 
     /// <summary>
     /// Compare-and-set: if the session is active and its current hash equals <paramref name="expectedHash"/>, make
-    /// <paramref name="newHash"/> current (the old one becomes the previous) and record the use. Returns whether it did.
+    /// <paramref name="newHash"/> current (the old one becomes the previous) and record the use. Returns whether it did. A session that no longer
+    /// counts after its user's cut-off is not rotated (decided in the same write). The sign-in stamp stays as it is.
     /// </summary>
     Task<bool> RotateAsync(Guid id, string expectedHash, string newHash, DateTimeOffset now, CancellationToken ct = default);
+    /// <summary>
+    /// As <see cref="AddAsync"/>, but only if the user's stored password hash is still <paramref name="credentialHash"/> (the one the sign-in verified), decided
+    /// atomically with the insert: the credential row is read under a share lock held until the insert commits, so a password change either waits for
+    /// the insert (and then revokes the session) or commits first (and this returns false, nothing inserted).
+    /// </summary>
+    Task<bool> AddForCredentialAsync(Session session, string tokenHash, string credentialHash, CancellationToken ct = default);
     /// <summary>Marks the session revoked (idempotent). False if there is no such session.</summary>
     Task<bool> RevokeAsync(Guid id, DateTimeOffset now, CancellationToken ct = default);
     /// <summary>Marks the session revoked (idempotent) only if it belongs to the user, in one atomic step. False if there is no such session or it is another user's.</summary>
     Task<bool> RevokeForUserAsync(Guid userId, Guid sessionId, DateTimeOffset now, CancellationToken ct = default);
     /// <summary>Revokes every active session of the user. Returns how many.</summary>
     Task<int> RevokeAllForUserAsync(Guid userId, DateTimeOffset now, CancellationToken ct = default);
+    /// <summary>Raises the user's session cut-off to at least <paramref name="now"/> and revokes every active session of the user, in one atomic step. Returns how many rows it revoked (0 for an unknown user).</summary>
+    Task<int> RevokeAllAndCutOffAsync(Guid userId, DateTimeOffset now, CancellationToken ct = default);
     /// <summary>Revokes every active session of the user except <paramref name="keep"/>. Returns how many.</summary>
     Task<int> RevokeAllForUserExceptAsync(Guid userId, Guid keep, DateTimeOffset now, CancellationToken ct = default);
     /// <summary>Revokes every active session of the user in one application. Returns how many.</summary>

@@ -17,10 +17,11 @@ internal sealed class SessionRow
     public DateTimeOffset LastUsedAt { get; set; }
     public DateTimeOffset ExpiresAt { get; set; }
     public DateTimeOffset? RevokedAt { get; set; }
+    public DateTimeOffset AuthenticatedAt { get; set; }
     public string TokenHash { get; set; } = "";
     public string? PreviousTokenHash { get; set; }
 
-    public Session ToDomain() => new(Id, UserId, AppId, CreatedAt, LastUsedAt, ExpiresAt, RevokedAt);
+    public Session ToDomain() => new(Id, UserId, AppId, CreatedAt, LastUsedAt, ExpiresAt, RevokedAt, AuthenticatedAt);
 }
 
 internal sealed record ClientSecretRow(Guid ClientId, string Hash, DateTimeOffset UpdatedAt);

@@ -190,7 +190,7 @@ if (!migrateOnly && !bootstrap)
                 // subject may do (admin role, self-service) is decided by the policies, so a valid token without the admin role is 403.
                 if (ctx.Principal is null || AdminAccessCheck.Subject(ctx.Principal) is not var (userId, sessionId))
                     ctx.Fail("Invalid token.");
-                else if (await access.StateAsync(userId, sessionId, ctx.HttpContext.RequestAborted) is null)
+                else if (await access.StateAsync(userId, sessionId, AdminAccessCheck.AuthTime(ctx.Principal), ctx.HttpContext.RequestAborted) is null)
                     ctx.Fail("The user is no longer active.");
             },
         };

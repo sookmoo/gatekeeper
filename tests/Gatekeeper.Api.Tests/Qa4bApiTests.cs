@@ -411,8 +411,9 @@ public class Qa4bApiTests
         // a deactivated admin does not count: reactivating works, then the other may go
         Assert.Equal(HttpStatusCode.OK, (await Patch(e, $"/v1/users/{second}", new { isActive = true })).StatusCode);
         Assert.Equal(HttpStatusCode.OK, (await Patch(e, $"/v1/users/{admin.Id}", new { isActive = false })).StatusCode);
-        // revoke-by-delete of the last one is refused too
-        Assert.Equal(HttpStatusCode.Conflict, (await e.Admin.DeleteAsync($"/v1/users/{second}")).StatusCode);
+        // revoke-by-delete of the last one is refused too (the first admin is inactive now and its token refused at once, so `second` acts)
+        using var asSecond = await e.Factory.ClientForAsync(second);
+        Assert.Equal(HttpStatusCode.Conflict, (await asSecond.DeleteAsync($"/v1/users/{second}")).StatusCode);
     }
 
     [SkippableTheory, MemberData(nameof(Stores))]
@@ -424,15 +425,26 @@ public class Qa4bApiTests
         var role = (await e.Walk($"/v1/applications/{gk}/roles", 200)).Items.Single(x => x.GetProperty("name").GetString() == "admin").GetProperty("id").GetGuid();
         for (var round = 0; round < 10; round++)
         {
+            // the previous round may have reactivated `a`, which ends its older tokens (7a): act with a token dated just ahead
+            e.Admin.DefaultRequestHeaders.Authorization = (await e.Factory.ClientForAsync(a.Id)).DefaultRequestHeaders.Authorization;
             var b = await e.User("race" + QaEnv.Slug()); await e.Assign(b, role);
+            // Each administrator deactivates the other and acts with its own token (a deactivated administrator's token is refused at once).
+            using var asA = await e.Factory.ClientForAsync(a.Id);
+            using var asB = await e.Factory.ClientForAsync(b);
             var rs = await Task.WhenAll(
-                Task.Run(() => Patch(e, $"/v1/users/{a.Id}", new { isActive = false })),
-                Task.Run(() => Patch(e, $"/v1/users/{b}", new { isActive = false })));
+                Task.Run(() => asA.SendAsync(new HttpRequestMessage(HttpMethod.Patch, $"/v1/users/{b}") { Content = JsonContent.Create(new { isActive = false }) })),
+                Task.Run(() => asB.SendAsync(new HttpRequestMessage(HttpMethod.Patch, $"/v1/users/{a.Id}") { Content = JsonContent.Create(new { isActive = false }) })));
             Assert.Contains(rs, r => r.StatusCode == HttpStatusCode.Conflict || r.StatusCode == HttpStatusCode.OK);
-            var active = (await e.Walk("/v1/users?active=true", 200)).Items.Count(u => u.GetProperty("id").GetGuid() == a.Id || u.GetProperty("id").GetGuid() == b);
+            var users = e.Factory.Services.GetRequiredService<IUserRepository>();
+            var active = new[] { a.Id, b }.Count(id => users.GetAsync(id).GetAwaiter().GetResult()!.IsActive);
             Assert.True(active >= 1, "no active admin left");
-            await Patch(e, $"/v1/users/{a.Id}", new { isActive = true });
-            await e.Admin.DeleteAsync($"/v1/users/{b}");
+            // reactivate whichever was deactivated, acting as the one that is still active
+            var survivor = (await users.GetAsync(a.Id))!.IsActive ? asA : asB;
+            foreach (var id in new[] { a.Id, b })
+                if (!(await users.GetAsync(id))!.IsActive)
+                    Assert.Equal(HttpStatusCode.OK, (await survivor.SendAsync(new HttpRequestMessage(HttpMethod.Patch, $"/v1/users/{id}") { Content = JsonContent.Create(new { isActive = true }) })).StatusCode);
+            using var after = await e.Factory.ClientForAsync(a.Id);
+            Assert.Equal(HttpStatusCode.NoContent, (await after.DeleteAsync($"/v1/users/{b}")).StatusCode);
         }
     }
 
