@@ -61,6 +61,15 @@ dotnet bin/Debug/net10.0/Gatekeeper.Api.dll           # serve, uses Gatekeeper
   `GET /v1/me/sessions` (own active sessions; `current` marks the session of the token, `appName` names the application),
   `DELETE /v1/me/sessions/{id}` (404 both for an unknown session and for another user's; ending the current one ends the token's session),
   `DELETE /v1/me/sessions` (ends all **other** sessions, answers `{"revoked": n}`; the current one ends by signing out or by its id; a token without a session ends all).
+  `PUT /v1/me/password` with `{"currentPassword", "newPassword"}` changes the caller's own password (slice 6g): `204` and every **other** session of the user ends
+  (the token's session stays; a token without a session ends all of them); `400` when the new password breaks the password rules (12 to 128 characters, no control characters,
+  as for the administrator's `PUT /v1/users/{id}/password`; field `newPassword`) or equals the current one (checked only after the current one verified); `403` with problem
+  `code` `current-password-incorrect` and the fixed text "The current password is incorrect." for every reason the current password is not accepted (wrong, no stored password,
+  out of length, changed meanwhile) - deliberately **not** 401, so a client does not read it as an ended session and sign the user out; `429` with `Retry-After` after 5
+  attempts per user (any address) or 20 per client address in 15 minutes: a slot is reserved atomically before any hashing (parallel requests cannot get past the limit), kept for a wrong password and handed back on success, so a 429 is answered without hashing. The current password is verified with the login's hasher and
+  `HashLimiter`; the write is a compare-and-set on the verified hash, so a parallel change or an administrator's reset is never overwritten. A wrong password counts against both limits; rule violations and an equal new password (decided without or after a verified current password, so not guesses) count per address only, so the owner's typos never lock them out. Audit rows from this route are therefore bounded; 429 and 503 (busy) answers write none. Once the new hash is stored the write and the session cut-off no longer depend on the request (a client that disconnects cannot leave the old sessions alive). Neither password is ever logged, audited or returned; the audit row is
+  `PUT /v1/me/password` with the user as actor and `sessionsRevoked=<n>; kept=<sid|none>` (failures: `reason=current-password` or `same-password`). The user's version/ETag does not change
+  (passwords are a separate resource, as in 6d). The limits are per process. A forgotten password is still reset by an administrator; there is no self-service reset.
   Policies: `admin` (the token carries the admin role **and** the store still says so; a self token is `403` on every management route) and `self`
   (any usable person or test user, administrators included). Audit rows of `/v1/me` writes name the user as actor. `/health/ready` still trusts the signed admin role claim
   alone (it must answer while the store is down); a self token has no role and gets `403` there. OpenAPI marks each operation with `x-gatekeeper-access` (`self` or `admin`).
@@ -219,7 +228,8 @@ The CLI sends no `If-Match` yet (a `--if-version` option is deferred). The Web U
 `src/Gatekeeper.Web` is a small server-rendered web UI (Razor Pages, no JavaScript) in its own container. Any person or test user may sign in
 ("Invalid credentials." for every failure); administrators land on the applications, everyone else on `/Account`: a read-only profile and their
 own sessions with revoke one / revoke all other sessions (each behind a confirmation page; revoking the current session also ends the web
-session). The navigation of a non-administrator shows only Account, and every management page answers 403 to them (the UI decides from the
+session), and `/Account/Password` to change their own password (current, new, repeat; the values are never shown again, logged or put in a URL; the texts are fixed;
+a wrong current password or a throttled attempt re-renders the form with a fixed message and the web session stays; after a success the user's other sessions end and this one stays). The navigation of a non-administrator shows only Account, and every management page answers 403 to them (the UI decides from the
 role claim of the token only to choose pages; the API checks the real role on every call). It signs administrators in
 through the API and works as their session: the browser only holds an `HttpOnly`, `SameSite=Strict` cookie, while the access and refresh
 tokens stay on the server. Every call to the API carries the signed-in administrator's own token, so the audit trail names the person.
@@ -299,6 +309,8 @@ strips control characters from server text before printing. `gk user set-passwor
 `gk client ...` manages service identities and `gk audit list` reads the audit trail.
 `gk me` shows your own account, `gk me sessions` lists your own active sessions and `gk me revoke-session <id>` ends one and `gk me revoke-sessions` ends all your other sessions (like `gk user revoke-sessions`, it asks no confirmation); these work for
 any signed-in person or test user, administrator or not (`gk login --user <name>` needs no role).
+`gk passwd` changes your own password: it asks for the current and the new password without echo (the new one twice); with piped stdin it reads the current password from the
+first line and the new one from the second (like `gk login`, never from arguments). A wrong current password is exit 1 ("The current password is incorrect."), not 5; your other sessions end and the saved login stays.
 `gk login` keeps a session (see "Sessions"): the saved login holds a refresh token and renews itself; `gk logout` ends it on the server.
 
 Server URL: `--url` or `GATEKEEPER_URL` (default `http://localhost:5080`).

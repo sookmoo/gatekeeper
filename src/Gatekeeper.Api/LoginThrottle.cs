@@ -44,6 +44,43 @@ public sealed class LoginThrottle(
         return wait > TimeSpan.Zero;
     }
 
+    /// <summary>
+    /// Atomically takes one of the <c>maxPerAddress</c> slots of the address key (check and count under one lock), for callers that must not
+    /// let parallel requests all pass the check before any failure is recorded. The slot stays taken (it counts as a failure) until
+    /// <see cref="Release"/>d, so only a success or a non-guess hands it back. Returns false, and how long to wait, when none is free.
+    /// </summary>
+    public bool TryReserve(string address, out TimeSpan retryAfter)
+    {
+        var q = _failures.GetOrAdd($"a:{Bucket(address)}", _ => new Queue<DateTimeOffset>());
+        lock (q)
+        {
+            Trim(q);
+            if (q.Count >= maxPerAddress)
+            {
+                retryAfter = q.Peek() + _window - _time.GetUtcNow();
+                if (retryAfter < TimeSpan.FromSeconds(1)) retryAfter = TimeSpan.FromSeconds(1);
+                return false;
+            }
+            q.Enqueue(_time.GetUtcNow());
+            retryAfter = TimeSpan.Zero;
+            return true;
+        }
+    }
+
+    /// <summary>Gives back the most recent slot taken with <see cref="TryReserve"/> (a no-op when it already aged out).</summary>
+    public void Release(string address)
+    {
+        if (!_failures.TryGetValue($"a:{Bucket(address)}", out var q)) return;
+        lock (q)
+        {
+            Trim(q);
+            if (q.Count == 0) return;
+            var keep = q.Take(q.Count - 1).ToArray();
+            q.Clear();
+            foreach (var t in keep) q.Enqueue(t);
+        }
+    }
+
     /// <summary>Recent failures counted against the address key itself (for a non-address key such as a session bucket).</summary>
     public int AddressFailures(string address)
     {

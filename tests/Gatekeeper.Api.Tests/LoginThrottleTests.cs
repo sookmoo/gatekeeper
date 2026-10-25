@@ -82,3 +82,33 @@ public class LoginThrottleTests
         Assert.True(t.IsBlocked("1.1.1.1", huge, out _));
     }
 }
+
+public class LoginThrottleReserveTests
+{
+    [Fact]
+    public void Parallel_reservations_never_exceed_the_limit_and_a_release_hands_one_back()
+    {
+        var t = new LoginThrottle(new Microsoft.Extensions.Time.Testing.FakeTimeProvider(), maxPerAddress: 5);
+        var granted = 0;
+        Parallel.For(0, 200, i => { if (t.TryReserve("pw:user", out _)) Interlocked.Increment(ref granted); });
+        Assert.Equal(5, granted);
+        Assert.False(t.TryReserve("pw:user", out var wait));
+        Assert.True(wait >= TimeSpan.FromSeconds(1));
+        t.Release("pw:user");
+        Assert.True(t.TryReserve("pw:user", out _));
+        Assert.False(t.TryReserve("pw:user", out _));
+    }
+
+    [Fact]
+    public void Reservations_age_out_with_the_window()
+    {
+        var time = new Microsoft.Extensions.Time.Testing.FakeTimeProvider();
+        var t = new LoginThrottle(time, maxPerAddress: 2, window: TimeSpan.FromMinutes(15));
+        Assert.True(t.TryReserve("a", out _));
+        Assert.True(t.TryReserve("a", out _));
+        Assert.False(t.TryReserve("a", out _));
+        time.Advance(TimeSpan.FromMinutes(16));
+        Assert.True(t.TryReserve("a", out _));
+        t.Release("nobody"); // a no-op
+    }
+}

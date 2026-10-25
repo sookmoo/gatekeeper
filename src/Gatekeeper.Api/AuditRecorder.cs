@@ -61,6 +61,12 @@ public sealed partial class AuditMiddleware(RequestDelegate next)
     /// <summary>An endpoint can leave a short note here (HttpContext.Items) that is appended to the audit detail.</summary>
     public const string NoteKey = "audit.note";
 
+    /// <summary>An endpoint sets this (HttpContext.Items) to have no audit row written for this request (a throttled attempt: the failures before it were recorded).</summary>
+    public const string SkipKey = "audit.skip";
+
+    /// <summary>An endpoint sets this when its own 403 is already recorded by this middleware, so <see cref="ForbiddenAuditMiddleware"/> adds no second row.</summary>
+    public const string SelfAuditedKey = "audit.self";
+
     [System.Text.RegularExpressions.GeneratedRegex(@"\{([^{}:]+):[^{}]*\}")]
     private static partial System.Text.RegularExpressions.Regex RouteConstraint();
 
@@ -91,6 +97,10 @@ public sealed partial class AuditMiddleware(RequestDelegate next)
         {
             await next(http);
         }
+        catch (Exception) when (http.Items.ContainsKey(SkipKey))
+        {
+            throw; // the endpoint asked for no row (a throttled or busy attempt)
+        }
         catch (OperationCanceledException)
         {
             // The client went away or timed out; the change may already be committed, so the trail must still show the attempt.
@@ -104,6 +114,7 @@ public sealed partial class AuditMiddleware(RequestDelegate next)
             await recorder.RecordAsync(http, actor, action, target, false, ex.GetType().Name);
             throw;
         }
+        if (http.Items.ContainsKey(SkipKey)) return;
         var status = http.Response.StatusCode;
         await recorder.RecordAsync(http, actor, action, target, status is >= 200 and < 300,
             http.Items[NoteKey] is string note ? $"status {status}; {note}" : $"status {status}");
@@ -121,7 +132,7 @@ public sealed class ForbiddenAuditMiddleware(RequestDelegate next)
         await next(http);
         var path = http.Request.Path;
         if (http.Response.StatusCode == StatusCodes.Status403Forbidden && path.StartsWithSegments("/v1") && !path.StartsWithSegments("/v1/auth")
-            && http.User.Identity?.IsAuthenticated == true)
+            && http.User.Identity?.IsAuthenticated == true && !http.Items.ContainsKey(AuditMiddleware.SelfAuditedKey))
             await http.RequestServices.GetRequiredService<AuditRecorder>().RecordForbiddenAsync(http);
     }
 }

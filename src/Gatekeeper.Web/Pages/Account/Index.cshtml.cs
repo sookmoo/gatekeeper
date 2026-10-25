@@ -12,6 +12,7 @@ public class IndexModel(GatekeeperApi api, TimeProvider time) : PageModel
     private static readonly Dictionary<string, string> Messages = new()
     {
         ["revoked"] = "Session revoked.",
+        ["password"] = "Password changed. Your other sessions were ended; this one stays signed in.",
     };
 
     public MeDto Me { get; private set; } = null!;

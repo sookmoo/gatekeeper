@@ -43,6 +43,7 @@ public static class CliApp
         root.Subcommands.Add(LoginCommand());
         root.Subcommands.Add(LogoutCommand());
         root.Subcommands.Add(MeCommands());
+        root.Subcommands.Add(PasswdCommand());
 
         return await root.Parse(args).InvokeAsync(new InvocationConfiguration { Output = stdout, Error = stderr });
 
@@ -157,6 +158,17 @@ public static class CliApp
             });
             return c;
         }
+
+        // Own password change. Both passwords come from hidden prompts (new one asked twice), or from stdin when it is piped: the current
+        // password on the first line and the new one on the second. Never from arguments or the environment. The other sessions end; this one stays.
+        Command PasswdCommand() => Cmd("passwd", "Change your own password (prompts without echo; piped stdin: current password, then new password, one per line)", _ => { }, async x =>
+        {
+            var current = readSecret("Current password: ", false) ?? throw new CliException(1, "No current password given.");
+            var replacement = readSecret("New password: ", true) ?? throw new CliException(1, "No new password given.");
+            if (string.Equals(current, replacement, StringComparison.Ordinal)) throw new CliException(1, "The new password must differ from the current one.");
+            await x.Api.PutAsync("/v1/me/password", new OwnPasswordBody(current, replacement));
+            x.Message("password changed; your other sessions were ended");
+        });
 
         // Self-service: works for any signed-in person or test user (no administrator role needed).
         Command MeCommands()

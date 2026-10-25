@@ -435,9 +435,62 @@ public sealed class AdminGuard(IAppRepository apps, IRoleRepository roles, IUser
     }
 }
 
+/// <summary>How an own-password change ended. <see cref="WrongCurrent"/> covers every reason the current password was not accepted.</summary>
+public enum OwnPasswordResult { Changed, WrongCurrent, Unchanged }
+
+/// <param name="SessionsRevoked">Other sessions ended by a successful change (0 otherwise).</param>
+public sealed record OwnPasswordChange(OwnPasswordResult Result, int SessionsRevoked = 0);
+
 public sealed class CredentialService(IUserRepository users, ICredentialRepository credentials, IPasswordHasher hasher, HashLimiter? limiter = null, ISessionRepository? sessions = null)
 {
     private readonly HashLimiter _limiter = limiter ?? new HashLimiter();
+    private readonly Lazy<string> _dummyHash = new(() => hasher.Hash(Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(24))));
+
+    /// <summary>
+    /// Own password change (slice 6g). The current password is verified with the same hasher and <see cref="HashLimiter"/> as a login, and
+    /// every reason it is not accepted (wrong, no credential, user gone or disabled, shared account, not the stored hash any more) does the same
+    /// hash work and answers <see cref="OwnPasswordResult.WrongCurrent"/>. The write is a compare-and-set on the verified hash, so a parallel
+    /// change or an admin reset cannot be overwritten by a request that verified the old password. Afterwards every session except
+    /// <paramref name="keepSession"/> ends (all of them when there is none). Neither password appears in any exception text.
+    /// </summary>
+    public async Task<OwnPasswordChange> ChangeOwnPasswordAsync(Guid userId, string? current, string? replacement, Guid? keepSession, CancellationToken ct = default)
+    {
+        // Without a session store the "other sessions end" promise could not be kept: refuse to run rather than change the password silently.
+        var sessionStore = sessions ?? throw new InvalidOperationException("Changing an own password needs the session store.");
+        Validation.Password(replacement, "newPassword");
+        if (current is null) throw new ValidationException(new Dictionary<string, string> { ["currentPassword"] = "is required." });
+
+        var user = await users.GetAsync(userId, ct);
+        var eligible = user is { Kind: UserKind.Person or UserKind.Test } && user.IsUsable(Clock.UtcNowMicros());
+        var stored = eligible ? await credentials.GetHashAsync(userId, ct) : null;
+        var plausible = current.Length is >= Validation.MinPasswordLength and <= Validation.MaxPasswordLength;
+        var candidate = plausible ? current : "dummy password for malformed input";
+        async Task<bool> VerifyAsync(string? hashOrNull)
+        {
+            var hash = hashOrNull ?? await _limiter.RunAsync(() => _dummyHash.Value, ct);
+            return await _limiter.RunAsync(() => hasher.Verify(hash, candidate), ct);
+        }
+        var verified = await VerifyAsync(stored);
+        if (!eligible || stored is null || !plausible || !verified) return new OwnPasswordChange(OwnPasswordResult.WrongCurrent);
+        if (string.Equals(current, replacement, StringComparison.Ordinal)) return new OwnPasswordChange(OwnPasswordResult.Unchanged);
+
+        var fresh = await _limiter.RunAsync(() => hasher.Hash(replacement!), ct);
+        // From here on nothing is cancellable: once the new hash may be stored, the session cut-off must follow, whatever the caller does.
+        var written = await credentials.ReplaceHashAsync(userId, stored, fresh, Clock.UtcNowMicros(), CancellationToken.None);
+        if (!written)
+        {
+            // The stored hash moved under us. A login that upgraded the hash of the same password is harmless: verify once more against what
+            // is stored now and retry once. Anything else (an administrator's reset, a parallel change) leaves the verified password out of date.
+            var again = await credentials.GetHashAsync(userId, CancellationToken.None);
+            if (again is null || again == stored || !await VerifyAsync(again)
+                || !await credentials.ReplaceHashAsync(userId, again, fresh, Clock.UtcNowMicros(), CancellationToken.None))
+                return new OwnPasswordChange(OwnPasswordResult.WrongCurrent);
+        }
+        var revoked = keepSession is { } keep
+            ? await sessionStore.RevokeAllForUserExceptAsync(userId, keep, Clock.UtcNowMicros(), CancellationToken.None)
+            : await sessionStore.RevokeAllForUserAsync(userId, Clock.UtcNowMicros(), CancellationToken.None);
+        return new OwnPasswordChange(OwnPasswordResult.Changed, revoked);
+    }
 
     public async Task SetPasswordAsync(Guid userId, string? password, CancellationToken ct = default)
     {
