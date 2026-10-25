@@ -23,6 +23,8 @@ public sealed class TokenService
     public const string RolesClaim = "roles";
     public const string UsernameClaim = "preferred_username";
     public const string SessionClaim = "sid";
+    /// <summary>Standard claim (OIDC): when the user authenticated, in seconds. The sign-in's start, kept by every refresh of the session.</summary>
+    public const string AuthTimeClaim = "auth_time";
     /// <summary>"person", "test" or "shared": lets a consumer treat non-personal accounts differently.</summary>
     public const string KindClaim = "kind";
 
@@ -179,7 +181,12 @@ public sealed class TokenService
                 new Claim(KindClaim, auth.User.Kind.ToString().ToLowerInvariant()),
                 .. sessionId is { } sid ? [new Claim(SessionClaim, sid.ToString())] : Array.Empty<Claim>(),
             ]),
-            Claims = new Dictionary<string, object> { [RolesClaim] = auth.Roles.Order(StringComparer.Ordinal).ToArray() },
+            Claims = new Dictionary<string, object>
+            {
+                [RolesClaim] = auth.Roles.Order(StringComparer.Ordinal).ToArray(),
+                // Never later than the issue time; a token minted without a known sign-in start counts as authenticated when it was issued.
+                [AuthTimeClaim] = Math.Min((auth.AuthenticatedAt ?? issued).ToUnixTimeSeconds(), issued.ToUnixTimeSeconds()),
+            },
         };
         return (_handler.CreateToken(descriptor), expires);
     }

@@ -52,6 +52,20 @@ public static class TestAuth
     public static string Mint(WebApplicationFactory<Program> factory, User user, string audience, string[] roles, DateTimeOffset? now = null) =>
         factory.Services.GetRequiredService<TokenService>().Issue(new AuthResult(user, new App(Guid.NewGuid(), audience), roles), now).Token;
 
+    /// <summary>
+    /// A client for a real administrator whose token is dated a couple of seconds ahead (inside the API's 30 s clock skew), so it is later than any
+    /// session cut-off raised just before (tokens carry whole seconds, 7a). Lets a test keep acting as an administrator it just reactivated or reset.
+    /// </summary>
+    /// <remarks>Never use this for a negative or cut-off assertion: its token is dated ahead on purpose, so it is later than any cut-off raised so far and says nothing about what a real sign-in would get.</remarks>
+    public static async Task<HttpClient> ClientForAsync(this WebApplicationFactory<Program> factory, Guid userId)
+    {
+        var user = (await factory.Services.GetRequiredService<IUserRepository>().GetAsync(userId))!;
+        var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer",
+            Mint(factory, user, Reserved.AdminApp, [Reserved.AdminRole], DateTimeOffset.UtcNow.AddSeconds(2)));
+        return client;
+    }
+
     /// <summary>A token for a user that exists nowhere in the store.</summary>
     public static string Token(WebApplicationFactory<Program> factory, string audience, string[] roles, DateTimeOffset? now = null) =>
         Mint(factory, new User(Guid.NewGuid(), "ghost", "ghost@example.com", "", true, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow), audience, roles, now);

@@ -356,12 +356,17 @@ public class Slice6aQaTests
         var me = TestAuth.EnsureAdmin(e.F);
         var second = await e.SecondAdmin();
         await e.Login(TestAuth.AdminName, "gatekeeper"); await e.Login(second.Name, "gatekeeper");
+        // Each administrator deactivates itself with its own token (a deactivated administrator's token is refused at once, so the loser
+        // must not depend on the winner's token): exactly one is refused as the last administrator.
+        using var asMe = await e.F.ClientForAsync(me.Id);
+        using var asSecond = await e.F.ClientForAsync(second.Id);
         var rs = await Task.WhenAll(
-            e.Admin.PatchAsJsonAsync($"/v1/users/{me.Id}", new { isActive = false }),
-            e.Admin.PatchAsJsonAsync($"/v1/users/{second.Id}", new { isActive = false }));
+            asMe.PatchAsJsonAsync($"/v1/users/{me.Id}", new { isActive = false }),
+            asSecond.PatchAsJsonAsync($"/v1/users/{second.Id}", new { isActive = false }));
         Assert.Single(rs, r => r.StatusCode == HttpStatusCode.OK);
         Assert.Single(rs, r => r.StatusCode == HttpStatusCode.Conflict);
-        var live = (await e.Sessions(me.Id)).GetArrayLength() + (await e.Sessions(second.Id)).GetArrayLength();
+        var sessions = e.F.Services.GetRequiredService<ISessionRepository>();
+        var live = (await sessions.ListActiveByUserAsync(me.Id, Clock.UtcNowMicros())).Count + (await sessions.ListActiveByUserAsync(second.Id, Clock.UtcNowMicros())).Count;
         Assert.Equal(1, live);
     }
 

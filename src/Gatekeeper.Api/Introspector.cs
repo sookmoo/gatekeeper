@@ -17,6 +17,11 @@ public sealed class Introspector(TokenService tokens, AuthService users, ClientA
     private const int MaxTokenLength = 8192;
     private static JsonObject Inactive() => new() { ["active"] = false };
 
+    /// <summary><c>auth_time</c>, or <c>iat</c> for a token issued before that claim existed; null when it has neither.</summary>
+    private static long? SignInSeconds(JsonWebToken jwt) =>
+        jwt.TryGetPayloadValue<long>(TokenService.AuthTimeClaim, out var t) ? t
+        : !jwt.TryGetClaim(TokenService.AuthTimeClaim, out _) && jwt.TryGetPayloadValue<long>("iat", out var iat) ? iat : null;
+
     public async Task<JsonObject> IntrospectAsync(string? token, App callerApp, CancellationToken ct)
     {
         if (string.IsNullOrEmpty(token) || token.Length > MaxTokenLength) return Inactive();
@@ -53,8 +58,13 @@ public sealed class Introspector(TokenService tokens, AuthService users, ClientA
             if (user is null) return Inactive();
             if (jwt.TryGetClaim(TokenService.SessionClaim, out var sid))
             {
-                if (!Guid.TryParse(sid.Value, out var sessionId) || !await sessions.IsActiveAsync(sessionId, ct))
+                if (!Guid.TryParse(sid.Value, out var sessionId) || !await sessions.IsActiveAsync(sessionId, user.User, ct))
                     return Inactive();
+            }
+            else if (!user.User.TokenCountsAfterCutOff(SignInSeconds(jwt)))
+            {
+                // No session to look up: the token's own sign-in time against the user's cut-off.
+                return Inactive();
             }
         }
 
@@ -70,6 +80,7 @@ public sealed class Introspector(TokenService tokens, AuthService users, ClientA
             // The roles as they are now, which may differ from the ones the token was issued with.
             ["roles"] = new JsonArray((user?.Roles ?? client!.Roles).Order(StringComparer.Ordinal).Select(r => (JsonNode)JsonValue.Create(r)!).ToArray()),
         };
+        if (jwt.TryGetPayloadValue<long>(TokenService.AuthTimeClaim, out var authTime)) response["auth_time"] = authTime;
         if (jwt.Id is { } jti) response["jti"] = jti;
         if (user is not null)
         {

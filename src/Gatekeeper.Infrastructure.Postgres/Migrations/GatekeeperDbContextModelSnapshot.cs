@@ -225,6 +225,10 @@ namespace Gatekeeper.Infrastructure.Postgres.Migrations
                         .HasDefaultValue("person")
                         .HasColumnName("kind");
 
+                    b.Property<DateTimeOffset?>("SessionsValidAfter")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("sessions_valid_after");
+
                     b.Property<DateTimeOffset>("UpdatedAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at");
@@ -306,6 +310,10 @@ namespace Gatekeeper.Infrastructure.Postgres.Migrations
                     b.Property<Guid>("AppId")
                         .HasColumnType("uuid")
                         .HasColumnName("app_id");
+
+                    b.Property<DateTimeOffset>("AuthenticatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("authenticated_at");
 
                     b.Property<DateTimeOffset>("CreatedAt")
                         .HasColumnType("timestamp with time zone")

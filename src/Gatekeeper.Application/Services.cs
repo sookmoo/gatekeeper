@@ -160,7 +160,8 @@ public sealed class RoleService(IAppRepository apps, IRoleRepository roles)
 }
 
 /// <summary>What a user change did to the user's sessions (for the audit detail).</summary>
-public readonly record struct SessionEffects(int Revoked, int Capped);
+/// <param name="CutOff">The user's session cut-off as raised by this change (null when it did not raise it).</param>
+public readonly record struct SessionEffects(int Revoked, int Capped, DateTimeOffset? CutOff = null);
 
 public sealed class UserService(IUserRepository users, AdminGuard? guard = null, ISessionRepository? sessions = null, IRoleRepository? roles = null)
 {
@@ -233,7 +234,14 @@ public sealed class UserService(IUserRepository users, AdminGuard? guard = null,
             if (isActive == false && existing.IsActive) await guard.EnsureNotLastAdminAsync(id, ct);
             if (newKind != UserKind.Person && existing.Kind == UserKind.Person) await guard.EnsureNotAdministratorAsync(id, ct);
         }
-        var saved = await Save(existing, username, email, displayName, isActive, newKind, newExpiry, expected, patch, ct);
+        // Deactivation, reactivation, or an expired account becoming usable again: every session that was authenticated before this moment ends.
+        // The cut-off is written in the same UPDATE as the change (and never lowers), so the later per-row revokes below are only
+        // bookkeeping: if they fail or the process dies, the sessions are already refused.
+        DateTimeOffset? cutOff = null;
+        var willBeActive = isActive ?? existing.IsActive;
+        if (willBeActive != existing.IsActive || (!existing.IsUsable(now) && (existing with { IsActive = willBeActive, ExpiresAt = newExpiry }).IsUsable(now)))
+            cutOff = Clock.UtcNowMicros();
+        var saved = await Save(existing, username, email, displayName, isActive, newKind, newExpiry, expected, patch, cutOff, ct);
         // The user row is saved first. These steps are idempotent (they act on the saved state, not on the change) and ignore
         // cancellation, so a retry of the same request repairs a half-done change and a disconnect cannot leave sessions alive.
         int revoked = 0, capped = 0;
@@ -247,7 +255,7 @@ public sealed class UserService(IUserRepository users, AdminGuard? guard = null,
             if (saved.Kind == UserKind.Test && saved.ExpiresAt is { } ends)
                 capped = await sessions.CapExpiryForUserAsync(id, ends, at, CancellationToken.None);
         }
-        return (saved, new SessionEffects(revoked, capped));
+        return (saved, new SessionEffects(revoked, capped, cutOff));
     }
 
     /// <summary>Partial update: a null field is left unchanged (use an empty display name to clear it).</summary>
@@ -267,7 +275,7 @@ public sealed class UserService(IUserRepository users, AdminGuard? guard = null,
         value is { } v ? new DateTimeOffset(v.UtcTicks - v.UtcTicks % 10, TimeSpan.Zero) : null;
 
     private async Task<User> Save(User existing, string? username, string? email, string? displayName, bool? isActive,
-        UserKind kind, DateTimeOffset? expiresAt, long? expectedVersion, bool skipIfUnchanged, CancellationToken ct)
+        UserKind kind, DateTimeOffset? expiresAt, long? expectedVersion, bool skipIfUnchanged, DateTimeOffset? cutOff, CancellationToken ct)
     {
         var id = existing.Id;
         var updated = existing with
@@ -279,8 +287,9 @@ public sealed class UserService(IUserRepository users, AdminGuard? guard = null,
             Kind = kind,
             ExpiresAt = expiresAt,
             UpdatedAt = Clock.UtcNowMicros(),
+            SessionsValidAfter = cutOff ?? existing.SessionsValidAfter,
         };
-        if (skipIfUnchanged && updated with { UpdatedAt = existing.UpdatedAt } == existing) return existing;
+        if (skipIfUnchanged && updated with { UpdatedAt = existing.UpdatedAt, SessionsValidAfter = existing.SessionsValidAfter } == existing) return existing;
         return await users.UpdateAsync(updated, expectedVersion, ct) ?? throw new NotFoundException($"User {id} not found.");
     }
 
@@ -439,7 +448,7 @@ public sealed class AdminGuard(IAppRepository apps, IRoleRepository roles, IUser
 public enum OwnPasswordResult { Changed, WrongCurrent, Unchanged }
 
 /// <param name="SessionsRevoked">Other sessions ended by a successful change (0 otherwise).</param>
-public sealed record OwnPasswordChange(OwnPasswordResult Result, int SessionsRevoked = 0);
+public sealed record OwnPasswordChange(OwnPasswordResult Result, int SessionsRevoked = 0, DateTimeOffset? CutOff = null);
 
 public sealed class CredentialService(IUserRepository users, ICredentialRepository credentials, IPasswordHasher hasher, HashLimiter? limiter = null, ISessionRepository? sessions = null)
 {
@@ -476,35 +485,56 @@ public sealed class CredentialService(IUserRepository users, ICredentialReposito
 
         var fresh = await _limiter.RunAsync(() => hasher.Hash(replacement!), ct);
         // From here on nothing is cancellable: once the new hash may be stored, the session cut-off must follow, whatever the caller does.
-        var written = await credentials.ReplaceHashAsync(userId, stored, fresh, Clock.UtcNowMicros(), CancellationToken.None);
+        // The cut-off and the re-stamp of the kept session are part of the same atomic write as the hash: a login that verified the old
+        // password (and so started before this moment) cannot keep a session, and the current session alone survives.
+        // The store ends the other sessions in the same transaction; the audit count comes from what was active just before.
+        var before = (await sessionStore.ListActiveByUserAsync(userId, Clock.UtcNowMicros(), new Slice(0, PageQuery.MaxLimit), CancellationToken.None))
+            .Count(x => x.Id != keepSession);
+        var cutOff = Clock.UtcNowMicros();
+        // A busy store from here on happens after a guess was spent: say so, so the caller audits it and keeps the throttle slot.
+        async Task<bool> Replace(string expected)
+        {
+            try { return await credentials.ReplaceHashAsync(userId, expected, fresh, cutOff = Clock.UtcNowMicros(), cutOff, keepSession, CancellationToken.None); }
+            catch (BusyException) { throw new BusyException { AfterVerification = true }; }
+        }
+        var written = await Replace(stored);
         if (!written)
         {
             // The stored hash moved under us. A login that upgraded the hash of the same password is harmless: verify once more against what
             // is stored now and retry once. Anything else (an administrator's reset, a parallel change) leaves the verified password out of date.
             var again = await credentials.GetHashAsync(userId, CancellationToken.None);
             if (again is null || again == stored || !await VerifyAsync(again)
-                || !await credentials.ReplaceHashAsync(userId, again, fresh, Clock.UtcNowMicros(), CancellationToken.None))
+                || !await Replace(again))
                 return new OwnPasswordChange(OwnPasswordResult.WrongCurrent);
         }
-        var revoked = keepSession is { } keep
+        // Idempotent bookkeeping (the write above already ended them); it also catches a session that slipped in since.
+        var late = keepSession is { } keep
             ? await sessionStore.RevokeAllForUserExceptAsync(userId, keep, Clock.UtcNowMicros(), CancellationToken.None)
             : await sessionStore.RevokeAllForUserAsync(userId, Clock.UtcNowMicros(), CancellationToken.None);
-        return new OwnPasswordChange(OwnPasswordResult.Changed, revoked);
+        var storedCut = (await users.GetAsync(userId, CancellationToken.None))?.SessionsValidAfter;
+        return new OwnPasswordChange(OwnPasswordResult.Changed, before + late, storedCut is { } st && st > cutOff ? st : cutOff);
     }
 
-    public async Task SetPasswordAsync(Guid userId, string? password, CancellationToken ct = default)
+    /// <summary>Sets the password and ends every session of the user. Returns the session cut-off written with the hash (null for a first password, which writes none), for the audit note.</summary>
+    public async Task<DateTimeOffset?> SetPasswordAsync(Guid userId, string? password, CancellationToken ct = default)
     {
         Validation.Password(password);
         _ = await users.GetAsync(userId, ct) ?? throw new NotFoundException($"User {userId} not found.");
         // Argon2 is CPU and memory heavy: bounded parallelism, off the request thread.
         var hash = await _limiter.RunAsync(() => hasher.Hash(password!), ct);
-        await credentials.SetAsync(userId, hash, Clock.UtcNowMicros(), ct);
-        // A new password ends every existing session: whoever held the old password or a stolen refresh token is out.
-        if (sessions is not null) await sessions.RevokeAllForUserAsync(userId, Clock.UtcNowMicros(), ct);
+        // The hash, the cut-off and the revoke of the user's sessions are one write in the store (and a first password writes no cut-off).
+        var cutOff = Clock.UtcNowMicros();
+        await credentials.SetAsync(userId, hash, cutOff, cutOff, ct);
+        // Idempotent bookkeeping after the write: it also catches a session that slipped in since and keeps the rows in line; safe to fail.
+        if (sessions is not null) await sessions.RevokeAllForUserAsync(userId, Clock.UtcNowMicros(), CancellationToken.None);
+        // The store raised it to its own clock reading at the commit: audit the value that is stored (null for a first password, which writes none).
+        return await users.GetAsync(userId, CancellationToken.None) is { SessionsValidAfter: { } raised } && raised >= cutOff ? raised : null;
     }
 }
 
-public sealed record AuthResult(User User, App App, IReadOnlyList<string> Roles);
+/// <param name="AuthenticatedAt">When the sign-in began (before the password hash was read); for a refresh the stamp of the session. Null when not known (an introspection without a session).</param>
+/// <param name="VerifiedHash">The stored password hash this sign-in verified the password against; the session is only started while it is still the stored one.</param>
+public sealed record AuthResult(User User, App App, IReadOnlyList<string> Roles, DateTimeOffset? AuthenticatedAt = null, string? VerifiedHash = null);
 
 /// <summary>
 /// Verifies a user's password and resolves their roles in one application. Every failure returns null so callers
@@ -541,6 +571,28 @@ public sealed class AuthService(
     }
 
     /// <summary>
+    /// As <see cref="ResolveAsync(Guid, Guid, CancellationToken)"/> for a session that was authenticated at <paramref name="authenticatedAt"/>:
+    /// also null when the user's session cut-off is at or after that moment.
+    /// </summary>
+    public async Task<AuthResult?> ResolveAsync(Guid userId, Guid appId, DateTimeOffset authenticatedAt, CancellationToken ct = default)
+    {
+        if (await ResolveAsync(userId, appId, ct) is not { } resolved || !resolved.User.CountsAfterCutOff(authenticatedAt)) return null;
+        return resolved with { AuthenticatedAt = authenticatedAt };
+    }
+
+    /// <summary>Whether the stored password hash of the user is still <paramref name="hash"/> (the one a sign-in verified).</summary>
+    public async Task<bool> CredentialIsAsync(Guid userId, string hash, CancellationToken ct = default) =>
+        string.Equals(await credentials.GetHashAsync(userId, ct), hash, StringComparison.Ordinal);
+
+    /// <summary>The user's session cut-off (null when none, or when the user is gone).</summary>
+    public async Task<DateTimeOffset?> SessionsValidAfterAsync(Guid userId, CancellationToken ct = default) =>
+        (await users.GetAsync(userId, ct))?.SessionsValidAfter;
+
+    /// <summary>Whether the session of this user, authenticated at <paramref name="authenticatedAt"/>, still counts (the user exists and the cut-off is older).</summary>
+    public async Task<bool> CountsAsync(Guid userId, DateTimeOffset authenticatedAt, CancellationToken ct = default) =>
+        await users.GetAsync(userId, ct) is { } user && user.CountsAfterCutOff(authenticatedAt);
+
+    /// <summary>
     /// Self-service (slice 6f): any usable person or test user may hold a token for the reserved application without a role there;
     /// it reaches only /v1/me. Shared accounts get no self-service. Every other application still needs at least one role.
     /// </summary>
@@ -549,6 +601,9 @@ public sealed class AuthService(
 
     public async Task<AuthResult?> LoginAsync(string? username, string? password, string? application, CancellationToken ct = default)
     {
+        // The sign-in starts now: taken BEFORE the stored hash is read. A password change or reset writes its cut-off after a hash was read
+        // that this sign-in may have verified, so the cut-off is later than this stamp and the session this login starts does not count.
+        var authenticatedAt = Clock.UtcNowMicros();
         // Malformed input can never match; reject cheaply but still spend a hash so the response time stays similar.
         var wellFormed = Validation.LooksLikeUsername(username) && Validation.IsCleanText(username!)
                          && password is { Length: >= Validation.MinPasswordLength and <= Validation.MaxPasswordLength }
@@ -573,14 +628,15 @@ public sealed class AuthService(
         var names = await RoleNamesAsync(user.Id, app.Id, ct);
         if (names.Count == 0 && !MaySignInWithoutRoles(user, app)) return null;
 
+        var verifiedHash = stored;
         if (hasher.NeedsRehash(stored))
         {
             // Compare-and-set: if the password was changed meanwhile, the newer hash must win.
             var upgraded = await _limiter.RunAsync(() => hasher.Hash(password!), ct);
-            await credentials.ReplaceHashAsync(user.Id, stored, upgraded, Clock.UtcNowMicros(), ct);
+            if (await credentials.ReplaceHashAsync(user.Id, stored, upgraded, Clock.UtcNowMicros(), ct: ct)) verifiedHash = upgraded;
         }
 
-        return new AuthResult(user, app, names);
+        return new AuthResult(user, app, names, authenticatedAt, verifiedHash);
     }
 }
 
@@ -841,9 +897,22 @@ public sealed class SessionService(ISessionRepository sessions, AuthService auth
         var token = NewToken(id);
         // A test user's sessions end with the account.
         var ends = login.User.ExpiresAt is { } accountEnds && accountEnds < now + _lifetime ? accountEnds : now + _lifetime;
-        var session = new Session(id, login.User.Id, login.App.Id, now, now, ends, null);
-        await sessions.AddAsync(session, HashToken(token), ct);
-        if (await auth.ResolveAsync(login.User.Id, login.App.Id, CancellationToken.None) is not { } fresh)
+        // The stamp is the moment the sign-in began, not the moment of this insert (a login that raced a password change is older than the cut-off).
+        var authenticatedAt = login.AuthenticatedAt is { } started && started <= now ? started : now;
+        var session = new Session(id, login.User.Id, login.App.Id, now, now, ends, null, authenticatedAt);
+        // The session is inserted only while the hash this sign-in verified is still the stored one (decided atomically with the insert by the
+        // stores; the read after the insert covers a store that cannot): a password change that landed since refuses it ("raced").
+        if (login.VerifiedHash is { } verified)
+        {
+            if (!await sessions.AddForCredentialAsync(session, HashToken(token), verified, ct)) return null;
+            if (!await auth.CredentialIsAsync(login.User.Id, verified, CancellationToken.None))
+            {
+                await sessions.RevokeAsync(id, Clock.UtcNowMicros(), CancellationToken.None);
+                return null;
+            }
+        }
+        else await sessions.AddAsync(session, HashToken(token), ct);
+        if (await auth.ResolveAsync(login.User.Id, login.App.Id, authenticatedAt, CancellationToken.None) is not { } fresh)
         {
             await sessions.RevokeAsync(id, Clock.UtcNowMicros(), CancellationToken.None);
             return null;
@@ -882,7 +951,7 @@ public sealed class SessionService(ISessionRepository sessions, AuthService auth
         if (!session.IsActive(now)) return new RefreshResult(null, session, null, "invalid", id);
 
         // Re-resolve who they are now: a deactivated user, a removed role or a deleted application ends the session.
-        if (await auth.ResolveAsync(session.UserId, session.AppId, ct) is not { } resolved)
+        if (await auth.ResolveAsync(session.UserId, session.AppId, session.Stamp, ct) is not { } resolved)
         {
             await sessions.RevokeAsync(id, now, ct);
             return new RefreshResult(null, session, null, "inactive", id);
@@ -906,9 +975,13 @@ public sealed class SessionService(ISessionRepository sessions, AuthService auth
         return session;
     }
 
-    /// <summary>True while the session exists, is not revoked and has not expired (used for the sid claim of access tokens).</summary>
+    /// <summary>True while the session exists, is not revoked, has not expired and still counts after its user's cut-off (used for the sid claim of access tokens).</summary>
     public async Task<bool> IsActiveAsync(Guid sessionId, CancellationToken ct = default) =>
-        await sessions.GetAsync(sessionId, ct) is { } s && s.IsActive(Clock.UtcNowMicros());
+        await sessions.GetAsync(sessionId, ct) is { } s && s.IsActive(Clock.UtcNowMicros()) && await auth.CountsAsync(s.UserId, s.Stamp, ct);
+
+    /// <summary>As <see cref="IsActiveAsync(Guid, CancellationToken)"/> for a caller that has the user already (no second read). A session of another user is not active.</summary>
+    public async Task<bool> IsActiveAsync(Guid sessionId, User owner, CancellationToken ct = default) =>
+        await sessions.GetAsync(sessionId, ct) is { } s && s.UserId == owner.Id && s.IsActive(Clock.UtcNowMicros()) && owner.CountsAfterCutOff(s.Stamp);
 
     public async Task<Page<Session>> ListAsync(Guid userId, IUserRepository users, PageQuery? page = null, CancellationToken ct = default)
     {
@@ -926,14 +999,30 @@ public sealed class SessionService(ISessionRepository sessions, AuthService auth
     }
 
     /// <summary>The same 404 whether the session does not exist or is another user's.</summary>
-    public async Task<Session> GetForUserAsync(Guid userId, Guid sessionId, CancellationToken ct = default) =>
-        await sessions.GetAsync(sessionId, ct) is { } s && s.UserId == userId ? s : throw new NotFoundException($"Session {sessionId} not found.");
+    public async Task<Session> GetForUserAsync(Guid userId, Guid sessionId, CancellationToken ct = default)
+    {
+        if (await sessions.GetAsync(sessionId, ct) is not { } s || s.UserId != userId) throw new NotFoundException($"Session {sessionId} not found.");
+        // A session the user's cut-off ended but whose row is not revoked yet shows as ended at the cut-off.
+        if (s.RevokedAt is null && await auth.SessionsValidAfterAsync(userId, ct) is { } cut && s.Stamp <= cut) s = s with { RevokedAt = cut < s.ExpiresAt ? cut : s.ExpiresAt };
+        return s;
+    }
 
     public async Task RevokeForUserAsync(Guid userId, Guid sessionId, CancellationToken ct = default)
     {
         if (!await sessions.RevokeForUserAsync(userId, sessionId, Clock.UtcNowMicros(), ct)) throw new NotFoundException($"Session {sessionId} not found.");
     }
 
+    /// <summary>
+    /// Administrator's "end all sessions": raises the user's cut-off and revokes the rows in one step, so a sign-in racing it and a token
+    /// without a session end as well. Returns how many rows it revoked and the cut-off.
+    /// </summary>
+    public async Task<(int Revoked, DateTimeOffset CutOff)> RevokeAllAndCutOffAsync(Guid userId, CancellationToken ct = default)
+    {
+        var cutOff = Clock.UtcNowMicros();
+        return (await sessions.RevokeAllAndCutOffAsync(userId, cutOff, ct), cutOff);
+    }
+
+    /// <summary>Revokes the rows only (no cut-off): the user's own "end my other sessions" for a token without a session of its own.</summary>
     public Task<int> RevokeAllAsync(Guid userId, CancellationToken ct = default) =>
         sessions.RevokeAllForUserAsync(userId, Clock.UtcNowMicros(), ct);
 

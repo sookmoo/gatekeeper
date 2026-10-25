@@ -39,7 +39,7 @@ public abstract class QaSlice4aStoreTests : IDisposable
             ("users.Add", () => users.AddAsync(U("late-user"), ct)), ("users.Update", () => users.UpdateAsync(user with { DisplayName = "x" }, ct: ct)),
             ("users.Delete", () => users.DeleteAsync(user.Id, ct: ct)), ("users.Assign", () => users.AssignRoleAsync(user.Id, role.Id, ct)),
             ("users.Revoke", () => users.RevokeRoleAsync(user.Id, role.Id, ct)), ("users.ListRoles", () => users.ListRolesAsync(user.Id, null, null, ct)),
-            ("creds.Set", () => creds.SetAsync(user.Id, "h", DateTimeOffset.UtcNow, ct)), ("creds.Get", () => creds.GetHashAsync(user.Id, ct)),
+            ("creds.Set", () => creds.SetAsync(user.Id, "h", DateTimeOffset.UtcNow, ct: ct)), ("creds.Get", () => creds.GetHashAsync(user.Id, ct)),
         };
         var ignored = new List<string>();
         foreach (var (name, call) in calls)

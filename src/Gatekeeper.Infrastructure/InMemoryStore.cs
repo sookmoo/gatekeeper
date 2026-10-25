@@ -29,6 +29,41 @@ public sealed class InMemoryStore
         if (expected is { } e && e != current) throw new PreconditionFailedException();
     }
 
+    /// <summary>Raises the user's session cut-off (never lowers it). The caller holds the gate and has checked that the user exists.</summary>
+    internal void RaiseCutOff(Guid userId, DateTimeOffset to)
+    {
+        var user = Users[userId];
+        if (user.SessionsValidAfter is not { } current || current < to) Users[userId] = user with { SessionsValidAfter = to };
+    }
+
+    /// <summary>
+    /// A password change's effect on sessions, in one step under the gate: revoke every other active session, then raise the cut-off (never lower), and re-stamp the kept session if the cut-off really rose
+    /// and the session still counted; the cut-off is at least the clock reading at the end. The caller has checked that the user exists.
+    /// </summary>
+    internal void EndSessions(Guid userId, DateTimeOffset cut, DateTimeOffset at, Guid? keep)
+    {
+        foreach (var x in Sessions.Values.Where(x => x.UserId == userId && x.Id != keep && x.IsActive(at)).ToList())
+            Sessions[x.Id] = x with { RevokedAt = at };
+        // The last write: the cut-off is at least the caller's reading and at least the clock now, so a sign-in stamped in between is cut off too.
+        var now = Application.Clock.UtcNowMicros();
+        if (now > cut) cut = now;
+        var user = Users[userId];
+        var prev = user.SessionsValidAfter;
+        if (prev is not { } p || cut > p)
+        {
+            Users[userId] = user with { SessionsValidAfter = cut };
+            if (keep is { } k && Sessions.TryGetValue(k, out var kept) && kept.UserId == userId && kept.IsActive(at) && (prev is not { } old || kept.Stamp > old))
+            {
+                var restamp = cut.AddTicks(10);
+                Sessions[k] = kept with { AuthenticatedAt = kept.Stamp > restamp ? kept.Stamp : restamp };
+            }
+        }
+    }
+
+    /// <summary>Whether the session counts after its user's cut-off (the caller holds the gate).</summary>
+    internal bool CountsAfterCutOff(Session session) =>
+        !Users.TryGetValue(session.UserId, out var user) || user.CountsAfterCutOff(session.Stamp);
+
     public void RemoveSessionsWhere(Func<Session, bool> match)
     {
         foreach (var x in Sessions.Values.Where(match).ToList())
@@ -210,7 +245,8 @@ public sealed class InMemoryUserRepository(InMemoryStore s) : IUserRepository
             if (!s.Users.TryGetValue(user.Id, out var current)) return Task.FromResult<User?>(null);
             InMemoryStore.CheckVersion(current.Version, expectedVersion);
             EnsureUnique(user);
-            var updated = user with { Version = current.Version + 1 };
+            var cut = user.SessionsValidAfter is { } asked && (current.SessionsValidAfter is not { } had || had < asked) ? asked : current.SessionsValidAfter;
+            var updated = user with { Version = current.Version + 1, SessionsValidAfter = cut };
             s.Users[user.Id] = updated;
             return Task.FromResult<User?>(updated);
         }
@@ -279,12 +315,14 @@ public sealed class InMemoryUserRepository(InMemoryStore s) : IUserRepository
 
 public sealed class InMemoryCredentialRepository(InMemoryStore s) : ICredentialRepository
 {
-    public Task SetAsync(Guid userId, string hash, DateTimeOffset at, CancellationToken ct = default)
+    public Task SetAsync(Guid userId, string hash, DateTimeOffset at, DateTimeOffset? cutOffAt = null, CancellationToken ct = default)
     {
         lock (s.Gate)
         {
             if (!s.Users.ContainsKey(userId)) throw new NotFoundException($"User {userId} not found.");
+            var existed = s.Credentials.ContainsKey(userId);
             s.Credentials[userId] = hash;
+            if (cutOffAt is { } cut && existed) s.EndSessions(userId, cut, at, null);
         }
         return Task.CompletedTask;
     }
@@ -294,12 +332,13 @@ public sealed class InMemoryCredentialRepository(InMemoryStore s) : ICredentialR
         lock (s.Gate) return Task.FromResult(s.Credentials.GetValueOrDefault(userId));
     }
 
-    public Task<bool> ReplaceHashAsync(Guid userId, string expectedHash, string newHash, DateTimeOffset at, CancellationToken ct = default)
+    public Task<bool> ReplaceHashAsync(Guid userId, string expectedHash, string newHash, DateTimeOffset at, DateTimeOffset? cutOffAt = null, Guid? keepSession = null, CancellationToken ct = default)
     {
         lock (s.Gate)
         {
             if (!s.Credentials.TryGetValue(userId, out var current) || current != expectedHash) return Task.FromResult(false);
             s.Credentials[userId] = newHash;
+            if (cutOffAt is { } cut && s.Users.ContainsKey(userId)) s.EndSessions(userId, cut, at, keepSession);
             return Task.FromResult(true);
         }
     }
@@ -415,10 +454,21 @@ public sealed class InMemorySessionRepository(InMemoryStore s) : ISessionReposit
             if (!s.Users.ContainsKey(session.UserId)) throw new NotFoundException($"User {session.UserId} not found.");
             if (!s.Apps.ContainsKey(session.AppId)) throw new NotFoundException($"Application {session.AppId} not found.");
             if (s.Sessions.ContainsKey(session.Id)) throw new ConflictException($"Session {session.Id} already exists.");
-            s.Sessions[session.Id] = session;
+            s.Sessions[session.Id] = session with { AuthenticatedAt = session.Stamp };
             s.SessionHashes[session.Id] = new SessionHashes(tokenHash, null);
         }
         return Task.CompletedTask;
+    }
+
+    public async Task<bool> AddForCredentialAsync(Session session, string tokenHash, string credentialHash, CancellationToken ct = default)
+    {
+        lock (s.Gate)
+        {
+            if (!s.Credentials.TryGetValue(session.UserId, out var current) || current != credentialHash) return false;
+            AddAsync(session, tokenHash, ct).GetAwaiter().GetResult(); // completes synchronously under the gate (the lock is re-entrant)
+        }
+        await Task.CompletedTask;
+        return true;
     }
 
     public Task<Session?> GetAsync(Guid id, CancellationToken ct = default)
@@ -435,14 +485,14 @@ public sealed class InMemorySessionRepository(InMemoryStore s) : ISessionReposit
     {
         lock (s.Gate)
             return Task.FromResult(InMemoryStore.Paged(
-                s.Sessions.Values.Where(x => x.UserId == userId && x.IsActive(now)).OrderByDescending(x => x.CreatedAt).ThenByDescending(x => x.Id), slice));
+                s.Sessions.Values.Where(x => x.UserId == userId && x.IsActive(now) && s.CountsAfterCutOff(x)).OrderByDescending(x => x.CreatedAt).ThenByDescending(x => x.Id), slice));
     }
 
     public Task<bool> RotateAsync(Guid id, string expectedHash, string newHash, DateTimeOffset now, CancellationToken ct = default)
     {
         lock (s.Gate)
         {
-            if (!s.Sessions.TryGetValue(id, out var session) || !session.IsActive(now)) return Task.FromResult(false);
+            if (!s.Sessions.TryGetValue(id, out var session) || !session.IsActive(now) || !s.CountsAfterCutOff(session)) return Task.FromResult(false);
             if (!s.SessionHashes.TryGetValue(id, out var h) || h.Current != expectedHash) return Task.FromResult(false);
             s.SessionHashes[id] = new SessionHashes(newHash, h.Current);
             s.Sessions[id] = session with { LastUsedAt = now };
@@ -474,6 +524,18 @@ public sealed class InMemorySessionRepository(InMemoryStore s) : ISessionReposit
     {
         lock (s.Gate)
         {
+            var active = s.Sessions.Values.Where(x => x.UserId == userId && x.IsActive(now)).ToList();
+            foreach (var x in active) s.Sessions[x.Id] = x with { RevokedAt = now };
+            return Task.FromResult(active.Count);
+        }
+    }
+
+    public Task<int> RevokeAllAndCutOffAsync(Guid userId, DateTimeOffset now, CancellationToken ct = default)
+    {
+        lock (s.Gate)
+        {
+            if (!s.Users.ContainsKey(userId)) return Task.FromResult(0);
+            s.RaiseCutOff(userId, now);
             var active = s.Sessions.Values.Where(x => x.UserId == userId && x.IsActive(now)).ToList();
             foreach (var x in active) s.Sessions[x.Id] = x with { RevokedAt = now };
             return Task.FromResult(active.Count);

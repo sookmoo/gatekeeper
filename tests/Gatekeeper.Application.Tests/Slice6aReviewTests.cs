@@ -25,12 +25,19 @@ public class Slice6aReviewTests
             await inner.AddAsync(session, tokenHash, ct);
             if (AfterAdd is { } h) { AfterAdd = null; await h(); }
         }
+        public async Task<bool> AddForCredentialAsync(Session session, string tokenHash, string credentialHash, CancellationToken ct = default)
+        {
+            var ok = await inner.AddForCredentialAsync(session, tokenHash, credentialHash, ct);
+            if (ok && AfterAdd is { } h) { AfterAdd = null; await h(); }
+            return ok;
+        }
         public Task<Session?> GetAsync(Guid id, CancellationToken ct = default) => inner.GetAsync(id, ct);
         public Task<SessionHashes?> GetHashesAsync(Guid id, CancellationToken ct = default) => inner.GetHashesAsync(id, ct);
         public Task<IReadOnlyList<Session>> ListActiveByUserAsync(Guid userId, DateTimeOffset now, Slice? slice = null, CancellationToken ct = default) => inner.ListActiveByUserAsync(userId, now, slice, ct);
         public Task<bool> RotateAsync(Guid id, string e, string n, DateTimeOffset now, CancellationToken ct = default) => inner.RotateAsync(id, e, n, now, ct);
         public Task<bool> RevokeAsync(Guid id, DateTimeOffset now, CancellationToken ct = default) => inner.RevokeAsync(id, now, ct);
         public Task<bool> RevokeForUserAsync(Guid userId, Guid sessionId, DateTimeOffset now, CancellationToken ct = default) => inner.RevokeForUserAsync(userId, sessionId, now, ct);
+        public Task<int> RevokeAllAndCutOffAsync(Guid u, DateTimeOffset now, CancellationToken ct = default) => inner.RevokeAllAndCutOffAsync(u, now, ct);
         public Task<int> RevokeAllForUserExceptAsync(Guid u, Guid keep, DateTimeOffset now, CancellationToken ct = default) => inner.RevokeAllForUserExceptAsync(u, keep, now, ct);
         public Task<int> RevokeAllForUserAsync(Guid userId, DateTimeOffset now, CancellationToken ct = default) { Boom(ref FailNextRevokeAll); return inner.RevokeAllForUserAsync(userId, now, ct); }
         public Task<int> RevokeAllForUserInAppAsync(Guid userId, Guid appId, DateTimeOffset now, CancellationToken ct = default) { Boom(ref FailNextRevokeInApp); return inner.RevokeAllForUserInAppAsync(userId, appId, now, ct); }

@@ -170,7 +170,7 @@ public abstract class StoreContract : IDisposable
         await Sessions.AddAsync(s1, "h1");
         await Assert.ThrowsAsync<NotFoundException>(() => Sessions.AddAsync(New(now, TimeSpan.FromDays(1)) with { UserId = Guid.NewGuid() }, "x"));
         await Assert.ThrowsAsync<NotFoundException>(() => Sessions.AddAsync(New(now, TimeSpan.FromDays(1)) with { AppId = Guid.NewGuid() }, "x"));
-        Assert.Equal(s1, await Sessions.GetAsync(s1.Id));
+        Assert.Equal(s1 with { AuthenticatedAt = s1.Stamp }, await Sessions.GetAsync(s1.Id)); // the stores always return the sign-in stamp (7a)
         Assert.Equal(new SessionHashes("h1", null), await Sessions.GetHashesAsync(s1.Id));
         Assert.Null(await Sessions.GetAsync(Guid.NewGuid()));
         Assert.Null(await Sessions.GetHashesAsync(Guid.NewGuid()));

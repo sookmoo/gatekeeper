@@ -98,7 +98,8 @@ public class IntrospectApiTests : IClassFixture<WebApplicationFactory<Program>>
         await _admin.PatchAsJsonAsync($"/v1/users/{w.UserId}", new { isActive = false });
         Assert.False((await Ask(w, token)).GetProperty("active").GetBoolean());
         await _admin.PatchAsJsonAsync($"/v1/users/{w.UserId}", new { isActive = true });
-        Assert.True((await Ask(w, token)).GetProperty("active").GetBoolean());
+        // 7a: reactivation raises the session cut-off; a token without a session from before it stays refused (the user signs in again)
+        Assert.False((await Ask(w, token)).GetProperty("active").GetBoolean());
 
         await _admin.DeleteAsync($"/v1/users/{w.UserId}/roles/{w.RoleId}"); // no roles left
         Assert.False((await Ask(w, token)).GetProperty("active").GetBoolean());

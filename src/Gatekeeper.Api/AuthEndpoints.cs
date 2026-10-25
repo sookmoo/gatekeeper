@@ -80,7 +80,19 @@ public static class AuthEndpoints
                     return Results.ValidationProblem(new Dictionary<string, string[]> { ["refresh"] = ["Signing in without roles needs refresh=true."] });
                 }
 
-                (Session Session, string Token, AuthResult Auth)? started = r.Refresh == true ? await sessions.StartAsync(result, ct) : null;
+                (Session Session, string Token, AuthResult Auth)? started;
+                try
+                {
+                    started = r.Refresh == true ? await sessions.StartAsync(result, ct) : null;
+                }
+                catch (BusyException)
+                {
+                    // The password was verified but the store was too busy to start the session: count it like a failed attempt (so these rows are
+                    // bounded by the login throttle) and record it, then answer 503 as for any busy store.
+                    throttle.RecordFailure(address, r.Username);
+                    await audit.RecordAsync(http, result.User.Id.ToString(), "auth.login", result.App.Name, false, "reason=busy");
+                    throw;
+                }
                 if (r.Refresh == true && started is null)
                 {
                     // Deactivated or stripped of the role between the check and the session insert: same answer as any failed login,
@@ -187,6 +199,8 @@ public static class AuthEndpoints
                 http.Response.Headers.CacheControl = "no-store";
                 return Results.Json(await introspector.IntrospectAsync(body?.Token, app, ct));
             })
+            .WithDescription("RFC 7662-style. active is false for a token whose user was deactivated or reactivated, whose password was changed or reset, or whose sessions were ended all at once after the token's sign-in began (the user's session cut-off), also for a token without a session. A token carries auth_time (when the sign-in began, in seconds; older tokens are judged by iat); the answer repeats it when the token has it. A sign-in in the same second as a cut-off is treated as before it (sign in again)."
+                 + " Guarantee for a token without a session: it is refused when its sign-in was stamped before the change committed, up to the store's clock reading taken as the last write of the change; a sign-in stamped in the few microseconds between that reading and the commit that still verified the old password is not caught and its token lives until exp (a session is always closed completely).")
             .Produces(StatusCodes.Status200OK, contentType: "application/json").ProducesProblem(StatusCodes.Status401Unauthorized).ProducesProblem(StatusCodes.Status429TooManyRequests)
             .AllowAnonymous().WithTags("Auth");
 

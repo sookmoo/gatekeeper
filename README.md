@@ -106,7 +106,7 @@ dotnet bin/Debug/net10.0/Gatekeeper.Api.dll           # serve, uses Gatekeeper
   comes within `Auth__RefreshReuseGraceSeconds` (default 10) of the rotation: that is a parallel request that lost the race (a retry, two
   tabs), which simply fails and leaves the winner's new token valid. Anything else invalid is a plain `401` (identical for every reason, throttled per address). A refresh re-reads the user: a deactivated
   user, a removed role or a deleted application ends the session (at the next refresh or introspection). Some changes end sessions
-  at once: a new password, deactivating the user (re-enabling does not revive them), and removing the user's last role in an application
+  at once: a new password, deactivating the user (re-enabling does not revive them: the cut-off, below), and removing the user's last role in an application
   (that application's sessions only). Moving a test user's `expiresAt` earlier caps the active sessions to it; extending it later does
   not lengthen them. The audit detail of the user change shows `sessionsRevoked=<n>` / `sessionsCapped=<n>`. Refresh failures have their own throttle counters, separate from login. A user has at most 20 active sessions;
   starting another ends the least recently used.
@@ -116,7 +116,29 @@ dotnet bin/Debug/net10.0/Gatekeeper.Api.dll           # serve, uses Gatekeeper
   and session), `DELETE /v1/sessions/{id}` (deprecated: unscoped, answers with `Deprecation: true` and a `Link` to the scoped route, the audit note names the owner as `user=<id>`; to be removed once no client uses it); CLI
   `gk user sessions|revoke-sessions <user>`, `gk user revoke-session <user> <session>`. The management API also checks the token's session, so ending an admin's session ends
   their access within ~10 s without waiting for `exp`. This only covers tokens that carry a `sid`, i.e. logins with `refresh`; a plain
-  login token has no session and stays valid until `exp` (an administrator who is deactivated or loses the role is still rejected within ~10 s).
+  login token has no session and stays valid until `exp` (an administrator who is deactivated or loses the role is still rejected within ~10 s)
+  unless the user's session cut-off (below) ends it.
+- **Session cut-off (slice 7a).** Every user has an internal `sessions_valid_after` time (never shown in the API; the user's version does not change when
+  only it moves, and it only ever rises). Every session records `authenticated_at`, the moment its sign-in began (taken **before** the password
+  hash is read; a refresh keeps it). A session counts only while `authenticated_at` is **after** the cut-off, in addition to being unrevoked and
+  unexpired; refresh, the session check of the management API and introspection, and the session lists all apply it. The cut-off is raised in the **same
+  write** as the change that needs it (for a password change that is one transaction under the credential row lock that also revokes the user's other
+  sessions, and a sign-in inserts its session only while the password hash it verified is still the stored one, checked under a share lock on that row, so
+  the two cannot interleave): deactivating a user, reactivating one (or extending an expired test user so the account is usable again), an administrator setting a
+  password (not a user's very first password), an own password change (the caller's current session is re-stamped one microsecond after the cut-off in
+  that write, so it alone stays), and the administrator's `DELETE /v1/users/{id}/sessions`. So a crash between the change and the per-row revoke leaves no live session,
+  a reactivation whose revoke step failed does not bring old sessions back, and a login that had just verified the old password cannot keep a session it
+  inserts afterwards (the login answers `401`, audited as `raced`). The user's own `DELETE /v1/me/sessions` ("end my other sessions") stays per session and does not
+  raise it. The audit note of the change carries `sessionsCutOff=<time>`. Access tokens carry the standard `auth_time` claim (when the sign-in began, in whole
+  seconds); introspection repeats it. A token **without** a session (a plain login) is refused by the management API and by introspection when `auth_time` (for tokens issued
+  before this slice: `iat`; with neither: always) is not later than the cut-off's second, so a sign-in in the same second as a cut-off must sign in again.
+  Consumers that verify tokens offline still accept them until `exp`, as before. Guarantee for a token without a session: it is refused when its sign-in was stamped before the change committed, up to the clock reading the store takes as the last write of the change (the cut-off is at least that reading); a sign-in stamped in the few microseconds between that reading and the commit that still verified the old password is not caught and its token lives until `exp` (a session is always closed completely). After an own password change the kept session's `auth_time` (on tokens issued from it later) moves to the cut-off's second.
+  Admin password set, revoke-all and user deactivation/reactivation make this instance forget its cached access answers for the user at once; other API instances
+  follow after their 10 s access-check cache. `GET /v1/users/{id}/sessions/{sid}` shows a session the cut-off ended as revoked (at the cut-off) even if its row was not revoked.
+  Limits: the stamps and the cut-off use the API's wall clock (one instance is
+  supported; skewed clocks across instances, or a clock stepped backwards, weaken the guarantee: a cut-off is never lowered, but stamps taken while the clock is behind it
+  make new sign-ins look older than the cut-off until the clock passes it), and a login that
+  was started just before a legitimate change and verified the new password may be asked to sign in again.
 - `gk login` asks for a session and renews the access token by itself; concurrent `gk` commands share one refresh under a file lock,
   because refresh tokens rotate. `gk logout` ends the session on the server too.
 - **Introspection** (`POST /v1/auth/introspect {"token"}`, RFC 7662 style) is for systems that cannot wait for `exp`: it returns
@@ -214,6 +236,12 @@ reserved-application rule for roles, so a no-op PATCH of a role of the `gatekeep
 `PATCH` still repairs session effects of an earlier half-done change). A `PATCH` with several tags in `If-Match` writes onto the version it read
 and merged its values onto, so a write that slips in between gives 412 rather than being silently overwritten.
 Unconditional writes (no `If-Match`) to one row queue on a row lock in Postgres (`FOR NO KEY UPDATE`, so inserts that reference the row, such as sessions, are not blocked), so every one succeeds with its own version; a writer waits at most 2 s for the lock and then gets 503 with `Retry-After`.
+
+**Upgrading to `AddSessionCutoff`:** the migration adds `users.sessions_valid_after` (empty: nobody's sessions are affected) and `sessions.authenticated_at`
+(back-filled from `created_at`, then `NOT NULL`). It locks `users` and `sessions` up front under a 2 s `lock_timeout`, so it fails cleanly and rolls back instead of queueing behind a long query;
+run `migrate` again at a quiet moment. Do not run old and new API instances side by side across this migration: an old instance does not write `authenticated_at`,
+so its session inserts fail (loudly, not silently) once the column is required. Stop the old instances, migrate, start the new ones. Rolling the migration back
+(`Down`) first revokes the sessions the cut-off was ending, so they do not come back to life without it.
 
 **Upgrading to `AddVersions`:** the migration adds a `version` column to four tables. It locks the four tables together up front under a 2 s `lock_timeout`, so it fails cleanly (and
 rolls back) instead of queueing behind a long-running query; run `migrate` again at a quiet moment. Do not run old and new API instances

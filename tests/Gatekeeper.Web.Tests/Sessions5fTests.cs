@@ -33,7 +33,7 @@ public class Sessions5fTests : IClassFixture<WebFixture>
     private static async Task<HttpClient> ApiAdminAsync(WebFixture f)
     {
         var c = f.Api.CreateClient();
-        var r = await c.PostAsJsonAsync("/v1/auth/login", new { username = WebFixture.AdminName, password = WebFixture.AdminPassword, application = "gatekeeper" });
+        var r = await c.PostAsJsonAsync("/v1/auth/login", new { username = WebFixture.AdminName, password = WebFixture.AdminPassword, application = "gatekeeper", refresh = true }); // with a session: a token without one is refused for the rest of the second after a revoke-all (7a)
         c.DefaultRequestHeaders.Authorization = new("Bearer", (await r.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("accessToken").GetString());
         return c;
     }
