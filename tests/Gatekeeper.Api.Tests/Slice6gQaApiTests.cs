@@ -311,8 +311,9 @@ public class Slice6gQaApiTests
         for (var i = 0; i < Endpoints.PasswordFailuresPerUser; i++) await Change(c, $"wrong wrong wrong {i}", Fresh);
         Assert.Equal(HttpStatusCode.NoContent, (await w.Admin.PutAsJsonAsync($"/v1/users/{id}/password", new { password = "admin chosen password" })).StatusCode);
         Assert.Equal(HttpStatusCode.OK, (await w.Login(name, "admin chosen password")).StatusCode);
-        // a self token cannot use the admin route
-        Assert.Equal(HttpStatusCode.Forbidden, (await c.PutAsJsonAsync($"/v1/users/{id}/password", new { password = "self chosen password" })).StatusCode);
+        // the admin reset ended the old session; a self token from a new sign-in cannot use the admin route
+        var (fresh, _) = await w.SignIn(name, "admin chosen password");
+        Assert.Equal(HttpStatusCode.Forbidden, (await fresh.PutAsJsonAsync($"/v1/users/{id}/password", new { password = "self chosen password" })).StatusCode);
     }
 
     [Fact]
