@@ -61,10 +61,6 @@ public sealed class BearerSecurityTransformer : IOpenApiDocumentTransformer
                 op.Extensions["x-gatekeeper-access"] = new JsonNodeExtension(System.Text.Json.Nodes.JsonValue.Create((path == "/v1/me" || path.StartsWith("/v1/me/", StringComparison.Ordinal)) ? "self" : "admin"));
             }
         }
-        // Superseded by DELETE /v1/users/{id}/sessions/{sessionId} (slice 6b); kept for existing callers.
-        if (document.Paths.TryGetValue("/v1/sessions/{id}", out var old) && old.Operations is not null
-            && old.Operations.TryGetValue(HttpMethod.Delete, out var oldDelete))
-            oldDelete.Deprecated = true;
         return Task.CompletedTask;
     }
 }

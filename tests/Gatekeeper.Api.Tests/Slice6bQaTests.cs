@@ -160,8 +160,6 @@ public class Slice6bQaTests
         Assert.Equal(first.GetProperty("revokedAt").GetRawText(), second.GetProperty("revokedAt").GetRawText()); // timestamp not moved
         Assert.Single(await e.SessionIds(u.Id));
         Assert.Equal(ids[1], (await e.SessionIds(u.Id))[0]);
-        // the old route also accepts an already revoked session
-        Assert.Equal(HttpStatusCode.NoContent, (await e.Admin.DeleteAsync($"/v1/sessions/{ids[0]}")).StatusCode);
     }
 
     [SkippableTheory, MemberData(nameof(Stores))]
@@ -178,7 +176,7 @@ public class Slice6bQaTests
     }
 
     [SkippableTheory, MemberData(nameof(Stores))]
-    public async Task Audit_rows_cover_success_and_the_404_case_and_the_old_route_note(string store)
+    public async Task Audit_rows_cover_success_and_the_404_case(string store)
     {
         using var e = await Env.Create(store);
         var owner = await e.User(); var other = await e.User();
@@ -189,17 +187,6 @@ public class Slice6bQaTests
         Assert.True(rows.Any(r => r.Contains($"id={other.Id} sessionId={sid}") && r.Contains("\"outcome\":\"failure\"")), string.Join("\n", rows));
         Assert.Contains(rows, r => r.Contains($"id={owner.Id} sessionId={sid}") && r.Contains("\"outcome\":\"success\""));
         Assert.DoesNotContain(rows, r => r.Contains($"id={other.Id} sessionId={sid}") && r.Contains("\"outcome\":\"success\""));
-
-        var o2 = await e.User(); var s2 = (await e.SessionIds(o2.Id)).Single();
-        await e.Admin.DeleteAsync($"/v1/sessions/{s2}");
-        await e.Admin.DeleteAsync($"/v1/sessions/{s2}");                 // idempotent, note still has owner
-        var missing = Guid.NewGuid();
-        await e.Admin.DeleteAsync($"/v1/sessions/{missing}");            // 404
-        var old = (await e.Audit("DELETE /v1/sessions/{id}")).EnumerateArray().Select(r => r.ToString()).ToList();
-        Assert.Equal(2, old.Count(r => r.Contains($"user={o2.Id}") && r.Contains("status 204")));
-        var miss = Assert.Single(old, r => r.Contains(missing.ToString()));
-        Assert.Contains("NotFoundException", miss);
-        Assert.DoesNotContain("user=", miss);
     }
 
     [SkippableTheory, MemberData(nameof(Stores))]
@@ -235,19 +222,19 @@ public class Slice6bQaTests
     }
 
     [Fact]
-    public async Task Committed_openapi_json_marks_only_the_old_route_deprecated()
+    public async Task Committed_openapi_json_has_no_old_route_and_nothing_deprecated()
     {
         var dir = AppContext.BaseDirectory;
         while (dir is not null && !File.Exists(Path.Combine(dir, "docs", "openapi.json"))) dir = Path.GetDirectoryName(dir);
         Assert.NotNull(dir);
         var committed = JsonDocument.Parse(await File.ReadAllTextAsync(Path.Combine(dir!, "docs", "openapi.json"))).RootElement.GetProperty("paths");
-        Assert.True(committed.GetProperty("/v1/sessions/{id}").GetProperty("delete").GetProperty("deprecated").GetBoolean());
+        Assert.False(committed.TryGetProperty("/v1/sessions/{id}", out _));
         Assert.True(committed.TryGetProperty("/v1/users/{id}/sessions/{sessionId}", out var scoped));
         Assert.True(scoped.TryGetProperty("get", out _) && scoped.TryGetProperty("delete", out _));
         foreach (var path in committed.EnumerateObject())
             foreach (var op in path.Value.EnumerateObject())
                 if (op.Value.ValueKind == JsonValueKind.Object && op.Value.TryGetProperty("deprecated", out _))
-                    Assert.Equal(("/v1/sessions/{id}", "delete"), (path.Name, op.Name));
+                    Assert.Fail($"deprecated operation {op.Name} {path.Name}");
         using var f = new WebApplicationFactory<Program>();
         var served = JsonDocument.Parse(await f.CreateClient().GetStringAsync("/openapi/v1.json")).RootElement.GetProperty("paths");
         Assert.Equal(committed.GetProperty("/v1/users/{id}/sessions/{sessionId}").GetRawText().Length > 0, served.TryGetProperty("/v1/users/{id}/sessions/{sessionId}", out _));

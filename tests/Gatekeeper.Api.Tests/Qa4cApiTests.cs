@@ -216,7 +216,7 @@ public class Qa4cApiTests : IDisposable
         Assert.Equal(7, (await del.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("revoked").GetInt32());
         var again = await _admin.DeleteAsync($"/v1/users/{w.UserId}/sessions");
         Assert.Equal(0, (await again.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("revoked").GetInt32());
-        Assert.Equal(HttpStatusCode.NotFound, (await _admin.DeleteAsync($"/v1/sessions/{Guid.NewGuid()}")).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await _admin.DeleteAsync($"/v1/users/{w.UserId}/sessions/{Guid.NewGuid()}")).StatusCode);
     }
 
     [Fact]
@@ -280,10 +280,10 @@ public class Qa4cApiTests : IDisposable
         var paths = doc.GetProperty("paths");
         string Statuses(string p, string m) => string.Join(",", paths.GetProperty(p).GetProperty(m).GetProperty("responses").EnumerateObject().Select(x => x.Name).OrderBy(x => x));
         foreach (var (p, m) in new[] { ("/v1/auth/refresh", "post"), ("/v1/auth/logout", "post"), ("/v1/auth/introspect", "post"),
-                     ("/v1/users/{id}/sessions", "get"), ("/v1/users/{id}/sessions", "delete"), ("/v1/sessions/{id}", "delete") })
+                     ("/v1/users/{id}/sessions", "get"), ("/v1/users/{id}/sessions", "delete") })
             _out.WriteLine($"{m} {p}: {Statuses(p, m)}");
         Assert.Contains("204", Statuses("/v1/auth/logout", "post")); // README and behaviour: always 204
-        Assert.Contains("404", Statuses("/v1/sessions/{id}", "delete"));
+        Assert.Contains("404", Statuses("/v1/users/{id}/sessions/{sessionId}", "delete"));
         Assert.Contains("404", Statuses("/v1/users/{id}/sessions", "get"));
         Assert.Contains("404", Statuses("/v1/users/{id}/sessions", "delete"));
     }

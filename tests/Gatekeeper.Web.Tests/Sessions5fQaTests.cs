@@ -215,7 +215,7 @@ public class Sessions5fQaTests : IClassFixture<WebFixture>
         // Expire the account and its session without waiting: the API runs on the real clock, so move both ends into the past in the store.
         var sessions = _f.Api.Services.GetRequiredService<Gatekeeper.Application.ISessionRepository>();
         var started = (await sessions.GetAsync(sid))!;
-        Assert.Equal(HttpStatusCode.NoContent, (await api.DeleteAsync($"/v1/sessions/{sid}")).StatusCode);
+        Assert.Equal(HttpStatusCode.NoContent, (await api.DeleteAsync($"/v1/users/{user}/sessions/{sid}")).StatusCode);
         var past = DateTimeOffset.UtcNow.AddMinutes(-1);
         await sessions.AddAsync(started with { Id = Guid.NewGuid(), CreatedAt = past.AddHours(-1), LastUsedAt = past.AddHours(-1), ExpiresAt = past, RevokedAt = null }, "unused-hash");
         var users = _f.Api.Services.GetRequiredService<Gatekeeper.Application.IUserRepository>();
@@ -255,7 +255,7 @@ public class Sessions5fQaTests : IClassFixture<WebFixture>
 
         // revoked by someone else between confirmation page and submit
         Assert.Equal(HttpStatusCode.OK, (await b.GetAsync($"/Users/{user}/Sessions/Revoke/{s1}")).StatusCode);
-        Assert.Equal(HttpStatusCode.NoContent, (await api.DeleteAsync($"/v1/sessions/{s1}")).StatusCode);
+        Assert.Equal(HttpStatusCode.NoContent, (await api.DeleteAsync($"/v1/users/{user}/sessions/{s1}")).StatusCode);
         var late = await WebFixture.PostFormAsync(b, $"/Users/{user}/Sessions/Revoke/{s1}", new(), $"/Users/{user}/Sessions/Revoke/{s2}");
         Assert.Equal(HttpStatusCode.NotFound, late.StatusCode);
 

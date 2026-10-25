@@ -215,16 +215,6 @@ public static class Endpoints
             return Results.NoContent();
         }).WithDescription("When this was the user's last role in the application, the user's sessions in that application end at once (other applications are untouched).");
 
-        v1.MapGroup("/sessions").WithTags("Sessions").MapDelete("/{id:guid}", async (Guid id, SessionService s, HttpContext http, CancellationToken ct) =>
-        {
-            http.Response.Headers["Deprecation"] = "true";
-            var owner = await s.RevokeAsync(id, ct);
-            http.Response.Headers.Link = $"</v1/users/{owner}/sessions/{id}>; rel=\"successor-version\"";
-            http.Items[AuditMiddleware.NoteKey] = $"user={owner}";
-            return Results.NoContent();
-        }).WithDescription("Deprecated: use DELETE /v1/users/{id}/sessions/{sessionId}, which is scoped to the owner. The audit note names the owner (user=<id>). The response carries a Deprecation header and a Link to the successor route; it will be removed once no client uses it.")
-          .ProducesProblem(StatusCodes.Status404NotFound);
-
         var clients = v1.MapGroup("/clients").WithTags("Clients");
         clients.MapGet("/", (ClientService s, Guid? application, int? limit, string? cursor, CancellationToken ct) =>
             s.ListAsync(application, PageQuery.Parse(limit, cursor), ct));

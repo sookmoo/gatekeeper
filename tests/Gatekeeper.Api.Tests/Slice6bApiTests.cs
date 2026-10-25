@@ -107,30 +107,22 @@ public class Slice6bApiTests : IClassFixture<WebApplicationFactory<Program>>
     }
 
     [Fact]
-    public async Task Old_route_still_works_and_records_the_owner_in_the_audit_note()
-    {
-        var a = await NewApp();
-        var u = await UserWithSession(a);
-        var sid = await SessionId(u.Id);
-        Assert.Equal(HttpStatusCode.NoContent, (await _admin.DeleteAsync($"/v1/sessions/{sid}")).StatusCode);
-        Assert.Equal(HttpStatusCode.Unauthorized, (await Refresh(u.Refresh)).StatusCode);
-        var rows = await _admin.GetStringAsync("/v1/audit?action=" + Uri.EscapeDataString("DELETE /v1/sessions/{id}"));
-        Assert.Contains($"user={u.Id}", rows);
-        Assert.Equal(HttpStatusCode.NotFound, (await _admin.DeleteAsync($"/v1/sessions/{Guid.NewGuid()}")).StatusCode);
-    }
-
-    [Fact]
-    public async Task Old_route_answers_with_deprecation_and_successor_link_headers()
+    public async Task Old_unscoped_route_is_gone_and_revokes_nothing()
     {
         var u = await UserWithSession(await NewApp());
         var sid = await SessionId(u.Id);
-        var r = await _admin.DeleteAsync($"/v1/sessions/{sid}");
-        Assert.Equal(HttpStatusCode.NoContent, r.StatusCode);
-        Assert.Equal("true", r.Headers.GetValues("Deprecation").Single());
-        Assert.Equal($"</v1/users/{u.Id}/sessions/{sid}>; rel=\"successor-version\"", r.Headers.GetValues("Link").Single());
-        Assert.False(r.Headers.Contains("Sunset"));
-        var scoped = await _admin.DeleteAsync($"/v1/users/{u.Id}/sessions/{sid}");
-        Assert.False(scoped.Headers.Contains("Deprecation"));
+        var self = _factory.CreateClient();
+        self.DefaultRequestHeaders.Authorization = new("Bearer", TestAuth.Mint(_factory, TestAuth.EnsureAdmin(_factory), "gatekeeper", ["viewer"]));
+        foreach (var client in new[] { _admin, self, _factory.CreateClient() })
+            foreach (var id in new[] { sid, Guid.NewGuid() })
+                foreach (var method in new[] { HttpMethod.Delete, HttpMethod.Get })
+                {
+                    var r = await client.SendAsync(new HttpRequestMessage(method, $"/v1/sessions/{id}"));
+                    Assert.Equal(HttpStatusCode.NotFound, r.StatusCode);
+                    Assert.False(r.Headers.Contains("Deprecation"));
+                }
+        Assert.NotEqual(HttpStatusCode.Unauthorized, (await Refresh(u.Refresh)).StatusCode); // the session still lives
+        Assert.Single((await _admin.GetFromJsonAsync<JsonElement>($"/v1/users/{u.Id}/sessions")).GetProperty("items").EnumerateArray());
     }
 
     [Fact]
@@ -140,12 +132,11 @@ public class Slice6bApiTests : IClassFixture<WebApplicationFactory<Program>>
         var sid = await SessionId(u.Id);
         var nonAdmin = _factory.CreateClient();
         nonAdmin.DefaultRequestHeaders.Authorization = new("Bearer", TestAuth.Mint(_factory, TestAuth.EnsureAdmin(_factory), "gatekeeper", ["viewer"]));
-        var urls = new[] { $"/v1/users/{u.Id}/sessions/{sid}", $"/v1/sessions/{sid}" };
+        var urls = new[] { $"/v1/users/{u.Id}/sessions/{sid}" };
         foreach (var (client, expected) in new[] { (_factory.CreateClient(), HttpStatusCode.Unauthorized), (nonAdmin, HttpStatusCode.Forbidden) })
             foreach (var method in new[] { HttpMethod.Get, HttpMethod.Delete })
                 foreach (var url in urls)
                 {
-                    if (method == HttpMethod.Get && url.StartsWith("/v1/sessions/")) continue; // no such GET route
                     Assert.Equal(expected, (await client.SendAsync(new HttpRequestMessage(method, url))).StatusCode);
                 }
         Assert.Single((await _admin.GetFromJsonAsync<JsonElement>($"/v1/users/{u.Id}/sessions")).GetProperty("items").EnumerateArray()); // nothing was revoked
@@ -163,10 +154,10 @@ public class Slice6bApiTests : IClassFixture<WebApplicationFactory<Program>>
     }
 
     [Fact]
-    public async Task Old_route_is_marked_deprecated_in_the_served_openapi_and_the_new_routes_are_listed()
+    public async Task Old_route_is_absent_from_the_served_openapi_and_the_scoped_routes_are_listed()
     {
         var doc = JsonDocument.Parse(await _factory.CreateClient().GetStringAsync("/openapi/v1.json")).RootElement.GetProperty("paths");
-        Assert.True(doc.GetProperty("/v1/sessions/{id}").GetProperty("delete").GetProperty("deprecated").GetBoolean());
+        Assert.False(doc.TryGetProperty("/v1/sessions/{id}", out _));
         var scoped = doc.GetProperty("/v1/users/{id}/sessions/{sessionId}");
         Assert.True(scoped.GetProperty("delete").GetProperty("responses").TryGetProperty("204", out _));
         Assert.True(scoped.GetProperty("delete").GetProperty("responses").TryGetProperty("404", out _));

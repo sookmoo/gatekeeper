@@ -990,14 +990,6 @@ public sealed class SessionService(ISessionRepository sessions, AuthService auth
         return page.Build(await sessions.ListActiveByUserAsync(userId, Clock.UtcNowMicros(), page.Slice, ct));
     }
 
-    /// <summary>Deprecated unscoped revoke. Returns the owner of the session (for the audit note).</summary>
-    public async Task<Guid> RevokeAsync(Guid sessionId, CancellationToken ct = default)
-    {
-        var session = await sessions.GetAsync(sessionId, ct) ?? throw new NotFoundException($"Session {sessionId} not found.");
-        if (!await sessions.RevokeAsync(sessionId, Clock.UtcNowMicros(), ct)) throw new NotFoundException($"Session {sessionId} not found.");
-        return session.UserId;
-    }
-
     /// <summary>The same 404 whether the session does not exist or is another user's.</summary>
     public async Task<Session> GetForUserAsync(Guid userId, Guid sessionId, CancellationToken ct = default)
     {
