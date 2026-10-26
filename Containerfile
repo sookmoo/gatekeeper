@@ -1,5 +1,5 @@
 # Build once, promote the same image. Base images are pinned by digest (refresh with Dependabot/Renovate or by hand).
-FROM mcr.microsoft.com/dotnet/sdk:10.0@sha256:0eeb52c76e35a5431ca707ad2bc75e38006a05393045d8532ae44c15d9474523 AS build
+FROM mcr.microsoft.com/dotnet/sdk:10.0@sha256:de4fe90a98845d75910b9769662465c84de1a934665c431279d1382b2bddc02b AS build
 WORKDIR /src
 COPY Directory.Build.props Directory.Packages.props nuget.config Gatekeeper.slnx ./
 COPY src/ src/
@@ -9,7 +9,7 @@ RUN dotnet restore src/Gatekeeper.Api/Gatekeeper.Api.csproj --locked-mode
 RUN dotnet publish src/Gatekeeper.Api/Gatekeeper.Api.csproj -c Release --no-restore -o /out --no-self-contained
 
 # Chiseled runtime: no shell, no package manager, non-root user.
-FROM mcr.microsoft.com/dotnet/aspnet:10.0-noble-chiseled@sha256:8c20ba8cb64c498f2fb98f2aed374b7f144aa5b603270989e7c141545a04d380
+FROM mcr.microsoft.com/dotnet/aspnet:10.0-noble-chiseled@sha256:c89a6a61f494f20a5ae302990e814627a8d91b332fd4a8e7c1707c2d4da9555d
 WORKDIR /app
 # Links the GHCR package to this repository (the workflow token can then pull it).
 LABEL org.opencontainers.image.source=https://github.com/sookmoo/gatekeeper
