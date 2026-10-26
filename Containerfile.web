@@ -1,5 +1,5 @@
 # The administration UI. Same approach as Containerfile: build once, promote the same image, pinned base images.
-FROM mcr.microsoft.com/dotnet/sdk:10.0@sha256:0eeb52c76e35a5431ca707ad2bc75e38006a05393045d8532ae44c15d9474523 AS build
+FROM mcr.microsoft.com/dotnet/sdk:10.0@sha256:de4fe90a98845d75910b9769662465c84de1a934665c431279d1382b2bddc02b AS build
 WORKDIR /src
 COPY Directory.Build.props Directory.Packages.props nuget.config Gatekeeper.slnx ./
 COPY src/ src/
