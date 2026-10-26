@@ -296,9 +296,10 @@ public static class Endpoints
             await s.RevokeForUserAsync(UserId(http), id, ct);
             access.Evict(UserId(http), id); // a token of the ended session stops at once, not after the 10 s cache
             return Results.NoContent();
-        }).WithDescription("Ends one of the caller's own sessions (the current one too). 404 both when there is no such session and when it belongs to another user.")
+        }).WithDescription("Ends one of the caller's own sessions (the current one too). 404 both when there is no such session and when it belongs to another user. 429 (with Retry-After, and no audit row) when the caller made more state-changing /v1/me calls than allowed in the last minute (Audit__MeWritesPerMinute, default 30).")
           .Produces(StatusCodes.Status204NoContent)
-          .ProducesProblem(StatusCodes.Status404NotFound);
+          .ProducesProblem(StatusCodes.Status404NotFound)
+          .ProducesProblem(StatusCodes.Status429TooManyRequests);
         me.MapPut("/password", async (HttpContext http, OwnPasswordRequest r, CredentialService credentials, AdminAccessCheck access,
                 [FromKeyedServices("passwordUser")] LoginThrottle userThrottle, [FromKeyedServices("passwordAddress")] LoginThrottle addressThrottle, CancellationToken ct) =>
             {
@@ -367,7 +368,7 @@ public static class Endpoints
                     + (change.CutOff is { } cut ? $"; sessionsCutOff={cut.UtcDateTime:O}" : "");
                 return Results.NoContent();
             })
-          .WithDescription("Changes the caller's own password. Needs the current password (verified like a login). 204: changed; every other session of the user ended (all of them for a token without a session, which then ends too), the session of the token is kept, and the user's session cut-off is raised in the same write (a sign-in that began before it cannot keep a session). 400: the new password breaks the password rules or equals the current one. 403 with code current-password-incorrect: the current password was not accepted (a fixed answer, deliberately not 401, so clients do not treat it as an ended session). 429: too many failed attempts for this user or address (Retry-After). Neither password is ever logged or audited; the audit row has the route and the number of sessions ended.")
+          .WithDescription("Changes the caller's own password. Needs the current password (verified like a login). 204: changed; every other session of the user ended (all of them for a token without a session, which then ends too), the session of the token is kept, and the user's session cut-off is raised in the same write (a sign-in that began before it cannot keep a session). 400: the new password breaks the password rules or equals the current one. 403 with code current-password-incorrect: the current password was not accepted (a fixed answer, deliberately not 401, so clients do not treat it as an ended session). 429: too many failed attempts for this user or address, or too many state-changing /v1/me calls in the last minute (Retry-After). Neither password is ever logged or audited; the audit row has the route and the number of sessions ended.")
           .Produces(StatusCodes.Status204NoContent)
           .ProducesProblem(StatusCodes.Status400BadRequest)
           .ProducesProblem(StatusCodes.Status403Forbidden)
@@ -381,6 +382,8 @@ public static class Endpoints
                 http.Items[AuditMiddleware.NoteKey] = $"revoked={revoked}; kept={(keep is { } k ? k.ToString() : "none")}";
                 return Results.Ok(new RevokedResponse(revoked));
             })
-          .WithDescription("Ends all of the caller's other active sessions; the session of the token stays (it ends by signing out or DELETE /v1/me/sessions/{id}).");
+          .WithDescription("Ends all of the caller's other active sessions; the session of the token stays (it ends by signing out or DELETE /v1/me/sessions/{id}). 429 (with Retry-After, and no audit row) when the caller made more state-changing /v1/me calls than allowed in the last minute (Audit__MeWritesPerMinute, default 30).")
+          .Produces<RevokedResponse>(StatusCodes.Status200OK)
+          .ProducesProblem(StatusCodes.Status429TooManyRequests);
     }
 }
