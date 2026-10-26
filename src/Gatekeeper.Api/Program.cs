@@ -234,6 +234,15 @@ if (!migrateOnly && !bootstrap)
         .SetFallbackPolicy(new Microsoft.AspNetCore.Authorization.AuthorizationPolicyBuilder()
             .RequireAuthenticatedUser().RequireRole(Reserved.AdminRole).AddRequirements(new AdminRequirement()).Build());
     builder.Services.AddSingleton<Microsoft.AspNetCore.Authorization.IAuthorizationHandler, AccessHandler>();
+    // Slice 8f: routing's own content-type matching (AcceptsMatcherPolicy) turns a wrong Content-Type into a synthetic "415" endpoint that has no
+    // policy, so a self-service token on /v1/me got the fallback (admin) policy's 403 plus a forbidden row. Without it the real endpoint is
+    // selected, authorised by its own policy and audited, and the binding answers 415 like every other binding failure.
+    var acceptsPolicies = builder.Services.Where(d => d.ServiceType == typeof(Microsoft.AspNetCore.Routing.MatcherPolicy) && d.ImplementationType?.Name == "AcceptsMatcherPolicy").ToList();
+    if (acceptsPolicies.Count != 1)
+        return Fail($"Expected exactly one AcceptsMatcherPolicy registration to remove, found {acceptsPolicies.Count} (framework change? see slice 8f).");
+    builder.Services.Remove(acceptsPolicies[0]);
+    // Binding failures (400/415) must throw in every environment (the default is only on in Development) so ErrorMappingMiddleware and the audit see them.
+    builder.Services.Configure<Microsoft.AspNetCore.Routing.RouteHandlerOptions>(o => o.ThrowOnBadRequest = true);
 }
 
 var trustedProxies = new List<System.Net.IPAddress>();
