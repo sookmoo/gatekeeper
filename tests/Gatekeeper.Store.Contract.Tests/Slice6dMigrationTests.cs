@@ -68,8 +68,12 @@ public class Slice6dMigrationTests
         // rows written by older code (no version column in the INSERT) get 1, and NULL is refused
         await Exec(conn, "INSERT INTO apps (id, name) VALUES (gen_random_uuid(), 'legacy')");
         Assert.Equal(["1"], await Rows(conn, "SELECT version::text FROM apps WHERE name = 'legacy'"));
-        var nullVersion = await Assert.ThrowsAsync<PostgresException>(() => Exec(conn, "UPDATE apps SET version = NULL"));
-        Assert.Equal("23502", nullVersion.SqlState);
+        // Since 7c the triggers replace a NULL written to version (UPDATE: old + 1; INSERT: 1), so the NOT NULL is no longer reachable by a statement.
+        await Exec(conn, "UPDATE apps SET version = NULL WHERE name = 'legacy'");
+        Assert.Equal(["2"], await Rows(conn, "SELECT version::text FROM apps WHERE name = 'legacy'"));
+        await Exec(conn, "INSERT INTO apps (id, name, version) VALUES (gen_random_uuid(), 'nullv', NULL)");
+        Assert.Equal(["1"], await Rows(conn, "SELECT version::text FROM apps WHERE name = 'nullv'"));
+        await Exec(conn, "DELETE FROM apps WHERE name = 'nullv'");
 
         // the data-only role reads and conditionally writes the new column through the stores
         db.GrantAppAccess();

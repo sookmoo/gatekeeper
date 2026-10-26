@@ -244,10 +244,20 @@ so its session inserts fail (loudly, not silently) once the column is required. 
 (`Down`) first revokes the sessions the cut-off was ending, so they do not come back to life without it.
 
 **Upgrading to `AddVersions`:** the migration adds a `version` column to four tables. It locks the four tables together up front under a 2 s `lock_timeout`, so it fails cleanly (and
-rolls back) instead of queueing behind a long-running query; run `migrate` again at a quiet moment. Do not run old and new API instances
-side by side across this migration: an old instance does not know the column and its writes do not bump `version`, which would let a stale
-`If-Match` succeed. Stop the old instances, migrate, start the new ones. (A `BEFORE UPDATE` trigger that bumps the version would remove that
-requirement; it is a possible follow-up.)
+rolls back) instead of queueing behind a long-running query; run `migrate` again at a quiet moment. Instances from before this migration do not know the column, so their writes
+do not bump `version`, which would let a stale `If-Match` succeed: stop old instances before migrating, migrate, start the new ones. Once `AddVersionTriggers` (below) is applied that no longer matters.
+
+**Upgrading to `AddVersionTriggers`:** the migration adds, on each of `apps`, `roles`, `users` and `clients`, a `BEFORE UPDATE` trigger and a `BEFORE INSERT` trigger (with their functions).
+The update trigger sets `version` to the stored version + 1 when any own column differs (everything the API lets a caller set: names, description, e-mail, display name, kind, expiry,
+active flag, the application of a role or client) or when the writer changed `version` itself, and keeps the stored version otherwise. `users.sessions_valid_after` and `updated_at` do not
+count, so a cut-off-only write or a write that only touches `updated_at` never changes the ETag. The insert trigger sets `version` to 1, so a direct `INSERT` cannot choose a version.
+The application still writes version + 1 itself (its optimistic-concurrency check needs the value), and the trigger arrives at the same number, so the result is exactly +1. The database
+now bumps the version for every writer, including an old instance, a script or `psql`; the old/new-instance rule no longer applies once this migration is applied. A value written to `version`
+is replaced, on `UPDATE` (old + 1) and on `INSERT` (1), including `NULL` (which used to fail with `23502`): an operator's repair `UPDATE ... SET version = N` becomes +1; to set a version
+on purpose, the owner role must disable the trigger first. (The `AddSessionCutoff` rule above is unchanged.) The functions belong to the owner role and `EXECUTE` is revoked from `PUBLIC`
+(triggers still fire): the data-only role cannot drop, disable, replace or call them. The migration locks the four tables up front under a 2 s `lock_timeout` and changes no data; while it waits
+it can delay requests on `users`, `roles`, `clients` and `apps` for up to 2 s per attempt, so do not run it in a retry loop. `Down` drops the triggers and functions. After `Down` the application
+still bumps `version` itself (loaded + 1); what stops is the bump by raw SQL writes and by instances older than `AddVersions`, so the "stop old instances" rule for `AddVersions` applies again.
 
 The CLI sends no `If-Match` yet (a `--if-version` option is deferred). The Web UI does (see the Administration UI section).
 
