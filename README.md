@@ -386,10 +386,17 @@ Session stamps also rely on one clock. Database-level replacements are not plann
 ## Develop
 
 ```bash
+dotnet restore --locked-mode   # fails if a packages.lock.json is out of date
 dotnet build -warnaserror
 dotnet test                 # Postgres tests are reported as skipped
 scripts/test-pg.sh          # full suite against a disposable Postgres container (needs Podman)
 ```
+
+Supply chain: `global.json` pins the SDK feature band (10.0.1xx, latest patch); package versions live in
+`Directory.Packages.props` (central package management, no versions in the `.csproj` files); every project has a committed
+`packages.lock.json`, and CI, `scripts/test-pg.sh` and the container builds restore with `--locked-mode`. After changing a package
+version run `dotnet restore --force-evaluate` and commit the changed lock files. GitHub Actions are pinned to a commit SHA (the tag is in
+a comment), `nuget.config` restricts restore to nuget.org (source mapping), and the CI Postgres image uses the same digest as `deploy/quadlet/gatekeeper-db.container`: bump both together. `global.json` is deliberately not copied into the images: the digest-pinned SDK image is 10.0.4xx, outside the 1xx band, so the SDK would be rejected; package versions are still fixed by the lock files.
 
 Layout: `Domain` (entities, validation) -> `Application` (services, repository interfaces) ->
 `Infrastructure` (in-memory store) and `Infrastructure.Postgres` (EF Core) -> `Api` (ASP.NET Core minimal API); `Cli` talks to the API over HTTP.

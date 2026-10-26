@@ -19,4 +19,5 @@ until podman exec "$NAME" psql -U postgres -tAc 'select 1' >/dev/null 2>&1; do s
 
 export GATEKEEPER_TEST_PG='Host=127.0.0.1;Port=5433;Username=postgres;Password=test-only;Database=postgres'
 cd "$(dirname "$0")/.."
+dotnet restore --locked-mode
 dotnet test "$@"
