@@ -62,6 +62,8 @@ var refreshDays = builder.Configuration.GetValue("Auth:RefreshTokenDays", 30);
 var graceSeconds = builder.Configuration.GetValue("Auth:RefreshReuseGraceSeconds", 10);
 if (graceSeconds is < 0 or > 60) return Fail("Auth:RefreshReuseGraceSeconds must be between 0 and 60.");
 if (refreshDays is < 1 or > 90) return Fail("Auth:RefreshTokenDays must be between 1 and 90.");
+var accessCacheSeconds = builder.Configuration.GetValue("Auth:AccessCheckCacheSeconds", 10);
+if (accessCacheSeconds is < 0 or > 10) return Fail("Auth:AccessCheckCacheSeconds must be between 0 and 10.");
 // Slice 7d: bounds on the audit rows a self-service token can cause.
 var meWrites = builder.Configuration.GetValue("Audit:MeWritesPerMinute", 30);
 var failureRows = builder.Configuration.GetValue("Audit:FailureRowsPerMinute", 5);
@@ -75,6 +77,7 @@ builder.Services
     .AddSingleton<CredentialService>()
     .AddSingleton<HashLimiter>()
     .AddSingleton<AdminGuard>()
+    .AddSingleton(new AccessCheckOptions(TimeSpan.FromSeconds(accessCacheSeconds)))
     .AddSingleton<AdminAccessCheck>()
     .AddMemoryCache()
     .AddSingleton<AuthService>()

@@ -8,14 +8,22 @@ namespace Gatekeeper.Api;
 /// <summary>What the store says about a token's subject right now (a usable user whose session, if any, is still active).</summary>
 public sealed record AccessState(UserKind Kind, bool IsAdmin, DateTimeOffset? SessionsValidAfter = null);
 
+/// <summary>Slice 7f: how long the access answer is cached (<c>Auth__AccessCheckCacheSeconds</c>, 0 to 10; zero means not cached).</summary>
+public sealed record AccessCheckOptions(TimeSpan CacheFor)
+{
+    public AccessCheckOptions() : this(AdminAccessCheck.DefaultCacheFor) { }
+}
+
 /// <summary>
 /// Access tokens live 15 minutes, so on every request the token's subject is re-checked against the store: still usable
 /// (active, not expired), session still active, and whether it still holds the admin role. The answer is cached for a few
 /// seconds, which bounds how long a demoted or deactivated administrator keeps working.
 /// </summary>
-public sealed class AdminAccessCheck(IUserRepository users, AdminGuard guard, IMemoryCache cache, SessionService sessions)
+public sealed class AdminAccessCheck(IUserRepository users, AdminGuard guard, IMemoryCache cache, SessionService sessions, AccessCheckOptions options)
 {
-    public static readonly TimeSpan CacheFor = TimeSpan.FromSeconds(10);
+    public static readonly TimeSpan DefaultCacheFor = TimeSpan.FromSeconds(10);
+
+    public TimeSpan CacheFor => options.CacheFor;
 
     /// <param name="sessionId">The token's sid, if it came from a refresh session: a revoked or expired session ends the token.</param>
     /// <returns>Null when the user is gone, disabled or expired, or the session has ended.</returns>
@@ -30,8 +38,10 @@ public sealed class AdminAccessCheck(IUserRepository users, AdminGuard guard, IM
         return state;
     }
 
-    private Task<AccessState?> CachedStateAsync(Guid userId, Guid? sessionId, CancellationToken ct) =>
-        cache.GetOrCreateAsync(("access", userId, sessionId), async entry =>
+    private async Task<AccessState?> CachedStateAsync(Guid userId, Guid? sessionId, CancellationToken ct)
+    {
+        if (CacheFor <= TimeSpan.Zero) return await LoadAsync(userId, sessionId, ct); // 7f: not cached, the store answers every time
+        return await cache.GetOrCreateAsync(("access", userId, sessionId), async entry =>
         {
             entry.AbsoluteExpirationRelativeToNow = CacheFor;
             // Linked to a per-user token so Evict(userId) drops every entry of the user at once. The token entry is sliding and touched by
@@ -42,13 +52,19 @@ public sealed class AdminAccessCheck(IUserRepository users, AdminGuard guard, IM
                 return new CancellationTokenSource();
             })!;
             entry.AddExpirationToken(new Microsoft.Extensions.Primitives.CancellationChangeToken(generation.Token));
-            if (await users.GetAsync(userId, ct) is not { } user || !user.IsUsable(Clock.UtcNowMicros())) return null;
-            if (sessionId is { } sid && !await sessions.IsActiveAsync(sid, user, ct)) return null;
-            // Only a person administers Gatekeeper, whatever the role table says.
-            var admin = user.Kind == UserKind.Person && await guard.AdminRoleIdAsync(ct) is { } adminRole
-                        && (await users.ListRolesAsync(userId, slice: new Slice(0, 10_000), ct: ct)).Any(r => r.Id == adminRole);
-            return (AccessState?)new AccessState(user.Kind, admin, user.SessionsValidAfter);
+            return await LoadAsync(userId, sessionId, ct);
         })!;
+    }
+
+    private async Task<AccessState?> LoadAsync(Guid userId, Guid? sessionId, CancellationToken ct)
+    {
+        if (await users.GetAsync(userId, ct) is not { } user || !user.IsUsable(Clock.UtcNowMicros())) return null;
+        if (sessionId is { } sid && !await sessions.IsActiveAsync(sid, user, ct)) return null;
+        // Only a person administers Gatekeeper, whatever the role table says.
+        var admin = user.Kind == UserKind.Person && await guard.AdminRoleIdAsync(ct) is { } adminRole
+                    && (await users.ListRolesAsync(userId, slice: new Slice(0, 10_000), ct: ct)).Any(r => r.Id == adminRole);
+        return new AccessState(user.Kind, admin, user.SessionsValidAfter);
+    }
 
     /// <summary>Forgets the cached answer for a session that was just ended, so its tokens stop at once on this instance.</summary>
     public void Evict(Guid userId, Guid? sessionId) => cache.Remove(("access", userId, sessionId));
