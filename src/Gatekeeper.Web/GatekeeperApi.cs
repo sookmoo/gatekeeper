@@ -79,7 +79,7 @@ public sealed class GatekeeperApi(HttpClient http, WebSessions sessions, TimePro
     /// <summary>The reserved application whose "admin" role grants access to this UI.</summary>
     public const string AdminApplication = "gatekeeper";
 
-    /// <param name="replacing">The web session the browser came with: dropped (and its API session ended) once the new sign-in succeeded, before the capacity check.</param>
+    /// <param name="replacing">The web session the browser came with: dropped (and its API session ended) only if the new session is admitted; a refused sign-in leaves it alone.</param>
     public async Task<WebSession> LoginAsync(string username, string password, CancellationToken ct, WebSession? replacing = null)
     {
         using var request = new HttpRequestMessage(HttpMethod.Post, "v1/auth/login")
@@ -89,10 +89,9 @@ public sealed class GatekeeperApi(HttpClient http, WebSessions sessions, TimePro
         ForwardClientAddress(request);
         var tokens = await ReadTokensAsync(await SendRawAsync(request, ct), ct);
         var ended = new List<WebSession>();
-        if (replacing is not null && sessions.Remove(replacing.Id) is { } gone) ended.Add(gone);
         try
         {
-            var created = sessions.Create(username, tokens, ended);
+            var created = sessions.Create(username, tokens, ended, replacing);
             foreach (var old in ended) await LogoutAsync(old, CancellationToken.None); // best effort: their API sessions end too
             return created;
         }

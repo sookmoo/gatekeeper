@@ -233,6 +233,7 @@ if (!migrateOnly && !bootstrap)
     builder.Services.AddSingleton<Microsoft.AspNetCore.Authorization.IAuthorizationHandler, AccessHandler>();
 }
 
+var trustedProxies = new List<System.Net.IPAddress>();
 var proxies = (builder.Configuration["Auth:TrustedProxies"] ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 if (proxies.Length > 0)
 {
@@ -243,6 +244,7 @@ if (proxies.Length > 0)
         if (!(p.Contains('.') || p.Contains(':')) || !System.Net.IPAddress.TryParse(p, out var ip)) return Fail($"Auth:TrustedProxies contains an invalid address '{p}'.");
         parsed.Add(ip);
     }
+    trustedProxies.AddRange(parsed.Select(ip => ip.IsIPv4MappedToIPv6 ? ip.MapToIPv4() : ip));
     builder.Services.Configure<Microsoft.AspNetCore.Builder.ForwardedHeadersOptions>(o =>
     {
         o.ForwardedHeaders = Microsoft.AspNetCore.HttpOverrides.ForwardedHeaders.XForwardedFor;
@@ -253,6 +255,7 @@ if (proxies.Length > 0)
     });
 }
 
+builder.Services.AddSingleton(new ForwardedHeaderWarning(trustedProxies));
 var app = builder.Build();
 if (ephemeralKey)
     app.Logger.LogWarning("Auth:SigningKeyPem is not set: using a temporary signing key. Tokens stop working on restart.");
@@ -284,6 +287,14 @@ if (migrateOnly)
     }
 }
 
+// Before the forwarded-headers middleware: it sees the real peer and the header as sent.
+app.Use(async (http, next) =>
+{
+    if (http.Request.Headers.ContainsKey("X-Forwarded-For")
+        && http.RequestServices.GetRequiredService<ForwardedHeaderWarning>().Check(http.Connection.RemoteIpAddress, hasForwardedFor: true) is { } peer)
+        app.Logger.LogWarning("A request from {Peer} carried X-Forwarded-For, but that address is not in Auth:TrustedProxies, so the header is ignored. If that address is your reverse proxy, add it to Auth__TrustedProxies (until then all callers behind it share one throttle bucket); otherwise a client is sending X-Forwarded-For directly and the header is correctly ignored.", peer);
+    await next();
+});
 if (proxies.Length > 0) app.UseForwardedHeaders(); // before anything that reads the client address
 // Registered in every environment so unhandled errors never leak stack traces or headers.
 app.UseExceptionHandler();

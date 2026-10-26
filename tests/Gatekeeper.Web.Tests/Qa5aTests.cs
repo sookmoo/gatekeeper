@@ -277,6 +277,9 @@ public class StartupTests
     [InlineData("Web:AbsoluteHours", "999")]
     [InlineData("Gatekeeper:AllowPlainApi", "maybe")]
     [InlineData("Web:SecureCookies", "yes")]
+    [InlineData("Web:AdminReserve", "-1")]
+    [InlineData("Web:AdminReserve", "abc")]
+    [InlineData("Web:AdminReserve", "1000")] // not below the default MaxSessions of 1000
     [InlineData("Web:TrustedProxies", "10")]
     [InlineData("Web:TrustedProxies", "10.0.0.0/24")]
     [InlineData("Gatekeeper:ApiUrl", "ftp://x")]
@@ -285,6 +288,14 @@ public class StartupTests
     {
         using var f = new Microsoft.AspNetCore.Mvc.Testing.WebApplicationFactory<Program>().WithWebHostBuilder(b => b.UseSetting(key, value));
         // the entry point returns an error code before building a host
+        Assert.Throws<InvalidOperationException>(() => f.CreateClient());
+    }
+
+    [Fact]
+    public void An_admin_reserve_that_is_not_below_the_session_limit_stops_startup()
+    {
+        // The default reserve (50) does not fit a table of 50 either.
+        using var f = new Microsoft.AspNetCore.Mvc.Testing.WebApplicationFactory<Program>().WithWebHostBuilder(b => b.UseSetting("Web:MaxSessions", "50"));
         Assert.Throws<InvalidOperationException>(() => f.CreateClient());
     }
 }

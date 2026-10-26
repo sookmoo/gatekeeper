@@ -27,8 +27,10 @@ if (apiUri.Scheme == Uri.UriSchemeHttp && !apiUri.IsLoopback && !allowPlainApi)
     return Fail($"Refusing plain http to {apiUri.Host}: use https:// or set Gatekeeper:AllowPlainApi=true for a private network.");
 
 if (!TryNumber("Web:IdleMinutes", 30, 1, 480, out var idleMinutes) || !TryNumber("Web:AbsoluteHours", 8, 1, 72, out var absoluteHours)
-    || !TryNumber("Web:MaxSessions", 1000, 1, 100_000, out var maxSessions) || !TryNumber("Web:MaxSessionsPerUser", 5, 1, 100, out var maxPerUser))
+    || !TryNumber("Web:MaxSessions", 1000, 1, 100_000, out var maxSessions) || !TryNumber("Web:MaxSessionsPerUser", 5, 1, 100, out var maxPerUser)
+    || !TryNumber("Web:AdminReserve", 50, 0, 99_999, out var adminReserve))
     return 1;
+if (adminReserve >= maxSessions) return Fail($"Web:AdminReserve ({adminReserve}) must be below Web:MaxSessions ({maxSessions}).");
 
 const string AdminPolicy = "admin";
 var cookies = new CookieSettings(secureCookies);
@@ -36,7 +38,7 @@ builder.Services
     .AddSingleton(TimeProvider.System)
     .AddHttpContextAccessor()
     .AddSingleton(cookies)
-    .AddSingleton(new WebOptions { IdleTimeout = TimeSpan.FromMinutes(idleMinutes), AbsoluteTimeout = TimeSpan.FromHours(absoluteHours), MaxSessions = maxSessions, MaxSessionsPerUser = maxPerUser })
+    .AddSingleton(new WebOptions { IdleTimeout = TimeSpan.FromMinutes(idleMinutes), AbsoluteTimeout = TimeSpan.FromHours(absoluteHours), MaxSessions = maxSessions, MaxSessionsPerUser = maxPerUser, AdminReserve = adminReserve })
     .AddSingleton<WebSessions>()
     .AddSingleton<FailureThrottle>()
     .AddHttpClient<GatekeeperApi>(c =>
@@ -90,6 +92,7 @@ if (proxies.Length > 0)
 }
 
 var app = builder.Build();
+app.Logger.LogInformation("Forwarding the browser's address to the API in X-Forwarded-For on sign-in; the API only uses it if Auth__TrustedProxies lists this server's address (otherwise all browsers share one throttle bucket).");
 if (proxies.Length > 0) app.UseForwardedHeaders();
 
 app.Use(async (http, next) =>
