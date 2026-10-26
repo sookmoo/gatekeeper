@@ -18,7 +18,9 @@ public sealed class ErrorMappingMiddleware(RequestDelegate next)
         }
         catch (BadHttpRequestException ex)
         {
-            await Results.Problem(ex.Message, statusCode: ex.StatusCode is >= 400 and < 500 ? ex.StatusCode : StatusCodes.Status400BadRequest).ExecuteAsync(context);
+            // The framework's 415 text quotes the client's Content-Type; answer with a fixed text instead.
+            var detail = ex.StatusCode == StatusCodes.Status415UnsupportedMediaType ? "Unsupported media type: the body must be application/json." : ex.Message;
+            await Results.Problem(detail, statusCode: ex.StatusCode is >= 400 and < 500 ? ex.StatusCode : StatusCodes.Status400BadRequest).ExecuteAsync(context);
         }
         catch (StoreUnavailableException ex)
         {
