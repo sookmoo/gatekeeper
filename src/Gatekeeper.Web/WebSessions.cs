@@ -12,6 +12,8 @@ public sealed record WebOptions
     public TimeSpan AbsoluteTimeout { get; init; } = TimeSpan.FromHours(8);
     /// <summary>All web sessions together. When the table is full and nothing has expired, new sign-ins are refused (503) rather than ending other people's sessions.</summary>
     public int MaxSessions { get; init; } = 1000;
+    /// <summary>The last this many places of <see cref="MaxSessions"/> are for administrators: a non-admin sign-in is refused (503) once live sessions reach <c>MaxSessions - AdminReserve</c>. Nobody's session is ended for it. Must be below <see cref="MaxSessions"/>; the UI's setting <c>Web__AdminReserve</c> defaults to 50, here 0 (no reserve).</summary>
+    public int AdminReserve { get; init; }
     /// <summary>Web sessions of one user (browsers); a further sign-in ends that user's oldest one.</summary>
     public int MaxSessionsPerUser { get; init; } = 5;
 }
@@ -154,9 +156,16 @@ public sealed class WebSessionLimitException : Exception;
 /// <summary>In-memory server-side sessions, looked up by a SHA-256 of the cookie value. A restart signs everyone out.</summary>
 public sealed class WebSessions(TimeProvider time, WebOptions? options = null)
 {
-    private readonly WebOptions _options = options ?? new WebOptions();
+    private readonly WebOptions _options = Validate(options ?? new WebOptions());
     private readonly ConcurrentDictionary<string, WebSession> _sessions = new();
     private long _lastSweepTicks;
+
+    private static WebOptions Validate(WebOptions o)
+    {
+        if (o.MaxSessions < 1) throw new ArgumentOutOfRangeException(nameof(options), "MaxSessions must be at least 1.");
+        if (o.AdminReserve < 0 || o.AdminReserve >= o.MaxSessions) throw new ArgumentOutOfRangeException(nameof(options), "AdminReserve must be at least 0 and below MaxSessions.");
+        return o;
+    }
 
     public int Count => _sessions.Count;
 
@@ -164,22 +173,26 @@ public sealed class WebSessions(TimeProvider time, WebOptions? options = null)
 
     /// <summary>
     /// Starts a web session. One user keeps at most <see cref="WebOptions.MaxSessionsPerUser"/>: the user's own oldest go first, nobody else's.
-    /// When the whole table is full, expired sessions are reclaimed; if it is still full the sign-in is refused with <see cref="WebSessionLimitException"/>.
-    /// Sessions ended to make room are added to <paramref name="evicted"/> so the caller can end their API sessions.
+    /// When the table is full (for a non-administrator: down to the admin reserve), expired sessions are reclaimed; if it is still full the sign-in is refused with <see cref="WebSessionLimitException"/>.
+    /// <paramref name="replacing"/> (the session the browser came with) is ended only once the check has passed, and counts as the user's own surplus: a refusal leaves it alone.
+    /// Sessions ended to make room (including <paramref name="replacing"/>) are added to <paramref name="evicted"/> so the caller can end their API sessions.
     /// </summary>
-    public WebSession Create(string username, Tokens tokens, List<WebSession>? evicted = null)
+    public WebSession Create(string username, Tokens tokens, List<WebSession>? evicted = null, WebSession? replacing = null)
     {
         var now = time.GetUtcNow();
         var id = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)).TrimEnd('=').Replace('+', '-').Replace('/', '_');
         var session = new WebSession(id, username, tokens, now);
         lock (_createLock)
         {
-            Sweep(now, force: true);
+            // Administrators may use the reserve; everyone else stops short of it.
+            var limit = session.IsAdmin ? _options.MaxSessions : _options.MaxSessions - _options.AdminReserve;
+            Sweep(now, force: true, limit);
             // The user's own surplus goes first; only if the table is still full after that is the sign-in refused (and then nothing is evicted).
             var mine = _sessions.Values.Where(s => SameUser(s, session)).OrderBy(s => s.CreatedAt).ToList();
             var surplus = mine.Take(Math.Max(0, mine.Count - _options.MaxSessionsPerUser + 1)).ToList();
-            if (_sessions.Count - surplus.Count >= _options.MaxSessions) throw new WebSessionLimitException();
-            foreach (var old in surplus)
+            var replaced = replacing is not null && _sessions.ContainsKey(Key(replacing.Id)) && !surplus.Any(o => o.Id == replacing.Id) ? replacing : null;
+            if (_sessions.Count - surplus.Count - (replaced is null ? 0 : 1) >= limit) throw new WebSessionLimitException();
+            foreach (var old in replaced is null ? surplus : surplus.Append(replaced))
                 if (Remove(old.Id) is { } removed) evicted?.Add(removed);
             _sessions[Key(id)] = session;
         }
@@ -209,12 +222,12 @@ public sealed class WebSessions(TimeProvider time, WebOptions? options = null)
     private bool Expired(WebSession s, DateTimeOffset now) =>
         now - s.LastSeen > _options.IdleTimeout || now - s.CreatedAt > _options.AbsoluteTimeout || s.Tokens.RefreshExpiresAt <= now;
 
-    private void Sweep(DateTimeOffset now, bool force = false)
+    private void Sweep(DateTimeOffset now, bool force = false, int limit = int.MaxValue)
     {
         var last = Interlocked.Read(ref _lastSweepTicks);
         if (!force && (now.UtcTicks - last < TimeSpan.TicksPerSecond * 30 || Interlocked.CompareExchange(ref _lastSweepTicks, now.UtcTicks, last) != last)) return;
         // Forced sweeps only run when the table is at its limit, so they stay cheap.
-        if (force && _sessions.Count < _options.MaxSessions) return;
+        if (force && _sessions.Count < limit) return;
         foreach (var (key, s) in _sessions)
             if (Expired(s, now)) _sessions.TryRemove(key, out _);
     }

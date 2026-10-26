@@ -75,6 +75,48 @@ public class SessionsTests
         Assert.Equal(1, s.Count);
     }
 
+    private static Tokens Admin(FakeTimeProvider t) => new(WebFixture.FakeAdminToken(), t.GetUtcNow().AddMinutes(15), "r", t.GetUtcNow().AddDays(30));
+
+    [Fact]
+    public void Non_admins_are_refused_at_the_reserve_boundary_and_administrators_may_use_the_reserve()
+    {
+        var time = new FakeTimeProvider();
+        var s = new WebSessions(time, new WebOptions { MaxSessions = 5, AdminReserve = 2, MaxSessionsPerUser = 5 });
+        var a = s.Create("a", T(time)); var b = s.Create("b", T(time)); var c = s.Create("c", T(time)); // 3 = MaxSessions - AdminReserve
+        Assert.Throws<WebSessionLimitException>(() => s.Create("d", T(time)));
+        Assert.Equal(3, s.Count);
+        var boss1 = s.Create("boss1", Admin(time)); var boss2 = s.Create("boss2", Admin(time)); // the reserve
+        Assert.Equal(5, s.Count);
+        Assert.Throws<WebSessionLimitException>(() => s.Create("boss3", Admin(time))); // the table itself is still bounded
+        Assert.Throws<WebSessionLimitException>(() => s.Create("e", T(time)));
+        // nobody's session was evicted on the way
+        foreach (var x in new[] { a, b, c, boss1, boss2 }) Assert.NotNull(s.Find(x.Id));
+    }
+
+    [Fact]
+    public void Expired_sessions_are_reclaimed_before_the_reserve_is_counted()
+    {
+        var time = new FakeTimeProvider();
+        var s = new WebSessions(time, new WebOptions { MaxSessions = 4, AdminReserve = 2, MaxSessionsPerUser = 5, IdleTimeout = TimeSpan.FromMinutes(30) });
+        s.Create("a", T(time)); s.Create("b", T(time));
+        Assert.Throws<WebSessionLimitException>(() => s.Create("c", T(time)));
+        time.Advance(TimeSpan.FromMinutes(31));
+        Assert.NotNull(s.Create("c", T(time)));
+        Assert.Equal(1, s.Count);
+    }
+
+    [Fact]
+    public void A_non_admin_signing_in_again_still_replaces_their_own_session_at_the_reserve()
+    {
+        var time = new FakeTimeProvider();
+        var s = new WebSessions(time, new WebOptions { MaxSessions = 3, AdminReserve = 1, MaxSessionsPerUser = 1 });
+        var mine = s.Create("a", T(time)); s.Create("b", T(time));
+        var evicted = new List<WebSession>();
+        s.Create("a", T(time), evicted);
+        Assert.Equal([mine], evicted);
+        Assert.Equal(2, s.Count);
+    }
+
     [Fact]
     public void A_user_signing_in_again_at_a_full_table_makes_room_with_their_own_oldest_session()
     {
