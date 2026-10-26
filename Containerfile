@@ -11,6 +11,8 @@ RUN dotnet publish src/Gatekeeper.Api/Gatekeeper.Api.csproj -c Release --no-rest
 # Chiseled runtime: no shell, no package manager, non-root user.
 FROM mcr.microsoft.com/dotnet/aspnet:10.0-noble-chiseled@sha256:8c20ba8cb64c498f2fb98f2aed374b7f144aa5b603270989e7c141545a04d380
 WORKDIR /app
+# Links the GHCR package to this repository (the workflow token can then pull it).
+LABEL org.opencontainers.image.source=https://github.com/sookmoo/gatekeeper
 COPY --from=build /out .
 USER $APP_UID
 # The container must bind a non-loopback address. The API speaks plain HTTP and refuses that unless explicitly

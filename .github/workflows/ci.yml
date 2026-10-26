@@ -56,9 +56,24 @@ jobs:
           dotnet tool restore
           dotnet tool run dotnet-ef migrations has-pending-model-changes --project src/Gatekeeper.Infrastructure.Postgres --no-build
 
-  image:
-    needs: build-test
+  checks:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      # Dependabot cannot read these two, so a script keeps them equal.
+      - name: Postgres digest is the same in CI and in the Quadlet unit
+        run: scripts/check-pg-digest.sh
+      - name: Accepted image findings have a reason and a future expiry date
+        run: scripts/check-trivy-ignore.sh
+
+  image:
+    needs: [build-test, checks]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       contents: read
     env:
@@ -80,6 +95,10 @@ jobs:
         run: |
           out=$(docker run --rm "$WEB_IMAGE:${GITHUB_SHA}" 2>&1 || true)
           echo "$out" | grep -q "Refusing to listen on non-loopback"
+      # Fails on Critical/High findings that have a fix available (accepted ones: .trivyignore.yaml); the rest goes to the job summary.
+      # Runs before anything is pushed. Needs no token: the images are read from the local daemon.
+      - name: Scan images for known vulnerabilities
+        run: scripts/scan-image.sh "$IMAGE:${GITHUB_SHA}" "$WEB_IMAGE:${GITHUB_SHA}"
       # Build once: the exact images that passed the smoke tests are handed to the publish job.
       - name: Save images
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'

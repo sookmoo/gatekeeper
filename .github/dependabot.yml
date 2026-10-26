@@ -1,0 +1,44 @@
+version: 2
+updates:
+  # Central package versions (Directory.Packages.props) and the packages.lock.json files.
+  - package-ecosystem: nuget
+    directory: /
+    schedule:
+      interval: weekly
+    # Wait a week after a release before proposing it (a yanked or hijacked release is usually caught by then).
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      nuget-minor-patch:
+        update-types: [minor, patch]
+
+  # The SHA pins in .github/workflows (the version comment is updated with them).
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    # Wait a week after a release before proposing it (a yanked or hijacked release is usually caught by then).
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: "chore(ci)"
+    groups:
+      actions-minor-patch:
+        update-types: [minor, patch]
+
+  # Base-image digests; not grouped, so each bump is its own PR. "/" holds Containerfile and Containerfile.web (one base
+  # image bump is therefore two PRs); scripts/trivy holds the scanner pin and deploy/postgres the Postgres pin.
+  - package-ecosystem: docker
+    directories:
+      - /
+      - /scripts/trivy
+      - /deploy/postgres
+    schedule:
+      interval: weekly
+    # Wait a week after a release before proposing it (a yanked or hijacked release is usually caught by then).
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: "chore(deps)"

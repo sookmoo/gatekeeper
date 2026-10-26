@@ -1,0 +1,9 @@
+# Accepted image findings, reviewed like code. Every entry needs:
+#   id:         the CVE (or other vulnerability id)
+#   statement:  why it is accepted (not reachable, no fix yet and mitigated, ...)
+#   expired_at: YYYY-MM-DD, at most 180 days ahead; after that date the finding fails the build again
+# scripts/check-trivy-ignore.sh enforces this in CI. Example entry (do not leave it in):
+#   - id: CVE-2000-0001
+#     statement: The vulnerable code path is not used; revisit when the base image is bumped.
+#     expired_at: 2027-01-31
+vulnerabilities: []
