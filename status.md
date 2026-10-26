@@ -550,7 +550,104 @@ Checked in the code (2026-10-25): neither the CLI nor the Web calls the deprecat
 13. Q7f-1: keep `AdminGuard`/`PatchGate`/throttles per process until a multi-instance deployment is actually planned? [Yes; document it in 7f.]
 14. Q7f-2: audit retention/pruning and CI image scanning/Dependabot: later, as separate slices after 7f? [Yes; retention needs a decision on how long audit rows must be kept.]
 
+## Plan: slices 8a-8h, delivery hardening, audit retention, small gaps (proposed by planner 2026-10-26; APPROVED by the user 2026-10-26: order 8f, 8a, 8b, 8c, 8e, 8d, 8g, 8h, all 12 recommended answers, and 8h is included)
+State: 7a-7e merged to `main`; 7f is PR #29 (`feat/slice-7f-leftovers`). This plan collects the items listed as "Not done" (slice 3), "Deferred hardening" (slice 1 reviews), "Not proposed now" (Q7f-2), the 7d backlog bug, the open API gaps and the paused federation/broker analysis. Nothing here is a new user requirement except where marked "planner suggestion"; those need a yes from the user (see the questions).
+Shared rules: as for 6a-7f (one branch and one PR per slice, `docs/openapi.json` updated in the same slice before the code, Store.Contract tests on both stores for every store change, additive migrations passing the CI drift check, `scripts/test-pg.sh`, QA review per slice, security review where marked, no sleeps in tests).
+Checked in the repo (2026-10-26): `.github/workflows/ci.yml` uses `actions/checkout@v4` / `setup-dotnet@v4` by tag (not SHA), no `persist-credentials: false`, CI Postgres service `postgres:17-alpine` not digest-pinned; no `global.json`, no `Directory.Packages.props`, no `packages.lock.json`; no Dependabot config; no image scan; Quadlet units use `ghcr.io/sookmoo/gatekeeper:latest` and `gatekeeper-web:latest` (only the db image is digest-pinned); no backup/restore script or documentation exists.
+
+### Group A: operations and delivery hardening (no API change)
+
+#### Slice 8a: CI supply-chain hardening (slice 1 "Deferred hardening")
+- Scope: pin every GitHub Action to a full commit SHA (tag in a comment); `persist-credentials: false` on every checkout; job-level least `permissions` (already `contents: read` at top; `packages: write` only on the push step's job, as today); `global.json` pinning the SDK feature band (10.0.1xx, `rollForward: latestPatch`); central package management (`Directory.Packages.props`, `ManagePackageVersionsCentrally`); NuGet lock files (`RestorePackagesWithLockFile`, CI restores with `--locked-mode`); digest-pin the CI Postgres service image (same digest as `gatekeeper-db.container`); `dotnet build` in the Containerfiles also restores in locked mode.
+- API/OpenAPI: none. Migrations: none. CLI/Web: none.
+- Tests: CI itself (green run on the PR); a deliberate lock-file mismatch fails restore (checked once by hand, noted); `scripts/test-pg.sh` unchanged and green.
+- Review: QA (build reproducibility) and a short security review (workflow permissions, token exposure).
+- Risks: lock files churn on every package bump (Dependabot updates them in 8b); `global.json` can break local builds if the SDK band differs (installed 10.0.111 is in band); SHA pins must be kept current (8b's Dependabot `github-actions` ecosystem does that).
+
+#### Slice 8b: image vulnerability scan and Dependabot (slice 3 "Not done", Q7f-2)
+- Scope: CI step scanning both built images (API and Web) before push, with a scanner run from a pinned action or pinned container (Q8b-1: Trivy recommended); policy: fail on Critical/High with a fix available, report the rest; accepted findings in a reviewed ignore file with a reason and an expiry date per entry; results as a job summary (SARIF upload to code scanning only if the user wants it, it needs `security-events: write`). A scheduled weekly scan of `:latest`/the newest release image so new CVEs in an unchanged image are noticed. Dependabot (`.github/dependabot.yml`): `nuget` (central packages and lock files), `github-actions` (SHA pins), `docker` for the base-image digests in `Containerfile` and `Containerfile.web` (Q8b-2: weekly, minor/patch grouped, base images as their own PR). The Quadlet db image digest and the CI Postgres digest are not files Dependabot reads reliably: a small check script/job compares them and fails if they differ, and the README says to bump them together.
+- API/OpenAPI: none. Migrations: none.
+- Tests: CI run with a known-vulnerable test image tag is out of scope (no deliberately vulnerable image in the repo); verify once by hand that the gate fails on a High (temporarily lowered threshold), noted in the result. Dependabot config validated by GitHub on push.
+- Review: short security review (scanner pinning, ignore-file discipline, permissions).
+- Risks: Dependabot's `docker` ecosystem may not pick up files named `Containerfile` (verify; fallback: symlink-free rename is not wanted, so use a `directories` entry or a scheduled job that checks the digest with `skopeo`/`crane`); chiseled images have few packages, so findings will mostly be .NET runtime CVEs fixed by a base-image bump; a scan outage must not block urgent fixes (allow a manual override via a labelled re-run, documented).
+
+#### Slice 8c: release tags and pinned deployment (slice 3 "Not done": tag-based promotion, first half)
+- Scope: a `release` workflow on tags `vX.Y.Z` (protected tag pattern): it does not rebuild; it retags the image that `main` already built and pushed as `:<sha>` to `:vX.Y.Z` (both images), checks that the tag's commit is on `main` and that the `:<sha>` image exists, and records the image digests in the GitHub release notes. Quadlet units and `deploy/install.sh` take an explicit version (`install.sh v0.1.0`) and write `Image=...@sha256:<digest>` (tag kept in a comment), so a server runs exactly the promoted image; `:latest` stays for local development only. README: upgrade and rollback (install the previous tag; migrations are additive, `Down` is an owner action, rollback across a migration that needs old instances stopped follows the existing upgrade notes).
+- Staging/production with a GitHub `production` environment and manual approval (the approved git strategy) needs a server and deploy credentials: deferred to slice 8c-2 until a server exists (Q8c-2).
+- API/OpenAPI: none (optionally the API reports its version in a `/health` field or a response header: Q8c-3, recommended no for now, it helps attackers fingerprint). Migrations: none.
+- Tests: workflow dry run on a pre-release tag (`v0.1.0-rc.1`); `install.sh` with a version installs units with the digest (manual Quadlet check: start, healthy, `podman inspect` shows the digest); refusing a tag whose commit is not on `main`.
+- Review: short security review (who can push tags, tag protection rules, `packages: write` scope).
+- Risks: retagging needs the `:<sha>` image to still exist in GHCR (retention); SemVer discipline is manual (Conventional Commits could drive it later, not proposed).
+
+#### Slice 8d: database backup and restore (planner suggestion, not in any earlier list)
+- Scope: `deploy/backup.sh` (`pg_dump -Fc` as the owner role through `podman exec` on the db container, file mode 0600 in a configurable directory, keeps N days) with an optional Quadlet/systemd timer (`gatekeeper-backup.timer`, off by default); `deploy/restore.sh` into an empty database (stop API and Web, restore as owner, run `migrate`, start), with a documented restore drill. The audit trigger and grants come back with the schema (owner-owned); the signing key and podman secrets are not in the dump (README: back them up separately, they are secrets).
+- API/OpenAPI: none. Migrations: none.
+- Tests: a script test in CI or `scripts/` against the disposable Postgres: back up a populated database, restore into a fresh one, row counts and the audit trigger/grants identical, app role still cannot DDL or delete audit rows. Manual Quadlet check of the timer.
+- Review: short security review (dump file permissions, where dumps live, password hashes are inside the dump).
+- Risks: the dump contains Argon2 hashes, client-secret hashes and the whole audit trail: it is as sensitive as the database (encryption and off-host copies are the operator's choice: Q8d-1).
+
+### Group B: audit retention
+
+#### Slice 8e: audit retention and pruning (Q7f-2; security review required)
+- Problem: `audit_events` grows without bound; failed logins and client-token attempts are attacker-driven rows (bounded only by the throttles). The table is append-only for everyone (trigger) and the app role has no DELETE.
+- Design: a new one-shot command `prune-audit --older-than <days> [--export <file>] [--dry-run]` in the API binary (like `migrate`, uses `ConnectionStrings__GatekeeperMigrations`, i.e. the owner role; the serving process and the app role never get DELETE). Migration `AllowAuditPrune` changes the audit trigger function so that a DELETE passes only when the session user is the owner role AND a transaction-local setting (`SET LOCAL gatekeeper.audit_prune = 'on'`) is present; UPDATE and TRUNCATE stay refused for everyone; the app role still has no DELETE privilege. Deletes run in batches (e.g. 5000 rows per transaction, by `(at, id)` using the existing index, `lock_timeout` as in earlier migrations) so audit writes are not blocked. Before deleting, the command writes one audit row `audit.prune` (actor `system:prune`, detail `before=<time> deleted=<n> exported=<file|none>`), and that row is never in the deleted range. `--export` writes the rows to be deleted as JSON Lines (mode 0600) before each batch is deleted (Q8e-2). Minimum retention enforced by the command (e.g. 30 days) so a typo cannot wipe the trail. Quadlet: `gatekeeper-audit-prune.service` + `.timer` (off by default; the operator sets the period, Q8e-1). In-memory store: not applicable (the command refuses with a message).
+- API/OpenAPI: none (no HTTP route deletes audit rows, by design). README audit section: retention, the trigger exception, the timer.
+- Tests: Store/migration tests on Postgres: the app role still cannot DELETE/UPDATE/TRUNCATE (42501 / trigger); the owner without the setting is refused by the trigger; the owner with the setting deletes only rows older than the cut-off; batch boundary with many rows in one microsecond (keyset order as in 6c); the prune row survives; `--dry-run` deletes nothing and reports the count; minimum retention refused; export file content and mode; concurrent audit writes during a prune are not blocked beyond the lock timeout; migration down/up.
+- Review: security required (it removes evidence: the trigger exception must be impossible to reach from the app role, and every prune must leave a trace).
+- Risks: a compromised owner credential can already drop the trigger, so the exception adds no new power to that role, but the tests must prove the app role gains nothing; export files are sensitive; a long first prune on a large table (batches, run off-peak).
+
+### Group C: small API/self-service/UI gaps (optional, each can be dropped)
+
+#### Slice 8f: wrong content type on `PUT /v1/me/password` (7d backlog bug)
+- Problem: a self-service `PUT /v1/me/password` with `Content-Type: text/plain` answers 403 plus a `forbidden` audit row instead of 415 (pre-existing, cause unknown).
+- Scope: find the cause, fix it, and add a route-table test: for every state-changing `/v1` route, an authorised token with a wrong content type gets 415 (and a self token on an admin route still 403). Audit rows as for other binding failures (coalesced for non-admins, 7d).
+- API/OpenAPI: none expected (415 is already the documented binding failure); add 415 to the operation if the generator omits it. Migrations: none.
+- Review: QA; short security check (it touches the authorisation/audit ordering).
+- Risks: if the cause is in the policy/binding order, the fix may change other status codes; the route-table test guards that.
+
+#### Slice 8g: user search and list conveniences (5c-5i "API gaps" 1-3)
+- Scope: `GET /v1/users?usernamePrefix=` (and `emailPrefix=`, both case-insensitive, min 2 characters, escaped for `LIKE`), `?usable=true|false` (active and not expired; `active=` unchanged); `GET /v1/users/{id}/roles` items gain `appName` (read-only, additive). Web Users list gets a prefix search box and a "usable" filter; the user roles page drops its extra application GETs. CLI `gk user list --prefix --usable`.
+- API/OpenAPI: additive query parameters and one response field. Migrations: possibly an index for prefix search on citext (`text_pattern_ops` on `lower(username)`), checked with EXPLAIN in a migration test.
+- Review: QA; short security check (enumeration is admin-only already; `LIKE` escaping).
+- Risks: prefix search on citext needs care for index use; offset paging with filters as before.
+
+#### Slice 8h: eager session end on role/application deletion, and CLI `--if-version` (6a "not in scope", Q6d-4)
+- Scope: deleting a role ends the sessions of users who held no other role in that application; deleting an application ends all its sessions (today both are lazy: next refresh/introspection). CLI `gk ... update|delete --if-version <n>` sends `If-Match`.
+- API/OpenAPI: descriptions only. Migrations: none (sessions cascade on application delete already; role delete needs the per-user check as in 6a F4).
+- Review: QA; security short (session-ending paths).
+- Risks: role delete with many holders does per-user work inside a request (bound it, or one set-based UPDATE).
+
+Not proposed now (recorded): forgotten-password self-service reset (needs an e-mail or other channel; Q6g-4 kept it out); scheduled automatic key rotation (rotation tooling exists since 4c; a timer is cheap but rotating unattended can surprise consumers that cache the JWKS); database-level `AdminGuard`/`PatchGate`/throttles (Q7f-1, only with a multi-instance plan); TLS to Postgres on the private podman network; "previous page" links in the Web UI; auditing reads of the audit trail (answered no in plan 6).
+
+### Group D: federation and broker (separate optional track, PAUSED by the user 2026-10-13; not scheduled)
+Shown only so the order is clear; nothing starts until the user resumes it and answers the four questions recorded in "Planner backlog" item 5.
+- F1 edge verifier cache (option A): a consumer-side component that caches the JWKS (refetch on unknown `kid`, bounded age) and optionally forwards introspection to the master with a short cache. Mostly a library/sidecar plus documentation; no change to the master's API. Security review required (cache lifetime vs revocation).
+- F2 OIDC broker (one generic connector, authorization code + PKCE, admin pre-linked users): `identity_providers`, `user_identities` (link on `(provider, subject)`, never e-mail), `/v1/auth/oidc/{provider}/start|callback`, CLI device-code login. Needs the provider in use (Entra, Keycloak, AD via either). Security review required. Several slices.
+- Option B (read replica with edge signing keys) only if offline login is a real need.
+
+### Recommended order and reasons
+8f (bug, tiny, warm-up) -> 8a (oldest deferred item; lock files and central packages are what 8b's Dependabot maintains) -> 8b (needs 8a; closes the slice 3 scan/Dependabot gap) -> 8c (versioned, digest-pinned deployment before any server exists; independent of 8b but the scan should gate what gets tagged) -> 8e (needs the user's retention decision; can move ahead of 8a-8c as soon as Q8e-1 is answered) -> 8d (only if the user wants it; before the first real server) -> 8g, 8h (optional conveniences). Group D stays paused.
+Migrations: 8e `AllowAuditPrune`; 8g possibly an index; none elsewhere. Security review: required for 8e; short for 8a, 8b, 8c, 8d, 8f, 8g, 8h; QA for all.
+
+### Open questions for the user (plan 8a-8h), each with the planner's recommendation in brackets
+1. Approve the slices and the order 8f, 8a, 8b, 8c, 8e, 8d, 8g, 8h? [Yes; move 8e earlier if audit growth matters more to you than CI hardening.]
+2. Q8b-1: which scanner, and what fails the build? [Trivy, pinned; fail on Critical/High with a fix available; others reported; ignore entries need a reason and an expiry date.]
+3. Q8b-2: Dependabot cadence? [Weekly; NuGet and Actions minor/patch grouped; base-image digests as their own PR.]
+4. Q8c-1: versioning: SemVer tags from `v0.1.0`, a release retags the image `main` already built (no rebuild), and installed units pin the digest; `:latest` for development only? [Yes.]
+5. Q8c-2: staging/production promotion with manual approval waits until a server exists (slice 8c-2)? [Yes.]
+6. Q8c-3: expose the running version (health field or header)? [No for now.]
+7. Q8d-1: do you want backup/restore scripts (planner suggestion)? If yes, local dumps kept 7 days with encryption and off-host copies left to the operator? [Yes, as described.]
+8. Q8e-1: how long must audit rows be kept, and should pruning be automatic? [365 days default, minimum 30 enforced; pruning only when the operator enables the timer.]
+9. Q8e-2: export rows to a file before deleting them? [Yes, optional `--export` (JSON Lines, mode 0600).]
+10. Q8e-3: a shorter retention for attacker-driven rows (failed logins, client-token failures) than for administrative changes? [Not in the first cut: one period; revisit if the table still grows too fast.]
+11. Q8g/Q8h: are user prefix/e-mail search, the "usable" filter, eager session end on role/app deletion and CLI `--if-version` wanted at all? [Prefix search and usable filter yes (small, used by the UI); 8h only if you want it.]
+12. Federation/broker: stay paused? [Yes; when you resume, answer the four questions in backlog item 5 (offline login needed, which provider, pre-created vs auto-created users, may password hashes leave the master) and the planner will write F1/F2 slices.]
+
 ## Next action
+
+Plan 8a-8h is APPROVED (user, 2026-10-26: recommended answers, 8h included). Slice 7f is merged (PR #29; no separate QA/security round, the diff was read by the lead only). Starting with 8f. Older text follows.
+
+Plan 8a-8h (section "Plan: slices 8a-8h") is PROPOSED and awaits the user's decision on the order and the 12 open questions; nothing of it is started. Slice 7f is PR #29 (`feat/slice-7f-leftovers`): QA and the short security review of 7f are still to be done if not already, then merge. Older text follows.
 
 Slice 7f (access-check cache setting and the multi-instance README section) is implemented on `feat/slice-7f-leftovers` (uncommitted); see "Slice 7f result". Next: QA and a short security review, then the user commits and opens the PR. Older text follows.
 
