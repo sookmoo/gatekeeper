@@ -243,7 +243,7 @@ public class SessionApiTests : IClassFixture<WebApplicationFactory<Program>>
         Assert.Equal(HttpStatusCode.OK, (await c.GetAsync("/v1/applications")).StatusCode);
 
         await anon.PostAsJsonAsync("/v1/auth/logout", new { refreshToken = login.GetProperty("refreshToken").GetString() });
-        await Task.Delay(AdminAccessCheck.CacheFor + TimeSpan.FromSeconds(1)); // the check is cached for a few seconds
+        await Task.Delay(AdminAccessCheck.DefaultCacheFor + TimeSpan.FromSeconds(1)); // the check is cached for a few seconds
         Assert.Equal(HttpStatusCode.Unauthorized, (await c.GetAsync("/v1/applications")).StatusCode);
     }
 

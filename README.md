@@ -51,7 +51,7 @@ dotnet bin/Debug/net10.0/Gatekeeper.Api.dll           # serve, uses Gatekeeper
 - Consuming systems verify tokens offline with the public keys at `GET /.well-known/jwks.json`: check the signature
   (ES256 only), `iss`, `aud` (your application's name), `exp` and `typ` (`at+jwt`), then read `roles`.
   Use `sub` (not `preferred_username`) to identify the user. The management API re-checks on every request that the token's user is
-  still usable and still holds the admin role (cached for 10 s): a deactivated user or an ended session is `401`, a user who is no longer
+  still usable and still holds the admin role (cached for up to 10 s, see `Auth__AccessCheckCacheSeconds`): a deactivated user or an ended session is `401`, a user who is no longer
   an administrator is `403`, so demoting or deactivating an admin takes effect almost immediately; tokens for
   other applications stay valid until `exp`, so keep consumers' acceptance windows short.
 - **Self-service.** (Signing in to `gatekeeper` without a role needs `"refresh": true`; without it the login is a `400`, so a role-less token always has a session that can be ended. Assigning the admin role to a signed-in self-service user ends their live `gatekeeper` sessions, so they sign in again. A `403` on a `/v1` route for a valid token is audited with outcome `forbidden`; zero-role logins and refreshes carry `roles=none`.) Any usable `person` or `test` user may sign in to the reserved application `gatekeeper` (login and refresh) without
@@ -90,6 +90,7 @@ dotnet bin/Debug/net10.0/Gatekeeper.Api.dll           # serve, uses Gatekeeper
 - Settings: `Auth__SigningKeyPemFile` (path to a PKCS#8 EC P-256 PEM; the Quadlet unit mounts a podman secret there) or
   `Auth__SigningKeyPem` (the PEM itself); one is required with Postgres, a temporary key is generated for the in-memory store;
   `Auth__TrustedProxies` (comma-separated proxy IPs whose `X-Forwarded-For` is trusted for throttling; unset by default), `Auth__Issuer` (default `gatekeeper`), `Auth__AccessTokenMinutes` (1-60, default 15),
+  `Auth__AccessCheckCacheSeconds` (0-10, default 10: how long the management API caches its per-request answer "user still usable, session active, still admin"; `0` asks the store on every request, so a demotion or deactivation is seen at once at the price of more reads; an invalid value stops the start),
   `Audit__MeWritesPerMinute` (default 30) and `Audit__FailureRowsPerMinute` (default 5), see "Audit trail".
   Generate a key: `openssl ecparam -genkey -name prime256v1 -noout | openssl pkcs8 -topk8 -nocrypt`.
 - Passwords are hashed with Argon2id (64 MiB, 3 passes) and stored apart from users. Plain HTTP only: keep the port on
@@ -373,6 +374,14 @@ first line and the new one from the second (like `gk login`, never from argument
 Server URL: `--url` or `GATEKEEPER_URL` (default `http://localhost:5080`).
 Exit codes: 0 ok, 1 error, 2 not found, 3 conflict, 4 server unreachable or store unavailable, 5 not logged in or not allowed.
 List commands fetch every page; the API itself returns `{items,nextCursor}` (`?limit=` 1-200, default 50).
+
+## Running more than one API instance
+
+Not supported yet: run exactly one API process. These are kept in the memory of each process, so a second instance would not see them:
+`AdminGuard` (the lock that protects the last administrator and the admin role), the `PATCH` gate, the throttles (login, refresh, token and the
+per-address limits), the audit bounds of self-service tokens, the access-check cache (`Auth__AccessCheckCacheSeconds`; other instances would follow a
+change only after it expires, and `0` is the only way to avoid that) and the Web sessions (each Web process has its own table, and a restart signs everyone out).
+Session stamps also rely on one clock. Database-level replacements are not planned until a multi-instance deployment is.
 
 ## Develop
 

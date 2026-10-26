@@ -525,6 +525,12 @@ Checked in the code (2026-10-25): neither the CLI nor the Web calls the deprecat
 - Not proposed now (Q7f-1): database-level replacements for `AdminGuard`/`PatchGate`/throttles (advisory locks, a throttle table): only worth it when a multi-instance deployment is planned; today the target is one server with Podman + Quadlet.
 - Not proposed now (Q7f-2): audit retention/pruning (owner-role command, the app role keeps no DELETE), image vulnerability scan and Dependabot for base-image digests (slice 3 not-done items).
 
+#### Slice 7f result (implemented 2026-10-26 on `feat/slice-7f-leftovers`, not committed, not yet reviewed)
+- `Auth__AccessCheckCacheSeconds` (integer 0-10, default 10; 0 = no cache): validated at startup in `Program.cs` like the other Auth settings (outside the range or not a number stops the start: "Auth:AccessCheckCacheSeconds must be between 0 and 10."). New `AccessCheckOptions` record (singleton); `AdminAccessCheck.CacheFor` is now an instance property, the old static is `DefaultCacheFor` (10 s). With 0 the cache and the per-user eviction token are bypassed and every request reads the store (`LoadAsync`, the former cache factory body, unchanged). Nothing else in the check changed.
+- README: setting listed in the Authentication settings, the "cached for 10 s" sentence points at it, new section "Running more than one API instance" (AdminGuard, PatchGate, throttles, audit bounds, access-check cache, Web sessions are per process; one clock; not supported yet). The README had no stale 6f limit (8) wording (grep found none); the stale note is only in status.md: the 6f accepted limit (8) "the CLI 403 text still says administrator role required" is obsolete, the CLI text is "You are not allowed to do that." (already noted under 6g).
+- No migration, no OpenAPI change.
+- Tests: `Slice7fTests` (7 cases): 0 sees a deactivation at once, 10 and the default still answer from the cache, 3 keeps its length, -1/11/abc stop the start. `SessionApiTests` uses `DefaultCacheFor`. Full run `scripts/test-pg.sh`, exit 0: Domain 51, Application 162, Store.Contract 211 (+1 skipped), Web 520, Cli 103, Api 754, all passed.
+
 ### Order and dependencies
 7a (highest value: closes three real gaps) -> 7b (tiny, independent; can go first if a warm-up is wanted) -> 7c (needs 7a's column list) -> 7d -> 7e -> 7f. Migrations: 7a `AddSessionCutoff`, 7c `AddVersionTriggers`; none elsewhere. Security review: required for 7a and 7d; short for 7b, 7c, 7e; QA for all.
 
@@ -545,6 +551,8 @@ Checked in the code (2026-10-25): neither the CLI nor the Web calls the deprecat
 14. Q7f-2: audit retention/pruning and CI image scanning/Dependabot: later, as separate slices after 7f? [Yes; retention needs a decision on how long audit rows must be kept.]
 
 ## Next action
+
+Slice 7f (access-check cache setting and the multi-instance README section) is implemented on `feat/slice-7f-leftovers` (uncommitted); see "Slice 7f result". Next: QA and a short security review, then the user commits and opens the PR. Older text follows.
 
 Slice 7e (Web session headroom and proxy-address warning) is implemented on `feat/slice-7e-web-headroom` (uncommitted); QA and the security review are done and the fixes applied (L-1, L-2, I-1; see "Slice 7e result"). Next: the user commits and opens the PR, then 7f. Older text follows.
 
