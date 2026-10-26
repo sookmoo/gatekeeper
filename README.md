@@ -89,7 +89,8 @@ dotnet bin/Debug/net10.0/Gatekeeper.Api.dll           # serve, uses Gatekeeper
   path for a lost admin password.
 - Settings: `Auth__SigningKeyPemFile` (path to a PKCS#8 EC P-256 PEM; the Quadlet unit mounts a podman secret there) or
   `Auth__SigningKeyPem` (the PEM itself); one is required with Postgres, a temporary key is generated for the in-memory store;
-  `Auth__TrustedProxies` (comma-separated proxy IPs whose `X-Forwarded-For` is trusted for throttling; unset by default), `Auth__Issuer` (default `gatekeeper`), `Auth__AccessTokenMinutes` (1-60, default 15).
+  `Auth__TrustedProxies` (comma-separated proxy IPs whose `X-Forwarded-For` is trusted for throttling; unset by default), `Auth__Issuer` (default `gatekeeper`), `Auth__AccessTokenMinutes` (1-60, default 15),
+  `Audit__MeWritesPerMinute` (default 30) and `Audit__FailureRowsPerMinute` (default 5), see "Audit trail".
   Generate a key: `openssl ecparam -genkey -name prime256v1 -noout | openssl pkcs8 -topk8 -nocrypt`.
 - Passwords are hashed with Argon2id (64 MiB, 3 passes) and stored apart from users. Plain HTTP only: keep the port on
   loopback or put TLS in front, because logins carry passwords. Behind a proxy also set `Auth__TrustedProxies` and make the
@@ -199,7 +200,25 @@ length only, because the trail cannot be redacted. Other attacker-chosen text is
 characters. The table is append-only: the app role has no UPDATE/DELETE/TRUNCATE and a trigger refuses them for everyone
 (dropping it needs the owner role and a migration). Writes are best effort: if the audit store fails the change still succeeds
 and the error is logged. Not recorded: reads, throttled attempts, and requests rejected by authentication or authorisation
-(401/403). There is no retention or pruning yet, and failed logins add rows (bounded only by the throttle).
+(401). There is no retention or pruning yet, and failed logins add rows (bounded only by the throttle).
+
+Bounded audit writes from self-service tokens (per process, in memory):
+- **Write limit.** A user may make `Audit__MeWritesPerMinute` (1-10000, default 30) state-changing calls (`PUT`, `DELETE`, ...) to `/v1/me/*` per minute **per session** (a sliding
+  window per user and session id, per user for a token without a session; `GET` is not counted). Only `PUT /v1/me/password` is not counted (it has its own throttles). Because
+  the budget is per session, a stolen session cannot use up the owner's other sessions' share: the owner can still end it (`DELETE /v1/me/sessions/{id}`) and change the password. Over the limit the call is `429` with `Retry-After` and
+  writes no audit row.
+- **Coalescing.** Refusals that changed nothing (403 `forbidden` rows, 4xx `failure` rows and domain refusals such as validation or not-found) of a
+  non-administrator are written for the first `Audit__FailureRowsPerMinute` (1-1000, default 5) per minute and per (actor, action, outcome); further ones are only
+  counted. When the window is over the count is written as one summary row with the same actor, action and outcome and the detail
+  `suppressed=<n> since=<time>`: by the next refusal of that key, or by a sweep that runs once a minute and when the API stops. Never coalesced: success rows,
+  rows that carry a `reason=` note (`current-password`, `busy`, `same-password`: a spent guess, bounded by the password throttles), rows of unknown outcome (`cancelled`, store unavailable, unhandled errors), administrators' rows (the roles claim of the token), and the summary itself.
+  A `BusyException` (503) counts as "changed nothing" (the write did not start). A summary that cannot be written is logged (actor, action, outcome, count, since) and retried once at the next sweep.
+  If more than 10000 (actor, action, outcome) windows are live at once, rows of further keys are simply written.
+- **Limit.** The counts are in memory: if the process crashes, the pending summary of the running window is lost (the first rows of every window were
+  written). A restart resets the limits. On shutdown pending summaries are flushed when the host stops and once more after the server has stopped, each within 5 s;
+  a crash, a kill, or a store that is down at that moment loses them (Q7d-2).
+- **Accepted limits.** Refusals of `PUT /v1/me/password` without a `reason=` note (malformed bodies) are coalesced like the others.  A stolen session can still use up its own budget
+  (and gets 429); the owner's other sessions are not affected.
 
 ### PATCH
 

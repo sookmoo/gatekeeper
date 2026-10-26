@@ -266,10 +266,27 @@
         "tags": [
           "Me"
         ],
-        "description": "Ends all of the caller's other active sessions; the session of the token stays (it ends by signing out or DELETE /v1/me/sessions/{id}).",
+        "description": "Ends all of the caller's other active sessions; the session of the token stays (it ends by signing out or DELETE /v1/me/sessions/{id}). 429 (with Retry-After, and no audit row) when the caller made more state-changing /v1/me calls than allowed in the last minute (Audit__MeWritesPerMinute, default 30).",
         "responses": {
           "200": {
-            "description": "OK"
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RevokedResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too Many Requests",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -285,7 +302,7 @@
         "tags": [
           "Me"
         ],
-        "description": "Ends one of the caller's own sessions (the current one too). 404 both when there is no such session and when it belongs to another user.",
+        "description": "Ends one of the caller's own sessions (the current one too). 404 both when there is no such session and when it belongs to another user. 429 (with Retry-After, and no audit row) when the caller made more state-changing /v1/me calls than allowed in the last minute (Audit__MeWritesPerMinute, default 30).",
         "parameters": [
           {
             "name": "id",
@@ -310,6 +327,16 @@
                 }
               }
             }
+          },
+          "429": {
+            "description": "Too Many Requests",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -325,7 +352,7 @@
         "tags": [
           "Me"
         ],
-        "description": "Changes the caller's own password. Needs the current password (verified like a login). 204: changed; every other session of the user ended (all of them for a token without a session, which then ends too), the session of the token is kept, and the user's session cut-off is raised in the same write (a sign-in that began before it cannot keep a session). 400: the new password breaks the password rules or equals the current one. 403 with code current-password-incorrect: the current password was not accepted (a fixed answer, deliberately not 401, so clients do not treat it as an ended session). 429: too many failed attempts for this user or address (Retry-After). Neither password is ever logged or audited; the audit row has the route and the number of sessions ended.",
+        "description": "Changes the caller's own password. Needs the current password (verified like a login). 204: changed; every other session of the user ended (all of them for a token without a session, which then ends too), the session of the token is kept, and the user's session cut-off is raised in the same write (a sign-in that began before it cannot keep a session). 400: the new password breaks the password rules or equals the current one. 403 with code current-password-incorrect: the current password was not accepted (a fixed answer, deliberately not 401, so clients do not treat it as an ended session). 429: too many failed attempts for this user or address, or too many state-changing /v1/me calls in the last minute (Retry-After). Neither password is ever logged or audited; the audit row has the route and the number of sessions ended.",
         "requestBody": {
           "content": {
             "application/json": {
@@ -2915,6 +2942,22 @@
               "null",
               "string"
             ]
+          }
+        }
+      },
+      "RevokedResponse": {
+        "required": [
+          "revoked"
+        ],
+        "type": "object",
+        "properties": {
+          "revoked": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int32"
           }
         }
       },

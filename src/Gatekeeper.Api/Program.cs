@@ -62,6 +62,11 @@ var refreshDays = builder.Configuration.GetValue("Auth:RefreshTokenDays", 30);
 var graceSeconds = builder.Configuration.GetValue("Auth:RefreshReuseGraceSeconds", 10);
 if (graceSeconds is < 0 or > 60) return Fail("Auth:RefreshReuseGraceSeconds must be between 0 and 60.");
 if (refreshDays is < 1 or > 90) return Fail("Auth:RefreshTokenDays must be between 1 and 90.");
+// Slice 7d: bounds on the audit rows a self-service token can cause.
+var meWrites = builder.Configuration.GetValue("Audit:MeWritesPerMinute", 30);
+var failureRows = builder.Configuration.GetValue("Audit:FailureRowsPerMinute", 5);
+if (meWrites is < 1 or > 10_000) return Fail("Audit:MeWritesPerMinute must be between 1 and 10000.");
+if (failureRows is < 1 or > 1_000) return Fail("Audit:FailureRowsPerMinute must be between 1 and 1000.");
 builder.Services
     .AddSingleton<AppService>()
     .AddSingleton<RoleService>()
@@ -86,6 +91,9 @@ builder.Services
     .AddKeyedSingleton<LoginThrottle>("passwordUser", (_, _) => new LoginThrottle(maxPerAddress: Endpoints.PasswordFailuresPerUser))
     .AddKeyedSingleton<LoginThrottle>("passwordAddress", (_, _) => new LoginThrottle(maxPerAddress: Endpoints.PasswordFailuresPerAddress))
     .AddSingleton<AuditService>()
+    .AddSingleton(new AuditCoalescer(freePerWindow: failureRows))
+    .AddHostedService<AuditSummaryFlusher>()
+    .AddKeyedSingleton<LoginThrottle>(MeWriteLimitMiddleware.KeyName, (_, _) => new LoginThrottle(maxPerAddress: meWrites, window: TimeSpan.FromMinutes(1)))
     .AddSingleton<AuditRecorder>()
     .AddSingleton<LoginThrottle>()
     .AddProblemDetails()
@@ -295,6 +303,7 @@ app.UseAuthentication();
 app.UseMiddleware<ForbiddenAuditMiddleware>();
 app.UseAuthorization();
 app.UseMiddleware<AuditMiddleware>();
+app.UseMiddleware<MeWriteLimitMiddleware>(); // inside the audit middleware: a refused call sets SkipKey and writes no row
 app.MapOpenApi("/openapi/{documentName}.json").AllowAnonymous();
 app.MapGet("/health", () => Results.Ok(new { status = "ok" })).ExcludeFromDescription().AllowAnonymous();
 // It queries the store and reveals its state, so it needs an admin token (role claim only, see ReadyPolicy); the answer is still cached briefly.
