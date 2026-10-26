@@ -1,0 +1,47 @@
+name: scan-latest
+
+# New CVEs appear against images that did not change: scan what is published, weekly.
+# A failing run (Critical/High with a fix available) is the notification; fix it by bumping the base image digest.
+# GitHub disables scheduled workflows after 60 days without repository activity: check the Actions tab now and then.
+# Run it once by hand (workflow_dispatch) after the first publish: the package must be linked to the repository
+# (the org.opencontainers.image.source label does that) or the pull is denied.
+on:
+  schedule:
+    - cron: "17 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: read
+    env:
+      IMAGE: ghcr.io/sookmoo/gatekeeper
+      WEB_IMAGE: ghcr.io/sookmoo/gatekeeper-web
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Pull the published images
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_ACTOR: ${{ github.actor }}
+        run: |
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$GH_ACTOR" --password-stdin
+          docker pull "$IMAGE:latest"
+          docker pull "$WEB_IMAGE:latest"
+          docker logout ghcr.io
+      # The Postgres image the Quadlet unit deploys (the exact pinned digest, from deploy/postgres/Dockerfile).
+      - name: Pull the pinned Postgres image
+        run: |
+          pg=$(sed -n 's/^FROM \(docker.io\/library\/postgres:[^ ]*@sha256:[0-9a-f]\{64\}\)$/\1/p' deploy/postgres/Dockerfile)
+          [ -n "$pg" ] || { echo "No pinned postgres image in deploy/postgres/Dockerfile." >&2; exit 1; }
+          docker pull "$pg"
+          echo "PG_IMAGE=$pg" >> "$GITHUB_ENV"
+      - name: Scan images for known vulnerabilities
+        run: scripts/scan-image.sh "$IMAGE:latest" "$WEB_IMAGE:latest" "$PG_IMAGE"
