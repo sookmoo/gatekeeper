@@ -6,3 +6,8 @@ tests/
 docs/
 *.md
 .env*
+**/appsettings.Local.json
+**/*.pfx
+**/*.key
+**/*.pem
+.claude/
