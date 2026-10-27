@@ -14,6 +14,7 @@ TRIVY=$(sed -n 's/^FROM \(ghcr.io\/aquasecurity\/trivy:[^ ]*@sha256:[0-9a-f]\{64
 [ -n "$TRIVY" ] || { echo "No pinned Trivy image in scripts/trivy/Dockerfile." >&2; exit 1; }
 
 WORK=$(mktemp -d)
+chmod 755 "$WORK"   # Trivy runs as root without capabilities (cap-drop ALL): it cannot read a 0700 directory of another uid
 CACHE=gatekeeper-trivy-cache-$$-$RANDOM
 cleanup() { rm -rf "$WORK"; "$RUNTIME" volume rm -f "$CACHE" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
