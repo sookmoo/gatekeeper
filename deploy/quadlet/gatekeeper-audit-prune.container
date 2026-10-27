@@ -4,8 +4,10 @@ Requires=gatekeeper-db.service
 After=gatekeeper-db.service gatekeeper-migrate.service
 
 # Run by gatekeeper-audit-prune.timer, which is NOT enabled by install.sh: pruning starts only when the operator enables the timer.
-# 365 days is the retention. The command refuses anything under 30 days. Add --export <file> (a path on a mounted volume; the file must
-# not exist yet, mode 0600) in a drop-in if you want the deleted rows kept; the root filesystem is read-only. See README "Audit trail".
+# 365 days is the retention. The command refuses anything under 30 days, and a run that would delete more than 90% of the table (this unit cannot
+# pass --allow-large). So before enabling the timer, run the command once by hand with --dry-run, then for real (with --allow-large if the dry run
+# says so); see README "Audit trail". To keep the deleted rows add --export-dir <dir> (a mounted volume, e.g. /export; the command names a new
+# file per run, mode 0600) to Exec= in a drop-in; the root filesystem is read-only.
 [Container]
 ContainerName=gatekeeper-audit-prune
 Image=ghcr.io/sookmoo/gatekeeper:latest

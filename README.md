@@ -203,28 +203,36 @@ exception (retention, below). Writes are best effort: if the audit store fails t
 and the error is logged. Not recorded: reads, throttled attempts, and requests rejected by authentication or authorisation
 (401). Failed logins add rows (bounded only by the throttle), so the table needs a retention policy.
 
-**Retention and pruning.** Nothing is deleted unless the operator asks. `Gatekeeper.Api prune-audit --older-than <days> [--export <file>] [--dry-run] [--allow-large]`
+**Retention and pruning.** Nothing is deleted unless the operator asks. `Gatekeeper.Api prune-audit --older-than <days> [--export <file> | --export-dir <dir>] [--dry-run] [--allow-large]`
 is a one-shot command like `migrate`: it uses `ConnectionStrings__GatekeeperMigrations` (the owner role), exits non-zero with a message on bad
-arguments (an option value that starts with `--` is refused), the in-memory store (nothing to prune), fewer than 30 days (the minimum, so a typo
+arguments (an option without a value, or with a value that starts with `--`, is refused), the in-memory store (nothing to prune), fewer than 30 days (the minimum, so a typo
 cannot wipe the trail; at most 36500) or any failure. One retention period applies to all rows.
 - **Time.** The cut-off is the database clock minus the days, and the trace rows carry database time. If the application clock and the database
   clock differ by more than 5 minutes the run is refused.
 - **Guard.** A run that would delete more than 90% of the table (or all of it) is refused unless `--allow-large` is given, because a wrong retention
-  or a wrong clock looks exactly like that. `--dry-run` reports the count and says when `--allow-large` would be needed.
+  or a wrong clock looks exactly like that. `--dry-run` reports the count and says when `--allow-large` would be needed. Dry run, guard and the single count are one code path for every caller.
 - **Batches.** 5000 rows per transaction, oldest first by time and id, `lock_timeout` 2 s, so audit writes are not blocked. A long first prune on a big
   table is best run off-peak; a run that hits the lock timeout can simply be started again. `--dry-run` only reports the count.
 - **Trace.** Every run writes `audit.prune.start` (actor `system:prune`, detail `before=<cut-off> planned=<n> exported=<"file"|none>`) before it
   deletes anything, and at the end `audit.prune` with the real `deleted=<n>`. A run that fails or is stopped (error, lock timeout, SIGTERM, Ctrl-C)
   writes `audit.prune` with outcome `failure` and the `deleted=<n>` so far. **A start row without a completion or failure row means an interrupted
   run** (killed, power loss). Rows of the actor `system:prune` are never deleted by a prune, and the trigger refuses to delete them even for the owner,
-  so the history of prunes is permanent (one pair of rows per run).
-- **Export.** `--export <file>` first writes every row it deletes as JSON Lines (one object per row: id, at, actor, action, target, outcome, detail,
-  address), flushed to disk before each batch is committed. The file is created after the start row, must not exist (never overwritten, a symlink is not
-  followed), and gets mode `0600`. Its absolute path must be at most 100 characters without whitespace, control characters, quotes or backslashes.
-  A run that fails before writing a row removes the empty file; a later failure leaves the file with exactly the rows already deleted, so a rerun needs a
-  new file name. The file holds addresses and user names: store and transfer it like the audit trail itself. In the container the root filesystem is
-  read-only: mount a volume (`Volume=...:/export:Z`). With rootless Podman the file belongs to the container user's mapped subuid and has mode `0600`, so
-  the host user reads it with `podman unshare` (for example `podman unshare cat <file>`).
+  so the history of prunes cannot be removed by the prune command (one pair of rows per run). A second trigger refuses to *insert* such rows (actor
+  `system:prune` or an action starting `audit.prune`) for anyone but the table owner, so the serving role cannot forge a prune history. A run is also
+  refused when the database clock is earlier than the newest prune row.
+- **Export.** `--export <file>` or `--export-dir <dir>` (not both, not with `--dry-run`) first writes every row it deletes as JSON Lines (one object per
+  row: id, at, actor, action, target, outcome, detail, address). With `--export-dir` the command creates `audit-<UTC yyyyMMddTHHmmssZ>.jsonl` inside the
+  existing directory, which is what a daily timer needs (a fixed `--export` file would be refused on the second run). The file is created after the start
+  row, must not exist (never overwritten, a symlink is not followed), and gets mode `0600`. Its absolute path must be at most 90 characters (for a
+  directory, 61, leaving room for the file name) and contain only letters, digits and `. _ - /`.
+  Each batch is written and fsynced before it is committed; once the batch's DELETE has run, writing and committing are not interrupted by a signal
+  (cancellation is checked between batches). If the write or the commit fails and the rows are verifiably still in the table, the file is cut back to
+  its length before that batch, so it never lists rows the table still has; if the commit did go through after all, the lines stay. A crash between the
+  fsync and the commit can still leave one batch in the file that is also still in the table; delete it from the file, or ignore the duplicates when
+  restoring. A run that fails before writing a row, or that deletes nothing, removes the empty file; a later failure leaves the rows already deleted, so a
+  manual rerun with `--export` needs a new file name (`--export-dir` does it for you). The file holds addresses and user names: store and transfer it like
+  the audit trail itself. In the container the root filesystem is read-only: mount a volume (`Volume=...:/export:Z`). With rootless Podman the file belongs
+  to the container user's mapped subuid and has mode `0600`, so the host user reads it with `podman unshare` (for example `podman unshare cat <file>`).
 
 The exception in the trigger (migration `AllowAuditPrune`): a `DELETE` passes only when the session and current role is the table's owner AND the
 transaction has set `gatekeeper.audit_prune = 'on'`, and the row is not a prune row. Any role can set that setting, so the owner test is what protects
@@ -234,7 +242,9 @@ possible later hardening). Rolling the migration back (an owner action) restores
 
 Quadlet: `gatekeeper-audit-prune.container` (one-shot, `--older-than 365`) and `gatekeeper-audit-prune.timer` (daily 03:30 local time, randomised by up to
 15 minutes). `install.sh` installs both but **does not enable the timer**: pruning begins only when you run
-`systemctl --user enable --now gatekeeper-audit-prune.timer`. Change the retention or the schedule with drop-ins (`systemctl --user edit
+`systemctl --user enable --now gatekeeper-audit-prune.timer`. The unattended unit cannot pass `--allow-large`, so **before enabling the timer run the
+command once by hand with `--dry-run`, then a real run (with `--allow-large` if the dry run says the run is over 90%)**; after that the daily runs
+delete only a day's worth. For a kept export add `--export-dir /export` (with a mounted volume) to the unit's `Exec=` in a drop-in. Change the retention or the schedule with drop-ins (`systemctl --user edit
 gatekeeper-audit-prune.service` / `.timer`); to run once by hand: `systemctl --user start gatekeeper-audit-prune.service`, or
 `podman run --rm --network gatekeeper -e Store__Provider=Postgres --secret gatekeeper-conn-migrations,type=env,target=ConnectionStrings__GatekeeperMigrations <image> prune-audit --older-than 365 --dry-run`.
 
