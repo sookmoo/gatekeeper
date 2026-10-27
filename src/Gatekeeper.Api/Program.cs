@@ -19,7 +19,17 @@ if (args is ["healthcheck"]) return await HealthCheck.RunAsync();
 var bootstrap = args is ["bootstrap-admin", ..];
 if (bootstrap && args.Length != 3) return Fail("usage: bootstrap-admin <username> <email>");
 var migrateOnly = args is ["migrate"];
-var builder = WebApplication.CreateBuilder(migrateOnly || bootstrap ? [] : args);
+// `Gatekeeper.Api prune-audit --older-than <days> [--export <file>] [--dry-run]` (slice 8e) deletes old audit rows. One-shot, owner role
+// (ConnectionStrings:GatekeeperMigrations) like migrate; the serving process and the app role can never delete audit rows.
+var prune = args is ["prune-audit", ..];
+PruneAudit.Options? pruneOptions = null;
+if (prune)
+{
+    pruneOptions = PruneAudit.Parse(args[1..], out var pruneError);
+    if (pruneOptions is null) return Fail(pruneError!);
+}
+var oneShot = migrateOnly || bootstrap || prune;
+var builder = WebApplication.CreateBuilder(oneShot ? [] : args);
 if (migrateOnly)
 {
     // EF logs the expected "history table does not exist yet" probe on an empty database as an error.
@@ -44,15 +54,17 @@ switch (provider)
     case "InMemory":
         if (migrateOnly) return Fail("Nothing to migrate: Store:Provider is InMemory.");
         if (bootstrap) return Fail("Nothing to bootstrap: Store:Provider is InMemory (data would be lost on exit).");
+        if (prune) return Fail("Nothing to prune: Store:Provider is InMemory (the in-memory audit trail is not pruned).");
         builder.Services.AddInMemoryStore();
         break;
     case "Postgres":
-        var setting = migrateOnly ? "GatekeeperMigrations" : "Gatekeeper";
+        var setting = migrateOnly || prune ? "GatekeeperMigrations" : "Gatekeeper";
         var connection = builder.Configuration.GetConnectionString(setting);
         if (string.IsNullOrWhiteSpace(connection))
             return Fail($"Store:Provider is Postgres but ConnectionStrings:{setting} is not set " +
                         $"(use the ConnectionStrings__{setting} environment variable).");
         builder.Services.AddPostgresStore(connection);
+        if (prune) builder.Services.AddSingleton<AuditPruner>(); // only the prune command can delete audit rows
         break;
     default:
         return Fail($"Unknown Store:Provider '{provider}'. Use InMemory or Postgres.");
@@ -117,7 +129,7 @@ builder.Services
         });
     });
 
-if (!migrateOnly && !bootstrap)
+if (!migrateOnly && !bootstrap && !prune)
 {
     var pem = builder.Configuration["Auth:SigningKeyPem"];
     var pemFile = builder.Configuration["Auth:SigningKeyPemFile"];
@@ -283,6 +295,9 @@ if (builder.Configuration.GetValue<bool>("Auth:SeedDevAdmin"))
     await Bootstrap.CreateAdminAsync(app.Services, "admin", "admin@localhost.example", devPassword);
     app.Logger.LogWarning("Development administrator created. Username: admin  Password: {Password}  (in-memory data, lost on exit)", devPassword);
 }
+
+if (prune)
+    return await PruneAudit.RunAsync(app.Services, pruneOptions!);
 
 if (migrateOnly)
 {

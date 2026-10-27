@@ -95,7 +95,7 @@ stage=$(mktemp -d)
 trap 'rm -rf "$stage"' EXIT
 cp quadlet/* "$stage/"
 note="${VERSION:+# $VERSION\n}"
-if [ -n "$IMAGE" ]; then sed -i "s|^Image=ghcr.io/sookmoo/gatekeeper:.*|${note}Image=$IMAGE|" "$stage"/gatekeeper-{api,migrate}.container; fi
+if [ -n "$IMAGE" ]; then sed -i "s|^Image=ghcr.io/sookmoo/gatekeeper:.*|${note}Image=$IMAGE|" "$stage"/gatekeeper-{api,migrate,audit-prune}.container; fi
 if [ -n "$WEB_IMAGE" ]; then sed -i "s|^Image=ghcr.io/sookmoo/gatekeeper-web:.*|${note}Image=$WEB_IMAGE|" "$stage"/gatekeeper-web.container; fi
 
 conf="$HOME/.config/gatekeeper/postgres-init"
@@ -104,6 +104,10 @@ mkdir -p "$conf" "$units"
 install -m 0755 postgres-init/10-roles.sh "$conf/10-roles.sh"
 install -m 0644 ../scripts/db-roles.sql "$conf/db-roles.sql"
 install -m 0644 "$stage"/* "$units/"
+# The retention timer is a plain systemd unit (Quadlet only turns .container files into services). Installed, never enabled here.
+timers="$HOME/.config/systemd/user"
+mkdir -p "$timers"
+install -m 0644 systemd/gatekeeper-audit-prune.timer "$timers/"
 
 secret() { # name value
   podman secret exists "$1" || printf '%s' "$2" | podman secret create "$1" - >/dev/null
@@ -129,4 +133,5 @@ secret gatekeeper-retired-keys "# no retired keys"
 systemctl --user daemon-reload
 echo "Installed. Start with: systemctl --user start gatekeeper-api.service"
 echo "Then create the first administrator once: deploy/bootstrap-admin.sh <username> <email>"
+echo "Audit retention is off. To prune audit rows older than 365 days every day: systemctl --user enable --now gatekeeper-audit-prune.timer (README, Audit trail)"
 echo "The administration UI: systemctl --user start gatekeeper-web.service, then open http://127.0.0.1:5090"
