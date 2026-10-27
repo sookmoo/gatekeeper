@@ -73,7 +73,8 @@ jobs:
             # Rescan now: an old commit must not promote an image with newly fixed High/Critical findings.
             docker pull --quiet "$1@$src" >&2
             scripts/scan-image.sh "$1@$src" >&2 || { echo "::error::Scan of $1@$src failed" >&2; return 1; }
-            docker buildx imagetools create -t "$dst" "$1@$src" >&2
+            # --prefer-index=false: an exact copy; by default buildx wraps a single manifest in a new index (new digest).
+            docker buildx imagetools create --prefer-index=false -t "$dst" "$1@$src" >&2
             want=$(lookup "$dst") || return 1
             [ "$want" = "$src" ] || { echo "::error::$dst resolves to $want, expected $src" >&2; return 1; }
             echo "$src"
