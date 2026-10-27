@@ -413,7 +413,9 @@ CI builds it on every PR and publishes `ghcr.io/sookmoo/gatekeeper:<sha>` and `:
 
 Run the full stack (Postgres, one-shot migrations as the owner role, API as the data-only role) as systemd user services:
 
-    deploy/install.sh [image]            # copies units to ~/.config/containers/systemd, creates podman secrets
+    deploy/install.sh v0.1.0 [sha256:<api> sha256:<web>]  # a release: pins the units to the image digests (see Releases below)
+    deploy/install.sh <image> [<web-image>]                # explicit images
+    deploy/install.sh --latest                             # :latest, local development only (no argument is refused)
     systemctl --user start gatekeeper-api.service
 
 - The API is published on `127.0.0.1:5080` only. Inside the container it binds `0.0.0.0:8080`, which the loopback guard
@@ -422,5 +424,28 @@ Run the full stack (Postgres, one-shot migrations as the owner role, API as the 
   token signing key as the podman secret `gatekeeper-signing-key`.
 - Passwords and connection strings are podman secrets (random, created by `install.sh`); nothing secret is in the repo or image.
 - Roles are created on the first start with an empty data volume. To start over: stop the units, `podman volume rm gatekeeper-db-data`.
-- Update: pull or build a new image and `systemctl --user restart gatekeeper-api` (re-runs migrations first).
+- Update: install the new release (below) and `systemctl --user restart gatekeeper-api` (re-runs migrations first).
 - For the service to survive logout/reboot: `loginctl enable-linger $USER`.
+
+### Releases, upgrade and rollback
+
+`:latest` moves on every merge to `main`; use it for local development only (`install.sh --latest`; `install.sh` with no argument is refused, so a re-run never silently unpins a server). A server runs a release.
+
+- One-time repository setup (owner; the workflow cannot do it): create the environment `release` (Settings, Environments) with deployment tags restricted to `v*`
+  (required reviewers optional, they add a manual approval), and a tag ruleset on `v*` that restricts creation to maintainers and blocks updates and deletion.
+  Both jobs of the release workflow run in that environment.
+- Release (maintainer): once the CI run for the commit on `main` has published its images (and attested them), push a SemVer tag on that commit,
+  `git tag -s v0.1.0 && git push origin v0.1.0` (a pre-release is any tag with a suffix, `v0.1.0-rc.1`). `.github/workflows/release.yml` does not rebuild:
+  it checks the tag is `vX.Y.Z[-suffix]` and its commit is on `main`, finds `ghcr.io/sookmoo/gatekeeper{,-web}:<sha>` (fails if either is
+  missing), verifies their build provenance (made by `ci.yml` on `main`), rescans them with the image scan, retags both to `:vX.Y.Z` inside the
+  registry (an existing `:vX.Y.Z` with another digest is refused; a registry error fails the job), leaves `:latest` alone, and creates the GitHub
+  release (marked pre-release when the tag has a suffix) listing both images with their `sha256` digests.
+- Install or upgrade (server): check out the tag (`git checkout v0.1.0`; the script errors if the checkout is another commit of that tag, and warns about a
+  dirty tree), then `deploy/install.sh v0.1.0 sha256:<api> sha256:<web>` with the digests from the release notes, then
+  `systemctl --user restart gatekeeper-api gatekeeper-web`. With the digests the script pulls by digest and fails on a mismatch. Without them
+  it pulls the tag and pins whatever the registry returns now (trust on first use, with a warning): compare the printed digests with the release notes.
+  Either way the units get `Image=<repo>@sha256:<digest>` with the tag in a comment, so the server runs exactly that image even if a tag is later moved.
+  Migrations run first on restart.
+- Rollback: check out the previous tag, `deploy/install.sh <previous tag> <digests>` and restart. Migrations are additive (new tables and columns), so the previous release runs
+  on the newer schema. `Down` migrations are never run by the units: reverting the schema is an owner action with the owner role, after a
+  backup. If a release notes a migration that old instances cannot tolerate, stop the API before the upgrade (only one API process is supported anyway).

@@ -120,6 +120,9 @@ jobs:
     permissions:
       contents: read
       packages: write
+      # Build provenance for the pushed images; release.yml verifies it before promoting.
+      id-token: write
+      attestations: write
     env:
       IMAGE: ghcr.io/sookmoo/gatekeeper
       WEB_IMAGE: ghcr.io/sookmoo/gatekeeper-web
@@ -141,3 +144,20 @@ jobs:
           docker tag "$WEB_IMAGE:${GITHUB_SHA}" "$WEB_IMAGE:latest"
           docker push "$WEB_IMAGE:${GITHUB_SHA}"
           docker push "$WEB_IMAGE:latest"
+      - name: Read the pushed digests
+        id: digests
+        run: |
+          echo "api=$(docker buildx imagetools inspect "$IMAGE:${GITHUB_SHA}" --format '{{json .Manifest}}' | jq -r .digest)" >> "$GITHUB_OUTPUT"
+          echo "web=$(docker buildx imagetools inspect "$WEB_IMAGE:${GITHUB_SHA}" --format '{{json .Manifest}}' | jq -r .digest)" >> "$GITHUB_OUTPUT"
+      - name: Attest the API image
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ghcr.io/sookmoo/gatekeeper
+          subject-digest: ${{ steps.digests.outputs.api }}
+          push-to-registry: true
+      - name: Attest the web image
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ghcr.io/sookmoo/gatekeeper-web
+          subject-digest: ${{ steps.digests.outputs.web }}
+          push-to-registry: true

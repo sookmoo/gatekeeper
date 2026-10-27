@@ -1,0 +1,118 @@
+name: release
+
+# Promotes what main already built: no rebuild. Retags ghcr.io/sookmoo/gatekeeper{,-web}:<sha> to :vX.Y.Z (server-side,
+# no layers move) and creates the GitHub release with the digests. :latest is not touched.
+# Needs the repository environment "release" restricted to tags v* (see README, Releases).
+on:
+  push:
+    tags: ['v*.*.*']
+
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  retag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: release
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      api-digest: ${{ steps.retag.outputs.api-digest }}
+      web-digest: ${{ steps.retag.outputs.web-digest }}
+    env:
+      IMAGE: ghcr.io/sookmoo/gatekeeper
+      WEB_IMAGE: ghcr.io/sookmoo/gatekeeper-web
+    steps:
+      # fetch-depth 0 fetches every branch as refs/remotes/origin/*, so origin/main is there.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Tag is vX.Y.Z (or a pre-release) and its commit is on main
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]] || { echo "::error::Tag '$TAG' is not vX.Y.Z[-prerelease]"; exit 1; }
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main || { echo "::error::$GITHUB_SHA is not on main"; exit 1; }
+      - name: Verify, scan and retag the images built for this commit
+        id: retag
+        env:
+          TAG: ${{ github.ref_name }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_ACTOR: ${{ github.actor }}
+        run: |
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$GH_ACTOR" --password-stdin
+          # Prints the manifest digest of a reference; prints nothing if the registry says it does not exist;
+          # any other error (after one retry) fails the job, so a flaky registry never reads as "free".
+          lookup() {
+            local out
+            for attempt in 1 2; do
+              if out=$(docker buildx imagetools inspect "$1" --format '{{json .Manifest}}' 2>&1); then
+                jq -r .digest <<<"$out"; return 0
+              fi
+              if grep -qiE 'not found|manifest unknown|MANIFEST_UNKNOWN|name unknown|404' <<<"$out"; then return 0; fi
+              sleep 5
+            done
+            echo "::error::Cannot look up $1: $out" >&2; return 1
+          }
+          promote() { # repo -> prints the digest
+            local src have dst="$1:$TAG" want
+            src=$(lookup "$1:${GITHUB_SHA}") || return 1
+            [[ "$src" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::$1:${GITHUB_SHA} not found in GHCR (did the main CI publish run, and is it still retained?)" >&2; return 1; }
+            have=$(lookup "$dst") || return 1
+            if [ -n "$have" ] && [ "$have" != "$src" ]; then echo "::error::$dst already exists with another digest ($have); release tags are immutable" >&2; return 1; fi
+            # The image must come from the CI run on main that scanned it.
+            gh attestation verify "oci://$1@$src" --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/ci.yml" --source-ref refs/heads/main >&2 \
+              || { echo "::error::No valid build provenance for $1@$src" >&2; return 1; }
+            # Rescan now: an old commit must not promote an image with newly fixed High/Critical findings.
+            docker pull --quiet "$1@$src" >&2
+            scripts/scan-image.sh "$1@$src" >&2 || { echo "::error::Scan of $1@$src failed" >&2; return 1; }
+            docker buildx imagetools create -t "$dst" "$1@$src" >&2
+            want=$(lookup "$dst") || return 1
+            [ "$want" = "$src" ] || { echo "::error::$dst resolves to $want, expected $src" >&2; return 1; }
+            echo "$src"
+          }
+          api=$(promote "$IMAGE")
+          web=$(promote "$WEB_IMAGE")
+          echo "api-digest=$api" >> "$GITHUB_OUTPUT"
+          echo "web-digest=$web" >> "$GITHUB_OUTPUT"
+      - name: Log out of GHCR
+        if: always()
+        run: docker logout ghcr.io
+
+  release:
+    needs: retag
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          API_DIGEST: ${{ needs.retag.outputs.api-digest }}
+          WEB_DIGEST: ${{ needs.retag.outputs.web-digest }}
+        run: |
+          [[ "$API_DIGEST" =~ ^sha256:[0-9a-f]{64}$ && "$WEB_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::Missing or malformed image digests"; exit 1; }
+          now=$(gh api "repos/$GH_REPO/commits/$TAG" --jq .sha)
+          [ "$now" = "$GITHUB_SHA" ] || { echo "::error::Tag $TAG now points at $now, not $GITHUB_SHA (moved during the run)"; exit 1; }
+          pre=()
+          [[ "$TAG" == *-* ]] && pre=(--prerelease)
+          cat > notes.md <<NOTES
+          Images (promoted from the CI build of ${GITHUB_SHA}, not rebuilt):
+
+          - \`ghcr.io/sookmoo/gatekeeper:${TAG}\` = \`ghcr.io/sookmoo/gatekeeper@${API_DIGEST}\`
+          - \`ghcr.io/sookmoo/gatekeeper-web:${TAG}\` = \`ghcr.io/sookmoo/gatekeeper-web@${WEB_DIGEST}\`
+
+          Install: \`deploy/install.sh ${TAG} ${API_DIGEST} ${WEB_DIGEST}\` (pulls by digest and fails on a mismatch).
+          NOTES
+          gh release create "$TAG" --verify-tag --title "$TAG" --notes-file notes.md "${pre[@]}"
