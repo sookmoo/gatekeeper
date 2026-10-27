@@ -1,0 +1,13 @@
+[Unit]
+Description=Gatekeeper audit retention (daily, off-peak)
+
+# Installed by deploy/install.sh but NOT enabled. Enable it deliberately, after reading README "Audit trail":
+#   systemctl --user enable --now gatekeeper-audit-prune.timer
+# Change the period with a drop-in (systemctl --user edit gatekeeper-audit-prune.timer).
+[Timer]
+OnCalendar=*-*-* 03:30:00
+RandomizedDelaySec=15min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

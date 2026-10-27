@@ -198,10 +198,45 @@ Calls that fail before reaching the endpoint body (malformed JSON, wrong content
 Bodies, passwords and secrets are never recorded. A failed login or client-token attempt records the name only if it belongs to
 a real user or client; any other value (a typo, a probe, a password or secret typed into the wrong field) is recorded as its
 length only, because the trail cannot be redacted. Other attacker-chosen text is cut to 200 characters and stripped of control
-characters. The table is append-only: the app role has no UPDATE/DELETE/TRUNCATE and a trigger refuses them for everyone
-(dropping it needs the owner role and a migration). Writes are best effort: if the audit store fails the change still succeeds
+characters. The table is append-only: the app role has no UPDATE/DELETE/TRUNCATE and a trigger refuses them for everyone, with one
+exception (retention, below). Writes are best effort: if the audit store fails the change still succeeds
 and the error is logged. Not recorded: reads, throttled attempts, and requests rejected by authentication or authorisation
-(401). There is no retention or pruning yet, and failed logins add rows (bounded only by the throttle).
+(401). Failed logins add rows (bounded only by the throttle), so the table needs a retention policy.
+
+**Retention and pruning.** Nothing is deleted unless the operator asks. `Gatekeeper.Api prune-audit --older-than <days> [--export <file>] [--dry-run] [--allow-large]`
+is a one-shot command like `migrate`: it uses `ConnectionStrings__GatekeeperMigrations` (the owner role), exits non-zero with a message on bad
+arguments (an option value that starts with `--` is refused), the in-memory store (nothing to prune), fewer than 30 days (the minimum, so a typo
+cannot wipe the trail; at most 36500) or any failure. One retention period applies to all rows.
+- **Time.** The cut-off is the database clock minus the days, and the trace rows carry database time. If the application clock and the database
+  clock differ by more than 5 minutes the run is refused.
+- **Guard.** A run that would delete more than 90% of the table (or all of it) is refused unless `--allow-large` is given, because a wrong retention
+  or a wrong clock looks exactly like that. `--dry-run` reports the count and says when `--allow-large` would be needed.
+- **Batches.** 5000 rows per transaction, oldest first by time and id, `lock_timeout` 2 s, so audit writes are not blocked. A long first prune on a big
+  table is best run off-peak; a run that hits the lock timeout can simply be started again. `--dry-run` only reports the count.
+- **Trace.** Every run writes `audit.prune.start` (actor `system:prune`, detail `before=<cut-off> planned=<n> exported=<"file"|none>`) before it
+  deletes anything, and at the end `audit.prune` with the real `deleted=<n>`. A run that fails or is stopped (error, lock timeout, SIGTERM, Ctrl-C)
+  writes `audit.prune` with outcome `failure` and the `deleted=<n>` so far. **A start row without a completion or failure row means an interrupted
+  run** (killed, power loss). Rows of the actor `system:prune` are never deleted by a prune, and the trigger refuses to delete them even for the owner,
+  so the history of prunes is permanent (one pair of rows per run).
+- **Export.** `--export <file>` first writes every row it deletes as JSON Lines (one object per row: id, at, actor, action, target, outcome, detail,
+  address), flushed to disk before each batch is committed. The file is created after the start row, must not exist (never overwritten, a symlink is not
+  followed), and gets mode `0600`. Its absolute path must be at most 100 characters without whitespace, control characters, quotes or backslashes.
+  A run that fails before writing a row removes the empty file; a later failure leaves the file with exactly the rows already deleted, so a rerun needs a
+  new file name. The file holds addresses and user names: store and transfer it like the audit trail itself. In the container the root filesystem is
+  read-only: mount a volume (`Volume=...:/export:Z`). With rootless Podman the file belongs to the container user's mapped subuid and has mode `0600`, so
+  the host user reads it with `podman unshare` (for example `podman unshare cat <file>`).
+
+The exception in the trigger (migration `AllowAuditPrune`): a `DELETE` passes only when the session and current role is the table's owner AND the
+transaction has set `gatekeeper.audit_prune = 'on'`, and the row is not a prune row. Any role can set that setting, so the owner test is what protects
+the table: the app role has no `DELETE` privilege and fails the owner test as well, even if it were granted `DELETE`. `UPDATE` and `TRUNCATE` are refused
+for everyone. A compromised owner credential could already drop the trigger, so this adds no power to that role (a dedicated, narrower prune role is a
+possible later hardening). Rolling the migration back (an owner action) restores the strict trigger.
+
+Quadlet: `gatekeeper-audit-prune.container` (one-shot, `--older-than 365`) and `gatekeeper-audit-prune.timer` (daily 03:30 local time, randomised by up to
+15 minutes). `install.sh` installs both but **does not enable the timer**: pruning begins only when you run
+`systemctl --user enable --now gatekeeper-audit-prune.timer`. Change the retention or the schedule with drop-ins (`systemctl --user edit
+gatekeeper-audit-prune.service` / `.timer`); to run once by hand: `systemctl --user start gatekeeper-audit-prune.service`, or
+`podman run --rm --network gatekeeper -e Store__Provider=Postgres --secret gatekeeper-conn-migrations,type=env,target=ConnectionStrings__GatekeeperMigrations <image> prune-audit --older-than 365 --dry-run`.
 
 Bounded audit writes from self-service tokens (per process, in memory):
 - **Write limit.** A user may make `Audit__MeWritesPerMinute` (1-10000, default 30) state-changing calls (`PUT`, `DELETE`, ...) to `/v1/me/*` per minute **per session** (a sliding
@@ -411,7 +446,7 @@ Every store implementation (in-memory and Postgres) must pass `tests/Gatekeeper.
 Build the image: `podman build -t gatekeeper-api -f Containerfile .` (digest-pinned bases, chiseled non-root runtime, no shell).
 CI builds it on every PR and publishes `ghcr.io/sookmoo/gatekeeper:<sha>` and `:latest` from `main`.
 
-Run the full stack (Postgres, one-shot migrations as the owner role, API as the data-only role) as systemd user services:
+Run the full stack (Postgres, one-shot migrations as the owner role, API as the data-only role; the optional audit retention timer is installed but off) as systemd user services:
 
     deploy/install.sh v0.1.0 [sha256:<api> sha256:<web>]  # a release: pins the units to the image digests (see Releases below)
     deploy/install.sh <image> [<web-image>]                # explicit images

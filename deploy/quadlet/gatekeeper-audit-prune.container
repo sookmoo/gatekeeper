@@ -1,0 +1,22 @@
+[Unit]
+Description=Gatekeeper audit retention: delete audit rows older than the retention period (one-shot, owner role)
+Requires=gatekeeper-db.service
+After=gatekeeper-db.service gatekeeper-migrate.service
+
+# Run by gatekeeper-audit-prune.timer, which is NOT enabled by install.sh: pruning starts only when the operator enables the timer.
+# 365 days is the retention. The command refuses anything under 30 days. Add --export <file> (a path on a mounted volume; the file must
+# not exist yet, mode 0600) in a drop-in if you want the deleted rows kept; the root filesystem is read-only. See README "Audit trail".
+[Container]
+ContainerName=gatekeeper-audit-prune
+Image=ghcr.io/sookmoo/gatekeeper:latest
+Network=gatekeeper.network
+Environment=Store__Provider=Postgres
+# The owner role: the only role the audit trigger lets delete (the serving app role never can).
+Secret=gatekeeper-conn-migrations,type=env,target=ConnectionStrings__GatekeeperMigrations
+Exec=prune-audit --older-than 365
+ReadOnly=true
+DropCapability=ALL
+NoNewPrivileges=true
+
+[Service]
+Type=oneshot
