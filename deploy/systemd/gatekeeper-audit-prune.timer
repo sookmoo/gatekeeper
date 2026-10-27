@@ -1,7 +1,8 @@
 [Unit]
 Description=Gatekeeper audit retention (daily, off-peak)
 
-# Installed by deploy/install.sh but NOT enabled. Enable it deliberately, after reading README "Audit trail":
+# Installed by deploy/install.sh but NOT enabled. Enable it deliberately, after reading README "Audit trail" and after one manual --dry-run and
+# real run (the unattended unit refuses to delete more than 90% of the table):
 #   systemctl --user enable --now gatekeeper-audit-prune.timer
 # Change the period with a drop-in (systemctl --user edit gatekeeper-audit-prune.timer).
 [Timer]

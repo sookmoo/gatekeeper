@@ -34,6 +34,14 @@ public class Slice8eAuditPruneTests
         return (long)(await cmd.ExecuteScalarAsync())!;
     }
 
+    private static async Task<long> Scalar(string conn, string sql)
+    {
+        await using var c = new NpgsqlConnection(conn);
+        await c.OpenAsync();
+        await using var cmd = new NpgsqlCommand(sql, c);
+        return (long)(await cmd.ExecuteScalarAsync())!;
+    }
+
     private static async Task MigrateTo(string conn, string? target)
     {
         using var sp = new ServiceCollection().AddPostgresStore(conn).BuildServiceProvider();
@@ -294,6 +302,7 @@ public class Slice8eAuditPruneTests
         await Exec(db.MigratorConnection, "BEGIN; SET LOCAL gatekeeper.audit_prune = 'on'; DELETE FROM audit_events WHERE detail = 'o1'; COMMIT");
         Assert.Equal(1, await Count(db.MigratorConnection));
         await MigrateTo(db.MigratorConnection, Before); // down
+                Assert.Equal(0L, await Scalar(db.MigratorConnection, "SELECT count(*) FROM pg_trigger WHERE tgname = 'audit_events_guard_prune_rows'"));
         Assert.Equal("42501", await SqlState(db.MigratorConnection, "BEGIN; SET LOCAL gatekeeper.audit_prune = 'on'; DELETE FROM audit_events"));
         Assert.Equal("42501", await SqlState(db.MigratorConnection, "TRUNCATE audit_events"));
         Assert.Equal(1, await Count(db.MigratorConnection));
@@ -444,10 +453,209 @@ public class Slice8eAuditPruneTests
     [InlineData("-1s")]
     [InlineData("2 s")]
     [InlineData("1min")]
+    [InlineData("2s\n")]
     public void The_lock_timeout_must_be_digits_and_ms_or_s(string value)
         => Assert.Throws<ArgumentException>(() => new AuditPruner(null!, null!) { LockTimeout = value });
 
     [Fact]
     public void A_valid_lock_timeout_is_accepted()
         => Assert.Equal("300ms", new AuditPruner(null!, null!) { LockTimeout = "300ms" }.LockTimeout);
+
+    [SkippableFact]
+    public async Task A_failed_commit_cuts_the_export_back_so_it_never_lists_rows_the_table_still_has()
+    {
+        using var db = Db();
+        await MigrateTo(db.MigratorConnection, null);
+        for (var i = 0; i < 6; i++)
+            await Exec(db.MigratorConnection, $"INSERT INTO audit_events (id, at, actor, action, outcome, detail) VALUES (gen_random_uuid(), '2025-01-01 00:00:0{i}+00', 'u', 'old', 'success', 'o{i}')");
+        // A deferred constraint trigger fails at COMMIT time for the second batch (rows o3..o5).
+        await Exec(db.MigratorConnection,
+            "CREATE FUNCTION gk_fail_commit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF OLD.detail = 'o4' THEN RAISE EXCEPTION 'no commit' USING ERRCODE = 'P0001'; END IF; RETURN OLD; END $$; " +
+            "CREATE CONSTRAINT TRIGGER gk_fail_commit AFTER DELETE ON audit_events DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION gk_fail_commit()");
+        var (sp, pruner) = await Pruner(db.MigratorConnection, batch: 3);
+        using var _ = sp;
+        var dir = Directory.CreateTempSubdirectory("gk8e");
+        try
+        {
+            var file = Path.Combine(dir.FullName, "x.jsonl");
+            await Assert.ThrowsAnyAsync<PostgresException>(() => pruner.PruneAsync(Cut, file, false));
+            var lines = await File.ReadAllLinesAsync(file);
+            Assert.Equal(3, lines.Length); // only the committed first batch
+            Assert.Equal("o0,o1,o2", string.Join(",", lines.Select(l => JsonDocument.Parse(l).RootElement.GetProperty("detail").GetString())));
+            Assert.Equal(3, await Count(db.MigratorConnection, "action = 'old'"));
+            Assert.Equal(1, await Count(db.MigratorConnection, "action = 'audit.prune' AND outcome = 'failure' AND detail LIKE '%deleted=3 %'"));
+        }
+        finally { dir.Delete(true); }
+    }
+
+    [SkippableFact]
+    public async Task A_completion_row_that_cannot_be_written_leaves_a_failure_row_with_the_real_count_and_the_error_surfaces()
+    {
+        using var db = Db();
+        await MigrateTo(db.MigratorConnection, null);
+        await Seed(db.MigratorConnection, 4, 0);
+        await Exec(db.MigratorConnection,
+            "CREATE FUNCTION gk_fail_done() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'no completion' USING ERRCODE = 'P0001'; END $$; " +
+            "CREATE TRIGGER gk_fail_done BEFORE INSERT ON audit_events FOR EACH ROW WHEN (NEW.action = 'audit.prune' AND NEW.outcome = 'success') EXECUTE FUNCTION gk_fail_done()");
+        var (sp, pruner) = await Pruner(db.MigratorConnection);
+        using var _ = sp;
+        await Assert.ThrowsAnyAsync<Exception>(() => pruner.PruneAsync(Cut, null, false));
+        Assert.Equal(0, await Count(db.MigratorConnection, "action = 'old'"));
+        Assert.Equal(1, await Count(db.MigratorConnection, "action = 'audit.prune' AND outcome = 'failure' AND detail LIKE '%deleted=4 %'"));
+    }
+
+    [SkippableFact]
+    public async Task A_successful_run_that_deleted_nothing_removes_its_empty_export_file()
+    {
+        using var db = Db();
+        await MigrateTo(db.MigratorConnection, null);
+        await Seed(db.MigratorConnection, 0, 2);
+        var (sp, pruner) = await Pruner(db.MigratorConnection);
+        using var _ = sp;
+        var dir = Directory.CreateTempSubdirectory("gk8e");
+        try
+        {
+            var file = Path.Combine(dir.FullName, "x.jsonl");
+            Assert.Equal(0, (await pruner.PruneAsync(Cut, file, false)).Deleted);
+            Assert.False(File.Exists(file));
+            Assert.Equal(1, await Count(db.MigratorConnection, "action = 'audit.prune' AND outcome = 'success'"));
+        }
+        finally { dir.Delete(true); }
+    }
+
+    [SkippableFact]
+    [System.Runtime.Versioning.SupportedOSPlatform("linux")]
+    public async Task Export_dir_creates_a_file_named_by_the_database_time_with_mode_0600_and_refuses_a_missing_directory()
+    {
+        using var db = Db();
+        await MigrateTo(db.MigratorConnection, null);
+        await Seed(db.MigratorConnection, 3, 0);
+        var (sp, pruner) = await Pruner(db.MigratorConnection);
+        using var _ = sp;
+        var dir = Directory.CreateTempSubdirectory("gk8e");
+        try
+        {
+            await Assert.ThrowsAsync<DirectoryNotFoundException>(() => pruner.PruneOlderThanAsync(30, null, false, true, exportDir: Path.Combine(dir.FullName, "missing")));
+            var result = await pruner.PruneOlderThanAsync(30, null, false, true, exportDir: dir.FullName);
+            var file = Assert.Single(Directory.GetFiles(dir.FullName));
+            Assert.Matches(@"^audit-\d{8}T\d{6}Z\.jsonl$", Path.GetFileName(file));
+            Assert.Equal(file, result.ExportFile);
+            Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(file));
+            Assert.Equal(3, (await File.ReadAllLinesAsync(file)).Length);
+        }
+        finally { dir.Delete(true); }
+    }
+
+    [SkippableFact]
+    public async Task Every_trace_row_fits_the_audit_field_limit_with_the_longest_export_path()
+    {
+        using var db = Db();
+        await MigrateTo(db.MigratorConnection, null);
+        await Seed(db.MigratorConnection, 3, 0);
+        var root = Directory.CreateTempSubdirectory("gk8e");
+        try
+        {
+            // a file path of exactly MaxExportPath characters
+            var name = "/x.jsonl";
+            var dir = root.FullName + "/" + new string('d', AuditPruner.MaxExportPath - root.FullName.Length - 1 - name.Length);
+            Directory.CreateDirectory(dir);
+            var file = dir + name;
+            Assert.Equal(AuditPruner.MaxExportPath, file.Length);
+            Assert.Null(AuditPruner.CheckExportPathShape(file));
+            await Exec(db.MigratorConnection, "CREATE FUNCTION gk_fail_done() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'x' USING ERRCODE = 'P0001'; END $$; " +
+                "CREATE TRIGGER gk_fail_done BEFORE INSERT ON audit_events FOR EACH ROW WHEN (NEW.action = 'audit.prune' AND NEW.outcome = 'success') EXECUTE FUNCTION gk_fail_done()");
+            var (sp, pruner) = await Pruner(db.MigratorConnection);
+            using var _ = sp;
+            await Assert.ThrowsAnyAsync<Exception>(() => pruner.PruneAsync(Cut, file, false)); // start row + failure row (longest exception name is shorter than the one used here)
+            await using var c = new NpgsqlConnection(db.MigratorConnection);
+            await c.OpenAsync();
+            await using var cmd = new NpgsqlCommand("SELECT max(length(detail)) FROM audit_events WHERE actor = 'system:prune'", c);
+            var longest = (int)(await cmd.ExecuteScalarAsync())!;
+            Assert.InRange(longest, 1, AuditEvent.MaxField - 15); // headroom for a longer exception name and 19-digit counts
+        }
+        finally { root.Delete(true); }
+    }
+
+    [Theory]
+    [InlineData("/ok/file.jsonl", null)]
+    [InlineData("/ok/file name", "may only contain")]
+    [InlineData("/ok/f\u00e5.jsonl", "may only contain")]
+    [InlineData("/ok/f\"x", "may only contain")]
+    [InlineData("/ok//x", "may only contain")]
+    [InlineData("/ok/", "may only contain")]
+    [InlineData("relative", "may only contain")]
+    public void The_export_path_shape_is_restricted_to_plain_characters(string path, string? why)
+    {
+        var result = AuditPruner.CheckExportPathShape(path);
+        if (why is null) Assert.Null(result); else Assert.Contains(why, result);
+    }
+
+    [Fact]
+    public void The_batch_size_must_be_at_least_one()
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() => new AuditPruner(null!, null!) { BatchSize = 0 });
+        Assert.Throws<ArgumentOutOfRangeException>(() => new AuditPruner(null!, null!) { BatchSize = -5 });
+    }
+
+    [SkippableFact]
+    [System.Runtime.Versioning.SupportedOSPlatform("linux")]
+    public void Syncing_a_directory_works_and_never_throws()
+    {
+        Skip.IfNot(OperatingSystem.IsLinux());
+        var dir = Directory.CreateTempSubdirectory("gk8e");
+        try
+        {
+            Assert.True(DirectorySync.Sync(dir.FullName));
+            Assert.False(DirectorySync.Sync(Path.Combine(dir.FullName, "missing")));
+            Assert.False(DirectorySync.Sync(null));
+        }
+        finally { dir.Delete(true); }
+    }
+
+    [SkippableFact]
+    public async Task The_database_clock_behind_the_last_prune_row_refuses_the_run()
+    {
+        using var db = Db();
+        await MigrateTo(db.MigratorConnection, null);
+        await Seed(db.MigratorConnection, 3, 0);
+        await Exec(db.MigratorConnection, "INSERT INTO audit_events (id, at, actor, action, outcome) VALUES (gen_random_uuid(), now() + interval '1 hour', 'system:prune', 'audit.prune', 'success')");
+        var (sp, pruner) = await Pruner(db.MigratorConnection);
+        using var _ = sp;
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => pruner.PruneAsync(Cut, null, false));
+        Assert.Contains("earlier than the last prune", ex.Message);
+        Assert.Equal(3, await Count(db.MigratorConnection, "action = 'old'"));
+    }
+
+    [SkippableFact]
+    public async Task The_guard_migration_rolls_down_to_the_released_migration_and_up_again()
+    {
+        using var db = Db();
+        const string Released = "20261027100828_AllowAuditPrune";
+        await MigrateTo(db.MigratorConnection, null);
+        db.GrantAppAccess();
+        const string forged = "INSERT INTO audit_events (id, at, actor, action, outcome) VALUES (gen_random_uuid(), now(), 'system:prune', 'audit.prune', 'success')";
+        Assert.Equal("42501", await SqlState(db.AppConnection, forged));
+        await MigrateTo(db.MigratorConnection, Released); // down: only the guard goes, the prune exception stays
+        Assert.Equal(0L, await Scalar(db.MigratorConnection, "SELECT count(*) FROM pg_trigger WHERE tgname = 'audit_events_guard_prune_rows'"));
+        Assert.Equal(1L, await Scalar(db.MigratorConnection, "SELECT count(*) FROM pg_proc WHERE proname = 'audit_events_immutable'"));
+        await Exec(db.AppConnection, forged);
+        Assert.Equal("42501", await SqlState(db.MigratorConnection, "DELETE FROM audit_events")); // still append-only without the setting
+        await MigrateTo(db.MigratorConnection, null); // up again, over existing rows
+        Assert.Equal("42501", await SqlState(db.AppConnection, forged));
+    }
+
+    [SkippableFact]
+    public async Task Only_the_owner_can_insert_prune_rows_the_app_role_cannot_forge_them()
+    {
+        using var db = Db();
+        await MigrateTo(db.MigratorConnection, null);
+        db.GrantAppAccess();
+        string Row(string actor, string action) => $"INSERT INTO audit_events (id, at, actor, action, outcome) VALUES (gen_random_uuid(), now(), '{actor}', '{action}', 'success')";
+        Assert.Equal("42501", await SqlState(db.AppConnection, Row("system:prune", "audit.prune")));
+        Assert.Equal("42501", await SqlState(db.AppConnection, Row("someone", "audit.prune.start")));
+        Assert.Equal("42501", await SqlState(db.AppConnection, Row("system:prune", "x")));
+        await Exec(db.AppConnection, Row("system", "bootstrap-admin")); // ordinary rows still insert
+        await Exec(db.MigratorConnection, Row("system:prune", "audit.prune")); // the owner (the prune command) can
+        Assert.Equal(2, await Count(db.MigratorConnection));
+    }
 }

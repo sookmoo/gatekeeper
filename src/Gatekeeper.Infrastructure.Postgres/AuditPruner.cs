@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using System.Globalization;
 using System.Text.RegularExpressions;
 using Gatekeeper.Application;
 using Gatekeeper.Domain;
@@ -24,13 +25,32 @@ public sealed partial class AuditPruner(IDbContextFactory<GatekeeperDbContext> f
     public const int DefaultBatchSize = 5000;
     public static readonly TimeSpan MaxClockSkew = TimeSpan.FromMinutes(5);
 
-    [GeneratedRegex(@"^\d+(ms|s)$")]
+    [GeneratedRegex(@"\A[0-9]+(ms|s)\z")]
     private static partial Regex LockTimeoutShape();
 
-    private string _lockTimeout = "2s";
+    /// <summary>Allowed in an export path: keeps the trace detail free of escapes, so it fits <see cref="AuditEvent.MaxField"/>.</summary>
+    [GeneratedRegex(@"\A/[A-Za-z0-9._/-]*\z")]
+    private static partial Regex ExportPathShape();
 
-    /// <summary>Rows per transaction; tests lower it.</summary>
-    public int BatchSize { get; init; } = DefaultBatchSize;
+    /// <summary>Longest absolute export path. The longest detail is `before=.. deleted=.. exported="<path>" error=<exception name>`; this keeps it under 200.</summary>
+    public const int MaxExportPath = 90;
+    public const int ExportFileNameLength = 29; // audit-20261027T100000Z.jsonl
+
+    /// <summary>Null when the absolute path is acceptable, else why not.</summary>
+    public static string? CheckExportPathShape(string fullPath, int reserve = 0) =>
+        fullPath.Length + reserve > MaxExportPath ? $"the absolute path must be at most {MaxExportPath - reserve} characters"
+        : fullPath.EndsWith('/') || fullPath.Contains("//") || !ExportPathShape().IsMatch(fullPath) ? "the absolute path may only contain letters, digits and . _ - /"
+        : null;
+
+    private string _lockTimeout = "2s";
+    private int _batchSize = DefaultBatchSize;
+
+    /// <summary>Rows per transaction (at least 1); tests lower it.</summary>
+    public int BatchSize
+    {
+        get => _batchSize;
+        init => _batchSize = value >= 1 ? value : throw new ArgumentOutOfRangeException(nameof(value), "Batch size must be at least 1.");
+    }
 
     /// <summary>How long a batch waits for a row lock before the prune gives up (the next run continues). Digits and ms or s only.</summary>
     public string LockTimeout
@@ -42,72 +62,79 @@ public sealed partial class AuditPruner(IDbContextFactory<GatekeeperDbContext> f
     /// <summary>The application clock, compared with the database clock. Tests replace it.</summary>
     public TimeProvider Clock { get; init; } = TimeProvider.System;
 
-    /// <summary>The command's entry: cut-off = database now minus <paramref name="days"/>, and the guard against wiping (nearly) the whole table.</summary>
-    public async Task<PruneResult> PruneOlderThanAsync(int days, string? exportFile, bool dryRun, bool allowLarge, CancellationToken ct = default)
+    /// <summary>The command's entry: cut-off = database now minus <paramref name="days"/>. Export to a file, or (<paramref name="exportDir"/>) to a new file named by the run's time.</summary>
+    public Task<PruneResult> PruneOlderThanAsync(int days, string? exportFile, bool dryRun, bool allowLarge, CancellationToken ct = default, string? exportDir = null) =>
+        RunAsync(now => now.AddDays(-days), exportFile, exportDir, dryRun, allowLarge, ct);
+
+    /// <summary>A run with a caller-chosen cut-off (tests, tools). Never refuses for size: that guard belongs to the command.</summary>
+    public Task<PruneResult> PruneAsync(DateTimeOffset before, string? exportFile, bool dryRun, CancellationToken ct = default) =>
+        RunAsync(_ => before.ToUniversalTime(), exportFile, null, dryRun, true, ct);
+
+    private sealed class Export(FileStream stream, string path)
     {
-        await using var conn = await OpenAsync(ct);
-        var now = await DatabaseTimeAsync(conn, ct);
-        var cutoff = now.AddDays(-days);
-        var planned = await CountAsync(conn, cutoff, ct);
-        var total = await CountAsync(conn, null, ct);
-        // More than 90% of the table (or all of it): a wrong retention or a wrong clock looks exactly like this.
-        var large = planned > 0 && planned * 10 > total * 9;
-        if (large && !allowLarge && !dryRun)
-            throw new InvalidOperationException($"This would delete {planned} of {total} audit rows (more than 90%). Check --older-than and the clocks, then add --allow-large if that is intended.");
-        if (dryRun) return new PruneResult(cutoff, planned, null, true, total);
-        return await PruneAsync(cutoff, exportFile, false, ct);
+        public FileStream Stream { get; } = stream;
+        public string Path { get; } = path;
+        /// <summary>File length after the last committed batch: everything beyond it belongs to a batch that did not commit.</summary>
+        public long Committed { get; set; }
     }
 
-    public async Task<PruneResult> PruneAsync(DateTimeOffset before, string? exportFile, bool dryRun, CancellationToken ct = default)
+    private async Task<PruneResult> RunAsync(Func<DateTimeOffset, DateTimeOffset> cutoffOf, string? exportFile, string? exportDir, bool dryRun, bool allowLarge, CancellationToken ct)
     {
-        var cutoff = before.ToUniversalTime();
         await using var conn = await OpenAsync(ct);
         var dbNow = await DatabaseTimeAsync(conn, ct);
-        var planned = await CountAsync(conn, cutoff, ct);
-        var total = dryRun ? await CountAsync(conn, null, ct) : 0;
+        var cutoff = cutoffOf(dbNow).ToUniversalTime();
+        var (planned, total, lastPrune) = await CountsAsync(conn, cutoff, ct);
+        // A database clock behind the last prune row is a wrong clock (or a restore): the cut-off would be wrong too.
+        if (lastPrune is { } last && dbNow < last)
+            throw new InvalidOperationException($"The database clock ({dbNow:u}) is earlier than the last prune run ({last:u}); refusing to prune. Fix the clock first.");
+        var large = planned > 0 && planned * 10 > total * 9; // more than 90% of the table (or all of it)
         if (dryRun) return new PruneResult(cutoff, planned, null, true, total);
+        if (large && !allowLarge)
+            throw new InvalidOperationException($"This would delete {planned} of {total} audit rows (more than 90%). Check --older-than and the clocks, then add --allow-large if that is intended.");
 
+        var path = exportDir is null ? exportFile : Path.Combine(exportDir, $"audit-{dbNow.ToString("yyyyMMdd'T'HHmmss'Z'", CultureInfo.InvariantCulture)}.jsonl");
         // Refuse an existing path (or a dangling symlink) or a missing directory before anything is recorded; the file itself is created after the start row.
-        if (exportFile is not null) CheckExportPath(exportFile);
-        var shown = exportFile is null ? "none" : JsonSerializer.Serialize(Path.GetFullPath(exportFile));
+        if (path is not null) CheckExportPath(path);
+        var shown = path is null ? "none" : JsonSerializer.Serialize(Path.GetFullPath(path));
         var stamp = $"before={cutoff:yyyy-MM-ddTHH:mm:ssZ}";
 
-        // The start row is written first: a start without a completion row means an interrupted run.
+        // The start row is written first: a start without a completion or failure row means an interrupted run.
         await audit.AppendAsync(new AuditEvent(Guid.NewGuid(), dbNow, Actor, StartAction, null, AuditEvent.Success,
             $"{stamp} planned={planned} exported={shown}", null), ct);
 
         long deleted = 0;
-        FileStream? export = null;
+        Export? export = null;
         try
         {
-            export = exportFile is null ? null : OpenExport(exportFile);
+            if (path is not null) export = OpenExport(path);
             while (true)
             {
+                ct.ThrowIfCancellationRequested(); // between batches only: a started batch is written and committed to the end
                 var n = await DeleteBatchAsync(conn, cutoff, export, ct);
                 deleted += n;
                 if (n < BatchSize) break;
             }
+            // Inside the handling: if this row cannot be written the failure row (with the real count) is attempted and the error surfaces.
+            await audit.AppendAsync(new AuditEvent(Guid.NewGuid(), await DatabaseTimeAsync(conn, CancellationToken.None), Actor, Action, null, AuditEvent.Success,
+                $"{stamp} deleted={deleted} exported={shown}", null), CancellationToken.None);
         }
         catch (Exception ex)
         {
             // Not tied to ct: a cancelled run (SIGTERM) must still leave its trace. The file of a run that stopped before writing anything is removed.
             await TryRecordAsync(AuditEvent.Failure, $"{stamp} deleted={deleted} exported={shown} error={ex.GetType().Name}");
-            if (export is not null && exportFile is not null)
-            {
-                var empty = export.Length == 0;
-                await export.DisposeAsync();
-                export = null;
-                if (empty) TryDelete(exportFile);
-            }
+            await CloseExportAsync(export, removeIfEmpty: true);
             throw;
         }
-        finally
-        {
-            if (export is not null) await export.DisposeAsync();
-        }
-        await audit.AppendAsync(new AuditEvent(Guid.NewGuid(), await DatabaseTimeAsync(conn, CancellationToken.None), Actor, Action, null, AuditEvent.Success,
-            $"{stamp} deleted={deleted} exported={shown}", null), CancellationToken.None);
-        return new PruneResult(cutoff, deleted, exportFile is null ? null : Path.GetFullPath(exportFile), false);
+        await CloseExportAsync(export, removeIfEmpty: true); // a successful run that deleted nothing leaves no empty file
+        return new PruneResult(cutoff, deleted, path is null ? null : Path.GetFullPath(path), false, total);
+    }
+
+    private static async Task CloseExportAsync(Export? export, bool removeIfEmpty)
+    {
+        if (export is null) return;
+        var empty = export.Stream.Length == 0;
+        await export.Stream.DisposeAsync();
+        if (removeIfEmpty && empty) TryDelete(export.Path);
     }
 
     private async Task<NpgsqlConnection> OpenAsync(CancellationToken ct)
@@ -152,15 +179,16 @@ public sealed partial class AuditPruner(IDbContextFactory<GatekeeperDbContext> f
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { /* leave it */ }
     }
 
-    private static async Task<long> CountAsync(NpgsqlConnection conn, DateTimeOffset? cutoff, CancellationToken ct)
+    /// <summary>Rows to delete, rows in the table, and the time of the newest earlier prune row (if any), in one statement.</summary>
+    private static async Task<(long Planned, long Total, DateTimeOffset? LastPrune)> CountsAsync(NpgsqlConnection conn, DateTimeOffset cutoff, CancellationToken ct)
     {
-        await using var cmd = new NpgsqlCommand(cutoff is null ? "SELECT count(*) FROM audit_events" : "SELECT count(*) FROM audit_events WHERE at < @c AND actor <> @a", conn);
-        if (cutoff is { } c)
-        {
-            cmd.Parameters.AddWithValue("c", c.UtcDateTime);
-            cmd.Parameters.AddWithValue("a", Actor);
-        }
-        return (long)(await cmd.ExecuteScalarAsync(ct))!;
+        await using var cmd = new NpgsqlCommand(
+            "SELECT count(*) FILTER (WHERE at < @c AND actor <> @a), count(*), max(at) FILTER (WHERE actor = @a) FROM audit_events", conn);
+        cmd.Parameters.AddWithValue("c", cutoff.UtcDateTime);
+        cmd.Parameters.AddWithValue("a", Actor);
+        await using var r = await cmd.ExecuteReaderAsync(ct);
+        await r.ReadAsync(ct);
+        return (r.GetInt64(0), r.GetInt64(1), r.IsDBNull(2) ? null : new DateTimeOffset(r.GetDateTime(2), TimeSpan.Zero));
     }
 
     private static void CheckExportPath(string path)
@@ -171,32 +199,23 @@ public sealed partial class AuditPruner(IDbContextFactory<GatekeeperDbContext> f
     }
 
     // CreateNew = O_EXCL: no overwrite, no following a planted symlink; mode 0600 from the first byte. The directory entry is synced too.
-    private static FileStream OpenExport(string path)
+    private static Export OpenExport(string path)
     {
         var options = new FileStreamOptions { Mode = FileMode.CreateNew, Access = FileAccess.Write, Share = FileShare.None };
         if (!OperatingSystem.IsWindows()) options.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
         var stream = new FileStream(path, options);
-        SyncDirectory(Path.GetDirectoryName(Path.GetFullPath(path)));
-        return stream;
-    }
-
-    private static void SyncDirectory(string? dir)
-    {
-        if (dir is null || OperatingSystem.IsWindows()) return;
-        try
-        {
-            using var handle = File.OpenHandle(dir, FileMode.Open, FileAccess.Read);
-            RandomAccess.FlushToDisk(handle);
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException) { /* best effort */ }
+        DirectorySync.Sync(Path.GetDirectoryName(Path.GetFullPath(path)));
+        return new Export(stream, path);
     }
 
     /// <summary>
     /// One transaction: the oldest rows below the cut-off by (at, id) are deleted and returned, written to the export and flushed to disk,
-    /// and only then committed. A failing export rolls the batch back. Deleted rows are gone, so the next batch starts at the new oldest row.
+    /// and only then committed. Once the delete has run, writing and committing ignore cancellation. If the write or the commit fails, the
+    /// file is cut back to its length before the batch (when the rows are verifiably still in the table) so it never lists rows the table still has;
+    /// if the commit did go through after all, the lines stay. Deleted rows are gone, so the next batch starts at the new oldest row.
     /// Earlier prune rows (actor system:prune) are never deleted, and the trigger refuses it as well.
     /// </summary>
-    private async Task<int> DeleteBatchAsync(NpgsqlConnection conn, DateTimeOffset cutoff, FileStream? export, CancellationToken ct)
+    private async Task<int> DeleteBatchAsync(NpgsqlConnection conn, DateTimeOffset cutoff, Export? export, CancellationToken ct)
     {
         await using var tx = await conn.BeginTransactionAsync(ct);
         await using (var set = new NpgsqlCommand("SELECT set_config('lock_timeout', @t, true), set_config('gatekeeper.audit_prune', 'on', true)", conn, tx))
@@ -219,15 +238,44 @@ public sealed partial class AuditPruner(IDbContextFactory<GatekeeperDbContext> f
                     r.IsDBNull(4) ? null : r.GetString(4), r.GetString(5), r.IsDBNull(6) ? null : r.GetString(6), r.IsDBNull(7) ? null : r.GetString(7)));
         }
 
-        if (export is not null && rows.Count > 0)
+        try
         {
-            foreach (var e in rows.OrderBy(e => e.At).ThenBy(e => e.Id, Comparer<Guid>.Create(AuditKey.CompareIds)))
-                await export.WriteAsync(Encoding.UTF8.GetBytes(Line(e) + "\n"), ct);
-            await export.FlushAsync(ct);
-            export.Flush(flushToDisk: true);
+            if (export is not null && rows.Count > 0)
+            {
+                foreach (var e in rows.OrderBy(e => e.At).ThenBy(e => e.Id, Comparer<Guid>.Create(AuditKey.CompareIds)))
+                    await export.Stream.WriteAsync(Encoding.UTF8.GetBytes(Line(e) + "\n"), CancellationToken.None);
+                await export.Stream.FlushAsync(CancellationToken.None);
+                export.Stream.Flush(flushToDisk: true);
+            }
+            await tx.CommitAsync(CancellationToken.None);
         }
-        await tx.CommitAsync(ct);
+        catch when (export is not null)
+        {
+            // Did the commit happen? Look from outside: all rows still there means no (cut the file back); none there means yes (keep the lines).
+            var present = await StillPresentAsync(rows.Select(r => r.Id).ToArray());
+            if (present == rows.Count)
+            {
+                try { export.Stream.SetLength(export.Committed); export.Stream.Flush(flushToDisk: true); }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { /* the original error is the one to report */ }
+                throw;
+            }
+            if (present != 0) throw;
+        }
+        if (export is not null) export.Committed = export.Stream.Length;
         return rows.Count;
+    }
+
+    /// <summary>How many of these rows exist; -1 when that cannot be found out.</summary>
+    private async Task<int> StillPresentAsync(Guid[] ids)
+    {
+        try
+        {
+            await using var conn = await OpenAsync(CancellationToken.None);
+            await using var cmd = new NpgsqlCommand("SELECT count(*) FROM audit_events WHERE id = ANY(@ids)", conn);
+            cmd.Parameters.AddWithValue("ids", ids);
+            return (int)(long)(await cmd.ExecuteScalarAsync())!;
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException) { return -1; }
     }
 
     private static string Line(AuditEvent e) => JsonSerializer.Serialize(new

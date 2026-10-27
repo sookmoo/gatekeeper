@@ -88,10 +88,39 @@ public class Slice8eTests
     public void A_relative_export_path_is_made_absolute_and_the_length_is_judged_on_the_absolute_form()
     {
         var o = PruneAudit.Parse(["--older-than", "30", "--export", "out.jsonl"], out _);
-        Assert.Equal(Path.GetFullPath("out.jsonl"), o!.Export);
+        // the test's working directory decides whether the absolute form is acceptable; either way the verdict is on the absolute form
+        var full = Path.GetFullPath("out.jsonl");
+        Assert.Equal(Gatekeeper.Infrastructure.Postgres.AuditPruner.CheckExportPathShape(full) is null ? full : null, o?.Export);
         // short as typed, too long once resolved
-        Assert.Null(PruneAudit.Parse(["--older-than", "30", "--export", "/" + new string('a', 100)], out _));
-        Assert.NotNull(PruneAudit.Parse(["--older-than", "30", "--export", "/" + new string('a', 99)], out _));
+        Assert.Null(PruneAudit.Parse(["--older-than", "30", "--export", "/" + new string('a', 90)], out _));
+        Assert.NotNull(PruneAudit.Parse(["--older-than", "30", "--export", "/" + new string('a', 89)], out _));
+    }
+
+    [Theory]
+    [InlineData("--older-than")]
+    [InlineData("--export")]
+    [InlineData("--export-dir")]
+    public void An_option_with_no_value_as_the_last_argument_says_it_needs_a_value(string option)
+    {
+        string[] args = option == "--older-than" ? [option] : ["--older-than", "30", option];
+        Assert.Null(PruneAudit.Parse(args, out var error));
+        Assert.Contains($"{option} needs a value", error);
+    }
+
+    [Fact]
+    public void Export_dir_is_an_alternative_to_export_made_absolute_and_checked_with_room_for_the_file_name()
+    {
+        var o = PruneAudit.Parse(["--older-than", "30", "--export-dir", "/var/exports/"], out _);
+        Assert.Equal("/var/exports", o!.ExportDir);
+        Assert.Null(o.Export);
+        Assert.Null(PruneAudit.Parse(["--older-than", "30", "--export", "/a/b", "--export-dir", "/c"], out var error));
+        Assert.Contains("cannot be combined", error);
+        Assert.Null(PruneAudit.Parse(["--older-than", "30", "--export-dir", "/c", "--dry-run"], out _));
+        Assert.Null(PruneAudit.Parse(["--older-than", "30", "--export-dir", "/c", "--export-dir", "/d"], out _));
+        Assert.Null(PruneAudit.Parse(["--older-than", "30", "--export-dir", "/c d"], out _));
+        // 61 characters leave room for the 29-character file name under the 90 limit, 62 do not
+        Assert.NotNull(PruneAudit.Parse(["--older-than", "30", "--export-dir", "/" + new string('a', 60)], out _));
+        Assert.Null(PruneAudit.Parse(["--older-than", "30", "--export-dir", "/" + new string('a', 61)], out _));
     }
 
     private static async Task<(int Code, string Err)> RunMain(params string[] args)

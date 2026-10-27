@@ -133,5 +133,5 @@ secret gatekeeper-retired-keys "# no retired keys"
 systemctl --user daemon-reload
 echo "Installed. Start with: systemctl --user start gatekeeper-api.service"
 echo "Then create the first administrator once: deploy/bootstrap-admin.sh <username> <email>"
-echo "Audit retention is off. To prune audit rows older than 365 days every day: systemctl --user enable --now gatekeeper-audit-prune.timer (README, Audit trail)"
+echo "Audit retention is off. Before enabling the daily prune (older than 365 days): run the command once by hand with --dry-run, then for real (with --allow-large if the dry run says so), as in README \"Audit trail\"; then systemctl --user enable --now gatekeeper-audit-prune.timer"
 echo "The administration UI: systemctl --user start gatekeeper-web.service, then open http://127.0.0.1:5090"
