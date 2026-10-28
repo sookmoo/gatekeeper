@@ -202,6 +202,27 @@ public sealed class InMemoryRoleRepository(InMemoryStore s) : IRoleRepository
         }
     }
 
+    public Task<IReadOnlyList<RevokedSession>?> DeleteEndingSessionsAsync(Guid id, long? expectedVersion, DateTimeOffset now, CancellationToken ct = default)
+    {
+        lock (s.Gate)
+        {
+            if (!s.Roles.TryGetValue(id, out var current)) return Task.FromResult<IReadOnlyList<RevokedSession>?>(null);
+            InMemoryStore.CheckVersion(current.Version, expectedVersion);
+            var ended = new List<RevokedSession>();
+            foreach (var userId in s.Assignments.Where(a => a.RoleId == id).Select(a => a.UserId).ToList())
+            {
+                if (s.Assignments.Any(a => a.UserId == userId && a.RoleId != id && s.Roles.TryGetValue(a.RoleId, out var other) && other.AppId == current.AppId)) continue;
+                foreach (var x in s.Sessions.Values.Where(x => x.UserId == userId && x.AppId == current.AppId && x.IsActive(now)).ToList())
+                {
+                    s.Sessions[x.Id] = x with { RevokedAt = now };
+                    ended.Add(new RevokedSession(userId, x.Id));
+                }
+            }
+            s.RemoveRole(id);
+            return Task.FromResult<IReadOnlyList<RevokedSession>?>(ended);
+        }
+    }
+
     private void EnsureNameFree(Role role)
     {
         if (s.Roles.Values.Any(r => r.Id != role.Id && r.AppId == role.AppId && InMemoryAppRepository.Same(r.Name, role.Name)))

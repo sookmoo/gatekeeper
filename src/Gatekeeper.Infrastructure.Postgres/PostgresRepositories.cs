@@ -1,6 +1,7 @@
 using Gatekeeper.Application;
 using Gatekeeper.Domain;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using Npgsql;
 
 namespace Gatekeeper.Infrastructure.Postgres;
@@ -259,6 +260,47 @@ public sealed class PostgresRoleRepository(Factory factory) : PostgresRepository
 
     public Task<bool> DeleteAsync(Guid id, long? expectedVersion = null, CancellationToken ct = default) =>
         Run(db => DeleteVersionedAsync<Role>(db, id, expectedVersion, ct), ct: ct);
+
+    public Task<IReadOnlyList<RevokedSession>?> DeleteEndingSessionsAsync(Guid id, long? expectedVersion, DateTimeOffset now, CancellationToken ct = default) => Run(db => InTransactionAsync<IReadOnlyList<RevokedSession>?>(db, async () =>
+    {
+        // Lock order: the application first (as an application delete does), then the role. Role deletes of one application therefore run one
+        // after the other, and the second sees the first one's deletion when it decides who keeps another role. (FOR NO KEY UPDATE does not
+        // block inserts of roles or sessions that reference the application.)
+        var appId = await db.Roles.AsNoTracking().Where(r => r.Id == id).Select(r => (Guid?)r.AppId).FirstOrDefaultAsync(ct);
+        if (appId is null) return await MissingAsync();
+        if ((await db.Database.SqlQuery<int>($"SELECT 1 AS \"Value\" FROM apps WHERE id = {appId} FOR NO KEY UPDATE").ToListAsync(ct)).Count == 0) return await MissingAsync();
+        // Re-check under the lock (the role may have been deleted while we waited) and compare the version.
+        var found = await db.Database.SqlQuery<Guid>($"SELECT app_id AS \"Value\" FROM roles WHERE id = {id} AND ({expectedVersion}::bigint IS NULL OR version = {expectedVersion}::bigint) FOR UPDATE").ToListAsync(ct);
+        if (found.Count == 0) return await MissingAsync();
+
+        // One set-based UPDATE ... RETURNING (EF cannot read RETURNING rows of a data-changing statement, so plain ADO.NET on the same transaction).
+        var ended = new List<RevokedSession>();
+        await using (var cmd = (NpgsqlCommand)db.Database.GetDbConnection().CreateCommand())
+        {
+            cmd.Transaction = (NpgsqlTransaction)db.Database.CurrentTransaction!.GetDbTransaction();
+            cmd.CommandText = """
+                UPDATE sessions s SET revoked_at = @now
+                WHERE s.app_id = @app AND s.revoked_at IS NULL AND s.expires_at > @now
+                  AND EXISTS (SELECT 1 FROM user_roles ur WHERE ur.user_id = s.user_id AND ur.role_id = @role)
+                  AND NOT EXISTS (SELECT 1 FROM user_roles ur JOIN roles r ON r.id = ur.role_id
+                                  WHERE ur.user_id = s.user_id AND r.app_id = @app AND r.id <> @role)
+                RETURNING s.user_id, s.id
+                """;
+            cmd.Parameters.AddWithValue("now", now);
+            cmd.Parameters.AddWithValue("app", appId.Value);
+            cmd.Parameters.AddWithValue("role", id);
+            await using var reader = await cmd.ExecuteReaderAsync(ct);
+            while (await reader.ReadAsync(ct)) ended.Add(new RevokedSession(reader.GetGuid(0), reader.GetGuid(1)));
+        }
+        await db.Roles.Where(r => r.Id == id).ExecuteDeleteAsync(ct);
+        return ended;
+
+        async Task<IReadOnlyList<RevokedSession>?> MissingAsync()
+        {
+            if (expectedVersion is not null && await db.Roles.AnyAsync(r => r.Id == id, ct)) throw new PreconditionFailedException();
+            return null;
+        }
+    }, ct), ct: ct);
 
     private static Translator Translate(Role role) => (_, pg) => Task.FromResult<GatekeeperException?>(pg.ConstraintName switch
     {

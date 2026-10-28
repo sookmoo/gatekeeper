@@ -132,7 +132,7 @@ public static class Endpoints
         {
             await s.DeleteAsync(id, IfMatch(http), ct);
             return Results.NoContent();
-        });
+        }).WithDescription("Deletes the application with its roles and clients, and all its sessions at once (they are removed in the same step, so their tokens stop verifying).");
         apps.MapGet("/{id:guid}/roles", (Guid id, RoleService s, int? limit, string? cursor, CancellationToken ct) =>
             s.ListByAppAsync(id, PageQuery.Parse(limit, cursor), ct));
         apps.MapPost("/{id:guid}/roles", async (Guid id, RoleRequest r, RoleService s, CancellationToken ct) =>
@@ -145,11 +145,14 @@ public static class Endpoints
         roles.MapGet("/{id:guid}", (Guid id, RoleService s, CancellationToken ct) => s.GetAsync(id, ct));
         roles.MapPut("/{id:guid}", (HttpContext http, Guid id, RoleRequest r, RoleService s, CancellationToken ct) => s.UpdateAsync(id, r.Name, r.Description, IfMatch(http), ct));
         roles.MapMethods("/{id:guid}", ["PATCH"], (HttpContext http, Guid id, RoleRequest r, RoleService s, CancellationToken ct) => s.PatchAsync(id, r.Name, r.Description, IfMatch(http), ct));
-        roles.MapDelete("/{id:guid}", async (HttpContext http, Guid id, RoleService s, CancellationToken ct) =>
+        roles.MapDelete("/{id:guid}", async (HttpContext http, Guid id, RoleService s, AdminAccessCheck access, CancellationToken ct) =>
         {
-            await s.DeleteAsync(id, IfMatch(http), ct);
+            var ended = await s.DeleteAsync(id, IfMatch(http), ct);
+            // The ended sessions' tokens stop at once on this instance, not after the 10 s cache.
+            foreach (var x in ended) access.Evict(x.UserId, x.SessionId);
+            if (ended.Count > 0) http.Items[AuditMiddleware.NoteKey] = $"sessionsRevoked={ended.Count}";
             return Results.NoContent();
-        });
+        }).WithDescription("Users who held no other role of the role's application lose their active sessions in that application at once, in the same step as the delete (the audit note carries sessionsRevoked=<n>). Users who keep another role there, and other applications, are untouched. Introspection reports the access tokens of the ended sessions as inactive at once; a consumer that only checks the signature accepts such a token until it expires.");
 
         var users = v1.MapGroup("/users").WithTags("Users");
         users.MapGet("/", (UserService s, bool? active, string? username, string? kind, string? usernamePrefix, string? emailPrefix, bool? usable, int? limit, string? cursor, CancellationToken ct) =>

@@ -137,14 +137,15 @@ public sealed class RoleService(IAppRepository apps, IRoleRepository roles)
         return await UpdateCore(existing, name ?? existing.Name, description ?? existing.Description, expected, ct);
     }, ct);
 
-    public async Task DeleteAsync(Guid id, Precondition? ifMatch = null, CancellationToken ct = default)
+    /// <summary>Deletes the role. Users who held no other role of its application lose their sessions there at once; returns the sessions that ended.</summary>
+    public async Task<IReadOnlyList<RevokedSession>> DeleteAsync(Guid id, Precondition? ifMatch = null, CancellationToken ct = default)
     {
         var existing = await roles.GetAsync(id, ct);
         var expected = existing is null ? null : Precondition.Require(ifMatch, existing.Version);
         // Other roles in the reserved app (left by older code) may be removed; the admin role may not.
         if (existing is not null && Reserved.IsAdminRole(existing.Name))
             await RejectReservedApp(existing.AppId, "have roles deleted", ct);
-        if (!await roles.DeleteAsync(id, expected, ct)) throw new NotFoundException($"Role {id} not found.");
+        return await roles.DeleteEndingSessionsAsync(id, expected, Clock.UtcNowMicros(), ct) ?? throw new NotFoundException($"Role {id} not found.");
     }
 
     private async Task RejectReservedApp(Guid appId, string action, CancellationToken ct)

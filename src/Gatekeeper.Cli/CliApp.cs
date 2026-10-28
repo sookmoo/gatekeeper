@@ -14,14 +14,14 @@ public static class CliApp
         public const string AdminApp = "gatekeeper";
     }
 
-    private static readonly string[] AppFields = ["id", "name"];
-    private static readonly string[] RoleFields = ["id", "name", "description"];
+    private static readonly string[] AppFields = ["id", "name", "version"];
+    private static readonly string[] RoleFields = ["id", "name", "description", "version"];
     private static readonly string[] SessionFields = ["id", "appId", "createdAt", "lastUsedAt", "expiresAt"];
     private static readonly string[] OwnSessionFields = ["id", "appName", "current", "createdAt", "lastUsedAt", "expiresAt"];
     private static readonly string[] MeFields = ["id", "username", "displayName", "email", "kind", "expiresAt"];
-    private static readonly string[] ClientFields = ["id", "name", "appId", "isActive"];
+    private static readonly string[] ClientFields = ["id", "name", "appId", "isActive", "version"];
     private static readonly string[] AuditFields = ["at", "outcome", "actor", "action", "target", "detail"];
-    private static readonly string[] UserFields = ["id", "username", "email", "kind", "isActive", "expiresAt", "displayName"];
+    private static readonly string[] UserFields = ["id", "username", "email", "kind", "isActive", "expiresAt", "displayName", "version"];
 
     /// <param name="tokens">Where the login token is kept (default: a private file in the user's state directory).</param>
     /// <param name="readSecret">Reads a password without echo (prompt text, whether to ask twice; null at end of input).</param>
@@ -192,6 +192,22 @@ public static class CliApp
             return cmd;
         }
 
+        // --if-version <n>: the version shown by 'get' (the "version" column or JSON field); sent as If-Match, so a change made by someone else in between answers 412 (exit 3).
+        Option<long?> IfVersionOpt()
+        {
+            return new Option<long?>("--if-version")
+            {
+                Description = "Only if the resource still has this version (as shown by 'get')",
+                CustomParser = r =>
+                {
+                    var text = r.Tokens.Count == 1 ? r.Tokens[0].Value : null;
+                    if (text is not null && long.TryParse(text, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var version) && version >= 1) return version;
+                    r.AddError("--if-version must be a positive whole number (a version starts at 1).");
+                    return null;
+                },
+            };
+        }
+
         Command AppCommands()
         {
             var cmd = new Command("app", "Manage applications");
@@ -207,15 +223,17 @@ public static class CliApp
                 x.Print(await x.Api.GetAsync($"/v1/applications/{await x.ResolveApp(x.Get(getApp)!)}"), AppFields, single: true)));
             var updApp = app();
             var newName = new Option<string>("--name") { Required = true };
-            cmd.Subcommands.Add(Cmd("update", "Rename an application", c => { c.Arguments.Add(updApp); c.Options.Add(newName); }, async x =>
+            var updAppIf = IfVersionOpt();
+            cmd.Subcommands.Add(Cmd("update", "Rename an application", c => { c.Arguments.Add(updApp); c.Options.Add(newName); c.Options.Add(updAppIf); }, async x =>
             {
                 var id = await x.ResolveApp(x.Get(updApp)!);
-                x.Print(await x.Api.PatchAsync($"/v1/applications/{id}", new { name = x.Get(newName) }), AppFields, single: true);
+                x.Print(await x.Api.PatchAsync($"/v1/applications/{id}", new { name = x.Get(newName) }, x.Get(updAppIf)), AppFields, single: true);
             }));
             var delApp = app();
-            cmd.Subcommands.Add(Cmd("delete", "Delete an application and its roles", c => c.Arguments.Add(delApp), async x =>
+            var delAppIf = IfVersionOpt();
+            cmd.Subcommands.Add(Cmd("delete", "Delete an application, its roles and all its sessions", c => { c.Arguments.Add(delApp); c.Options.Add(delAppIf); }, async x =>
             {
-                await x.Api.DeleteAsync($"/v1/applications/{await x.ResolveApp(x.Get(delApp)!)}");
+                await x.Api.DeleteAsync($"/v1/applications/{await x.ResolveApp(x.Get(delApp)!)}", x.Get(delAppIf));
                 x.Message("deleted");
             }));
             return cmd;
@@ -247,17 +265,19 @@ public static class CliApp
 
             var uRole = RoleArg(); var uApp = AppOpt(false);
             var uName = new Option<string?>("--name"); var uDesc = new Option<string?>("--description");
-            cmd.Subcommands.Add(Cmd("update", "Update a role", c => { c.Arguments.Add(uRole); c.Options.Add(uApp); c.Options.Add(uName); c.Options.Add(uDesc); }, async x =>
+            var uRoleIf = IfVersionOpt();
+            cmd.Subcommands.Add(Cmd("update", "Update a role", c => { c.Arguments.Add(uRole); c.Options.Add(uApp); c.Options.Add(uName); c.Options.Add(uDesc); c.Options.Add(uRoleIf); }, async x =>
             {
                 var id = await x.ResolveRole(x.Get(uRole)!, x.Get(uApp));
                 var body = new { name = x.Get(uName), description = x.Get(uDesc) };
-                x.Print(await x.Api.PatchAsync($"/v1/roles/{id}", body), RoleFields, single: true);
+                x.Print(await x.Api.PatchAsync($"/v1/roles/{id}", body, x.Get(uRoleIf)), RoleFields, single: true);
             }));
 
             var dRole = RoleArg(); var dApp = AppOpt(false);
-            cmd.Subcommands.Add(Cmd("delete", "Delete a role", c => { c.Arguments.Add(dRole); c.Options.Add(dApp); }, async x =>
+            var dRoleIf = IfVersionOpt();
+            cmd.Subcommands.Add(Cmd("delete", "Delete a role (users with no other role in its application lose their sessions there)", c => { c.Arguments.Add(dRole); c.Options.Add(dApp); c.Options.Add(dRoleIf); }, async x =>
             {
-                await x.Api.DeleteAsync($"/v1/roles/{await x.ResolveRole(x.Get(dRole)!, x.Get(dApp))}");
+                await x.Api.DeleteAsync($"/v1/roles/{await x.ResolveRole(x.Get(dRole)!, x.Get(dApp))}", x.Get(dRoleIf));
                 x.Message("deleted");
             }));
             return cmd;
@@ -294,10 +314,11 @@ public static class CliApp
                 x.Print(await x.Api.GetAsync($"/v1/clients/{await x.ResolveClient(x.Get(gClient)!)}"), ClientFields, single: true)));
 
             var uClient = ClientArg(); var uName = new Option<string?>("--name"); var uActive = new Option<bool?>("--active");
-            cmd.Subcommands.Add(Cmd("update", "Rename, enable or disable a client", c => { c.Arguments.Add(uClient); c.Options.Add(uName); c.Options.Add(uActive); }, async x =>
+            var uClientIf = IfVersionOpt();
+            cmd.Subcommands.Add(Cmd("update", "Rename, enable or disable a client", c => { c.Arguments.Add(uClient); c.Options.Add(uName); c.Options.Add(uActive); c.Options.Add(uClientIf); }, async x =>
             {
                 var id = await x.ResolveClient(x.Get(uClient)!);
-                x.Print(await x.Api.PatchAsync($"/v1/clients/{id}", new { name = x.Get(uName), isActive = x.Get(uActive) }), ClientFields, single: true);
+                x.Print(await x.Api.PatchAsync($"/v1/clients/{id}", new { name = x.Get(uName), isActive = x.Get(uActive) }, x.Get(uClientIf)), ClientFields, single: true);
             }));
 
             var rClient = ClientArg();
@@ -309,9 +330,10 @@ public static class CliApp
             }));
 
             var dClient = ClientArg();
-            cmd.Subcommands.Add(Cmd("delete", "Delete a client", c => c.Arguments.Add(dClient), async x =>
+            var dClientIf = IfVersionOpt();
+            cmd.Subcommands.Add(Cmd("delete", "Delete a client", c => { c.Arguments.Add(dClient); c.Options.Add(dClientIf); }, async x =>
             {
-                await x.Api.DeleteAsync($"/v1/clients/{await x.ResolveClient(x.Get(dClient)!)}");
+                await x.Api.DeleteAsync($"/v1/clients/{await x.ResolveClient(x.Get(dClient)!)}", x.Get(dClientIf));
                 x.Message("deleted");
             }));
 
@@ -413,12 +435,13 @@ public static class CliApp
             var uUser = UserArg();
             var uName = new Option<string?>("--username"); var uEmail = new Option<string?>("--email");
             var uDisplay = new Option<string?>("--display-name"); var uActive = new Option<bool?>("--active");
+            var uUserIf = IfVersionOpt();
             var uKind = KindOpt("Change the kind (a user with the admin role must stay a person)"); var uExpires = ExpiresOpt();
-            cmd.Subcommands.Add(Cmd("update", "Update a user", c => { c.Arguments.Add(uUser); c.Options.Add(uName); c.Options.Add(uEmail); c.Options.Add(uDisplay); c.Options.Add(uActive); c.Options.Add(uKind); c.Options.Add(uExpires); }, async x =>
+            cmd.Subcommands.Add(Cmd("update", "Update a user", c => { c.Arguments.Add(uUser); c.Options.Add(uName); c.Options.Add(uEmail); c.Options.Add(uDisplay); c.Options.Add(uActive); c.Options.Add(uKind); c.Options.Add(uExpires); c.Options.Add(uUserIf); }, async x =>
             {
                 var id = await x.ResolveUser(x.Get(uUser)!);
                 var body = new { username = x.Get(uName), email = x.Get(uEmail), displayName = x.Get(uDisplay), isActive = x.Get(uActive), kind = x.Get(uKind), expiresAt = x.Get(uExpires) };
-                x.Print(await x.Api.PatchAsync($"/v1/users/{id}", body), UserFields, single: true);
+                x.Print(await x.Api.PatchAsync($"/v1/users/{id}", body, x.Get(uUserIf)), UserFields, single: true);
             }));
 
             var sUser = UserArg();
@@ -451,9 +474,10 @@ public static class CliApp
             }));
 
             var dUser = UserArg();
-            cmd.Subcommands.Add(Cmd("delete", "Delete a user", c => c.Arguments.Add(dUser), async x =>
+            var dUserIf = IfVersionOpt();
+            cmd.Subcommands.Add(Cmd("delete", "Delete a user", c => { c.Arguments.Add(dUser); c.Options.Add(dUserIf); }, async x =>
             {
-                await x.Api.DeleteAsync($"/v1/users/{await x.ResolveUser(x.Get(dUser)!)}");
+                await x.Api.DeleteAsync($"/v1/users/{await x.ResolveUser(x.Get(dUser)!)}", x.Get(dUserIf));
                 x.Message("deleted");
             }));
 

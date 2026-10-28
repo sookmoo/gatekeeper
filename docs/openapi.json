@@ -680,6 +680,7 @@
         "tags": [
           "Applications"
         ],
+        "description": "Deletes the application with its roles and clients, and all its sessions at once (they are removed in the same step, so their tokens stop verifying).",
         "parameters": [
           {
             "name": "id",
@@ -1016,6 +1017,7 @@
         "tags": [
           "Roles"
         ],
+        "description": "Users who held no other role of the role's application lose their active sessions in that application at once, in the same step as the delete (the audit note carries sessionsRevoked=<n>). Users who keep another role there, and other applications, are untouched. Introspection reports the access tokens of the ended sessions as inactive at once; a consumer that only checks the signature accepts such a token until it expires.",
         "parameters": [
           {
             "name": "id",
