@@ -328,7 +328,11 @@ on purpose, the owner role must disable the trigger first. (The `AddSessionCutof
 it can delay requests on `users`, `roles`, `clients` and `apps` for up to 2 s per attempt, so do not run it in a retry loop. `Down` drops the triggers and functions. After `Down` the application
 still bumps `version` itself (loaded + 1); what stops is the bump by raw SQL writes and by instances older than `AddVersions`, so the "stop old instances" rule for `AddVersions` applies again.
 
-The CLI sends no `If-Match` yet (a `--if-version` option is deferred). The Web UI does (see the Administration UI section).
+The CLI sends `If-Match` when you pass `--if-version <n>` to `gk app|role|user|client update|delete` (`n` is the `version` shown by `get`, a positive whole number, else the command
+is refused before anything is sent); a 412 prints "Not changed: it has another version ..." and exits 3, and nothing is changed. Without the flag the CLI sends no `If-Match`. The Web UI always does (see the Administration UI section).
+`PATCH` and `DELETE` with a stale version both answer 412 as above.
+
+**Sessions and deletion.** Deleting a role ends, in the same database step, the active sessions (in that role's application) of every user who held that role and no other role of the same application; users who keep another role there, other applications and already ended sessions are untouched. The audit row of the delete carries `sessionsRevoked=<n>` when it ended any. Deleting an application removes the application's sessions in the same step (they cascade). Introspection reports the access tokens of ended sessions as inactive at once; a consumer that only checks the token signature accepts one until it expires. The administrator check of this instance forgets the cached answers of the ended sessions at once. Role deletes of one application run one after the other (the store locks the application first, like an application delete), so deleting two roles of one user at the same time still ends that user's sessions. Known limits: removing a role from a user (`DELETE /v1/users/{id}/roles/{roleId}`) is not serialised the same way, so two removals at the same moment can in rare cases leave a session standing (it ends at the next refresh or introspection, as before this slice). In the reserved `gatekeeper` application a person or test user may sign in without holding any role, so deleting a non-admin role there ends their sessions even though they could have kept them: they sign in again.
 
 ## Administration UI
 

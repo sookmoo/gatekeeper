@@ -52,13 +52,16 @@ public sealed class ApiClient(HttpClient http, string? bearerToken = null)
 
     public Task<JsonElement> PutAsync(string path, object? body = null) => SendAsync(HttpMethod.Put, path, body);
 
-    public Task<JsonElement> PatchAsync(string path, object body) => SendAsync(HttpMethod.Patch, path, body);
+    /// <param name="ifVersion">Sent as <c>If-Match</c>: the change is applied only if the resource still has this version (else exit 3).</param>
+    public Task<JsonElement> PatchAsync(string path, object body, long? ifVersion = null) => SendAsync(HttpMethod.Patch, path, body, ifVersion);
 
-    public Task<JsonElement> DeleteAsync(string path) => SendAsync(HttpMethod.Delete, path, null);
+    /// <param name="ifVersion">Sent as <c>If-Match</c>: deleted only if the resource still has this version (else exit 3).</param>
+    public Task<JsonElement> DeleteAsync(string path, long? ifVersion = null) => SendAsync(HttpMethod.Delete, path, null, ifVersion);
 
-    private async Task<JsonElement> SendAsync(HttpMethod method, string path, object? body)
+    private async Task<JsonElement> SendAsync(HttpMethod method, string path, object? body, long? ifVersion = null)
     {
         using var request = new HttpRequestMessage(method, path);
+        if (ifVersion is { } v) request.Headers.TryAddWithoutValidation("If-Match", $"\"{v.ToString(System.Globalization.CultureInfo.InvariantCulture)}\"");
         if (body is not null) request.Content = JsonContent.Create(body);
         if (bearerToken is not null) request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", bearerToken);
 
@@ -92,12 +95,13 @@ public sealed class ApiClient(HttpClient http, string? bearerToken = null)
                 HttpStatusCode.Unauthorized => "Not logged in. Run 'gk login'.",
                 HttpStatusCode.Forbidden when WrongCurrentPassword(text) => "The current password is incorrect.",
                 HttpStatusCode.Forbidden => "You are not allowed to do that.",
+                HttpStatusCode.PreconditionFailed => "Not changed: it has another version than --if-version says (someone else changed it). Show it again with 'get' and retry with the current version.",
                 _ => Safe.Text(Describe(text) ?? response.ReasonPhrase ?? response.StatusCode.ToString()),
             };
             var code = response.StatusCode switch
             {
                 HttpStatusCode.NotFound => 2,
-                HttpStatusCode.Conflict => 3,
+                HttpStatusCode.Conflict or HttpStatusCode.PreconditionFailed => 3,
                 HttpStatusCode.ServiceUnavailable => 4,
                 HttpStatusCode.Unauthorized => 5,
                 HttpStatusCode.Forbidden when WrongCurrentPassword(text) => 1, // not a sign-in problem: the session is fine

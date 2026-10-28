@@ -26,6 +26,9 @@ public interface IAppRepository
     Task<bool> DeleteAsync(Guid id, long? expectedVersion = null, CancellationToken ct = default);
 }
 
+/// <summary>A session a store revoked as a side effect (so the caller can forget cached answers for it).</summary>
+public readonly record struct RevokedSession(Guid UserId, Guid SessionId);
+
 public interface IRoleRepository
 {
     Task<Role> AddAsync(Role role, CancellationToken ct = default);
@@ -33,6 +36,14 @@ public interface IRoleRepository
     Task<IReadOnlyList<Role>> ListByAppAsync(Guid appId, Slice? slice = null, CancellationToken ct = default);
     Task<Role?> UpdateAsync(Role role, long? expectedVersion = null, CancellationToken ct = default);
     Task<bool> DeleteAsync(Guid id, long? expectedVersion = null, CancellationToken ct = default);
+    /// <summary>
+    /// Deletes the role and, in the same atomic step, revokes (at <paramref name="now"/>) the active sessions in the role's application of
+    /// every user who held this role and no other role of that application. Sessions of other users, of users who keep another role there,
+    /// of other applications, and sessions that are already revoked or expired are untouched. Returns null when there is no such role,
+    /// else the sessions revoked (user and session ids). A wrong expected version throws <see cref="PreconditionFailedException"/> and changes nothing.
+    /// Deletes of roles of one application are serialised, so two roles of one user deleted at once still end the user's sessions.
+    /// </summary>
+    Task<IReadOnlyList<RevokedSession>?> DeleteEndingSessionsAsync(Guid id, long? expectedVersion, DateTimeOffset now, CancellationToken ct = default);
 }
 
 public interface IUserRepository
