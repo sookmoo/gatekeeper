@@ -1,0 +1,15 @@
+[Unit]
+Description=Gatekeeper database backup (pg_dump as the owner role, one-shot)
+Requisite=gatekeeper-db.service
+After=gatekeeper-db.service
+
+# Run by gatekeeper-backup.timer, which is NOT enabled by install.sh. install.sh copies backup.sh to ~/.local/lib/gatekeeper/.
+# Defaults: ~/.local/share/gatekeeper/backups, 7 days. Change them with a drop-in (systemctl --user edit gatekeeper-backup.service):
+#   [Service]
+#   Environment=GATEKEEPER_BACKUP_DIR=/path GATEKEEPER_BACKUP_KEEP_DAYS=14
+# Requisite= (not Requires=): a backup never starts or restarts the database; it fails at once when the db unit is not active.
+# No sandbox options beyond UMask: PrivateTmp and similar break rootless podman in a user manager, and others could not be verified here.
+[Service]
+Type=oneshot
+ExecStart=%h/.local/lib/gatekeeper/backup.sh
+UMask=0077

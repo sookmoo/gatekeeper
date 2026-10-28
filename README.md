@@ -456,7 +456,7 @@ Every store implementation (in-memory and Postgres) must pass `tests/Gatekeeper.
 Build the image: `podman build -t gatekeeper-api -f Containerfile .` (digest-pinned bases, chiseled non-root runtime, no shell).
 CI builds it on every PR and publishes `ghcr.io/sookmoo/gatekeeper:<sha>` and `:latest` from `main`.
 
-Run the full stack (Postgres, one-shot migrations as the owner role, API as the data-only role; the optional audit retention timer is installed but off) as systemd user services:
+Run the full stack (Postgres, one-shot migrations as the owner role, API as the data-only role; the optional audit retention and backup timers are installed but off) as systemd user services:
 
     deploy/install.sh v0.1.0 [sha256:<api> sha256:<web>]  # a release: pins the units to the image digests (see Releases below)
     deploy/install.sh <image> [<web-image>]                # explicit images
@@ -472,6 +472,67 @@ Run the full stack (Postgres, one-shot migrations as the owner role, API as the 
 - Update: install the new release (below) and `systemctl --user restart gatekeeper-api` (re-runs migrations first).
 - For the service to survive logout/reboot: `loginctl enable-linger $USER`.
 
+### Backup and restore
+
+`deploy/backup.sh` writes `pg_dump -Fc` of the database as the owner role, through `podman exec` on the db container (unix socket: no password is read or printed;
+the socket uses `trust`, so **the host account that can run podman is the trust boundary**: anyone who can `podman exec` into the db container has the database).
+Files are `gatekeeper-<UTC time>.dump` plus `gatekeeper-<UTC time>.dump.sha256`, mode 0600, in `GATEKEEPER_BACKUP_DIR` (default `~/.local/share/gatekeeper/backups`, created 0700).
+The script writes to temporary names, checks that `pg_restore --list` can read the dump and that it has the `__EFMigrationsHistory` and `users` tables (so an empty or wrong
+database is never kept, and never causes old dumps to be deleted), then renames (checksum first). It refuses a symlinked directory, a directory that is group- or world-writable or
+not yours, a relative path and a container that is not running; a lock file in the directory makes a second concurrent run fail; any failure exits non-zero. After a
+successful run it deletes `gatekeeper-*.dump` and `.sha256` files older than `GATEKEEPER_BACKUP_KEEP_DAYS` days (default 7) and leftover temp files of killed runs older than
+60 minutes; nothing else in the directory is touched.
+
+- **Timer (off by default).** `install.sh` copies `backup.sh` to `~/.local/lib/gatekeeper/` and installs `gatekeeper-backup.service` and `.timer` (daily 02:30), never enabled.
+  Run `deploy/backup.sh` once by hand, then `systemctl --user enable --now gatekeeper-backup.timer`. Change directory or retention with
+  `systemctl --user edit gatekeeper-backup.service` (`Environment=GATEKEEPER_BACKUP_DIR=... GATEKEEPER_BACKUP_KEEP_DAYS=14`).
+  A user timer only runs while your user manager runs: for a server that must back up while you are logged out, `loginctl enable-linger $USER`.
+  The service uses `Requisite=gatekeeper-db.service` (a backup never starts the database; it fails when the database is down) and only `UMask=0077`:
+  sandbox options such as `PrivateTmp` break rootless podman in a user manager and `NoNewPrivileges` and similar could not be verified, so they are not set.
+- **Monitor it.** A failed run is only visible in the journal: `systemctl --user is-failed gatekeeper-backup.service`, `journalctl --user -u gatekeeper-backup.service`.
+  To be told, add a drop-in to the service with `OnFailure=` pointing at a unit of yours that sends mail or a message, or check
+  that the newest dump is recent (`find ~/.local/share/gatekeeper/backups -name 'gatekeeper-*.dump' -mtime -2`) from your monitoring.
+- **A plaintext dump is as sensitive as the database.** It holds the Argon2 password hashes, the client-secret hashes, session records and the whole audit trail (addresses,
+  user names). Anyone who gets it can try to crack the hashes offline. Keep the directory on an access-controlled disk and keep it out of cloud sync, home-directory
+  backup tools and file indexers unless those are meant to hold secrets (or exclude the directory). Encryption and copies to another host are the operator's job; the local
+  7-day copies protect against mistakes, not against losing the host or the disk. Example, encrypting each new dump with `age` (public key only on the server) and keeping only the encrypted copy
+  off-host:
+  `age -r age1... -o gatekeeper-<time>.dump.age gatekeeper-<time>.dump` (decrypt with `age -d -i key.txt -o gatekeeper-<time>.dump gatekeeper-<time>.dump.age` before a restore;
+  `restore.sh` reads the plain dump and its `.sha256`). The scripts do not encrypt by themselves.
+- **Not in the dump:** the token signing key and the other podman secrets (`gatekeeper-signing-key`, `gatekeeper-retired-keys`, the database passwords and
+  connection strings). Back them up separately and keep that copy secret too (`podman secret inspect --showsecret <name>` prints one; do not paste it into tickets or logs).
+  Without the signing key, restored sessions and issued tokens stop verifying (users log in again); without the connection-string secrets you create new ones.
+- **Restore** (`deploy/restore.sh --yes <dump>`) only loads into an EMPTY database (no tables): it refuses anything else and refuses to run without `--yes`.
+  **Never restore a dump you cannot vouch for**: a dump is code-like input for the owner role of your database. `restore.sh` verifies `<dump>.sha256`
+  and refuses on a mismatch or a missing file (`--no-verify` skips this; a checksum next to the dump only proves it was not changed by accident or by someone who cannot also change the checksum file, so keep dumps and checksums where only you can write).
+  It stops `gatekeeper-web`, `gatekeeper-api` and the backup and audit-prune timers (their previous state is restored afterwards), restores as the owner role in one transaction
+  (a failure leaves the database empty and the services stopped), checks that `__EFMigrationsHistory` and `users` exist, writes an audit row `system.restore` (actor `system:restore`, detail: dump file name),
+  runs `gatekeeper-migrate.service` (migrations newer than the dump are applied), and starts API and web again. A dump from a **newer** release than the installed one is not detected:
+  install the release that made the dump (or newer) first, otherwise the older API may meet a schema it does not know (migrations are additive, but check the release notes).
+  Owner-owned objects, the audit triggers and the grants come back with the schema. The empty database starts with the default privileges of `db-roles.sql`
+  (full DML for the app role on new tables), which would leave `DELETE`/`UPDATE` on `audit_events` that a migration had revoked, because a dump only grants; so the
+  script removes those defaults before the restore and sets them again afterwards, also when the restore fails or is interrupted. If `restore.sh` is killed hard (SIGKILL, power loss) it cannot
+  do that: **re-run it** (it needs an empty database, which a rolled-back restore leaves), and if the database is already restored, check
+  `select defaclacl from pg_default_acl` shows `gatekeeper_app=arwd/gatekeeper_owner` and, if not, run the `ALTER DEFAULT PRIVILEGES` from `scripts/db-roles.sql` as the owner.
+  An interrupted or failed restore must be re-run after the cause is fixed; the API and web stay stopped until a restore succeeds. `--no-services` skips all systemd steps.
+- **A restore brings back the old state.** Sessions revoked since the dump are active again, refresh tokens that were rotated are valid again, and passwords changed since then are the old ones (and a user
+  deactivated since then is active). After a restore end the sessions of affected users (`DELETE /v1/users/{id}/sessions`), have users with changed passwords reset them,
+  and run `deploy/rotate-signing-key.sh --compromised` so access tokens issued before the restore stop verifying. The script prints this reminder.
+  The audit rows written after the dump are gone; the `system.restore` row records the restore itself.
+- **Restore drill** (do it on a spare machine or after a change, not for the first time during an incident):
+  1. `deploy/backup.sh`; note the file name.
+  2. On the target (same host: `systemctl --user stop gatekeeper-web gatekeeper-api gatekeeper-db`, then `podman volume rm gatekeeper-db-data`, which destroys the data:
+     only after you have a good dump and your secrets backup) run `deploy/install.sh <same release>` (keeps existing secrets, creates them on a new host) and
+     `systemctl --user start gatekeeper-db.service`. On a new host restore the signing key and the other secrets from your separate backup first, with `podman secret create`.
+  3. `deploy/restore.sh --yes ~/.local/share/gatekeeper/backups/gatekeeper-<time>.dump`.
+  4. Check: `systemctl --user status gatekeeper-api gatekeeper-web`, log in, `gk audit list`, and `/health/ready`.
+  The database roles must exist before the restore: the empty volume's first start creates them from the secrets. The connection-string secrets must match the new
+  `gatekeeper-owner-pw` and `gatekeeper-app-pw` (created together by `install.sh`).
+- **Test.** `scripts/test-backup-restore.sh` (needs podman and the .NET SDK; about a minute and a half; not in CI because CI has no podman) starts two disposable Postgres containers (`gk-bkt-*`),
+  backs up a populated one, restores into the other and compares row counts, triggers, default privileges, grants and file modes; it also checks retention, orphan temp files, checksums, locking,
+  the refusals (non-empty target, bad directory, symlink, bad names), a failing restore and an interrupted one (the database stays empty, the default privileges come back) and that the app role still cannot
+  DDL or delete, update or truncate audit rows. `GATEKEEPER_TEST_RESTORE_SCRIPT=<copy of restore.sh>` runs the same tests against a modified copy (a mutation check: without the revoke or the re-grant it fails).
+
 ### Releases, upgrade and rollback
 
 `:latest` moves on every merge to `main`; use it for local development only (`install.sh --latest`; `install.sh` with no argument is refused, so a re-run never silently unpins a server). A server runs a release.
@@ -479,7 +540,8 @@ Run the full stack (Postgres, one-shot migrations as the owner role, API as the 
 - One-time repository setup (owner; the workflow cannot do it): create the environment `release` (Settings, Environments) with deployment tags restricted to `v*`
   (required reviewers optional, they add a manual approval), and a tag ruleset on `v*` that restricts creation to maintainers and blocks updates and deletion.
   Both jobs of the release workflow run in that environment.
-- Release (maintainer): once the CI run for the commit on `main` has published its images (and attested them), push a SemVer tag on that commit,
+- Release (maintainer): tag only a commit on `main` whose CI run has **completed**: the publish job pushes the images, and until it has finished the release
+  workflow fails with "not found". Tag creation is restricted by the `v*` tag ruleset (above), so only maintainers can push a release tag. Once the run has published its images (and attested them), push a SemVer tag on that commit,
   `git tag -s v0.1.0 && git push origin v0.1.0` (a pre-release is any tag with a suffix, `v0.1.0-rc.1`). `.github/workflows/release.yml` does not rebuild:
   it checks the tag is `vX.Y.Z[-suffix]` and its commit is on `main`, finds `ghcr.io/sookmoo/gatekeeper{,-web}:<sha>` (fails if either is
   missing), verifies their build provenance (made by `ci.yml` on `main`), rescans them with the image scan, retags both to `:vX.Y.Z` inside the
