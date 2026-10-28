@@ -83,6 +83,10 @@ dotnet bin/Debug/net10.0/Gatekeeper.Api.dll           # serve, uses Gatekeeper
   `kind == "person"` explicitly where only people are allowed, because older tokens and client tokens have no `kind`. A test user's
   tokens and sessions end no later than the account. Give `expiresAt` with an offset or `Z` (the CLI reads a bare date as UTC). Service identities
   are separate (`/v1/clients`). `gk user create <name> --email ... --kind test --expires 2026-12-31`, `gk user list --kind test`.
+- Finding users: `GET /v1/users` takes `username` (exact), `usernamePrefix` and `emailPrefix` (case-insensitive prefixes of at least 2 characters; `%`, `_` and `\` match
+  themselves; shorter, over 256 characters or with control characters is a 400), `kind`, `active` (the enabled flag only: it still lists expired test users) and
+  `usable=true|false` (enabled and, for a test user, not expired / the others). The filters combine with AND and page as before. `GET /v1/users/{id}/roles` items carry
+  `appName`. `gk user list --prefix <text> --email-prefix <text> --usable true|false`; the Users page has the same filters.
 - Create the first administrator (password on stdin or `GATEKEEPER_BOOTSTRAP_PASSWORD`, 12-128 characters):
   `echo ... | dotnet Gatekeeper.Api.dll bootstrap-admin <username> <email>` (Postgres store; see `deploy/bootstrap-admin.sh`).
   Running it for an existing user repairs that user (reactivates, resets the password, restores the admin role): the recovery

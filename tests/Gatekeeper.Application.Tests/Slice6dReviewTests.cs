@@ -18,7 +18,7 @@ public class Slice6dReviewTests
             return u;
         }
         public Task<User> AddAsync(User user, CancellationToken ct = default) => inner.AddAsync(user, ct);
-        public Task<IReadOnlyList<User>> ListAsync(bool? active = null, string? username = null, UserKind? kind = null, Slice? slice = null, CancellationToken ct = default) => inner.ListAsync(active, username, kind, slice, ct);
+        public Task<IReadOnlyList<User>> ListAsync(bool? active = null, string? username = null, UserKind? kind = null, string? usernamePrefix = null, string? emailPrefix = null, bool? usable = null, DateTimeOffset? now = null, Slice? slice = null, CancellationToken ct = default) => inner.ListAsync(active, username, kind, usernamePrefix, emailPrefix, usable, now, slice, ct);
         public Task<User?> UpdateAsync(User user, long? expectedVersion = null, CancellationToken ct = default) => inner.UpdateAsync(user, expectedVersion, ct);
         public Task<bool> DeleteAsync(Guid id, long? expectedVersion = null, CancellationToken ct = default) => inner.DeleteAsync(id, expectedVersion, ct);
         public Task AssignRoleAsync(Guid userId, Guid roleId, CancellationToken ct = default) => inner.AssignRoleAsync(userId, roleId, ct);

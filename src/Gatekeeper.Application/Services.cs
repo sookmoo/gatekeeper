@@ -159,19 +159,24 @@ public sealed class RoleService(IAppRepository apps, IRoleRepository roles)
     }
 }
 
+/// <summary>A role held by a user, with the name of its application (read-only view for <c>GET /v1/users/{id}/roles</c>).</summary>
+public sealed record UserRoleView(Guid Id, Guid AppId, string AppName, string Name, string Description, long Version);
+
 /// <summary>What a user change did to the user's sessions (for the audit detail).</summary>
 /// <param name="CutOff">The user's session cut-off as raised by this change (null when it did not raise it).</param>
 public readonly record struct SessionEffects(int Revoked, int Capped, DateTimeOffset? CutOff = null);
 
-public sealed class UserService(IUserRepository users, AdminGuard? guard = null, ISessionRepository? sessions = null, IRoleRepository? roles = null)
+public sealed class UserService(IUserRepository users, AdminGuard? guard = null, ISessionRepository? sessions = null, IRoleRepository? roles = null, IAppRepository? apps = null)
 {
-    public async Task<Page<User>> ListAsync(bool? active = null, string? username = null, UserKind? kind = null, PageQuery? page = null, CancellationToken ct = default)
+    public async Task<Page<User>> ListAsync(bool? active = null, string? username = null, UserKind? kind = null, PageQuery? page = null, CancellationToken ct = default,
+        string? usernamePrefix = null, string? emailPrefix = null, bool? usable = null)
     {
         page ??= PageQuery.Default;
+        Validation.UserListFilters(usernamePrefix, emailPrefix);
         // No valid username contains control characters or malformed Unicode, so such a filter matches nothing.
         if (username is not null && !Validation.IsCleanText(username)) return page.Build<User>([]);
         if (kind is { } k && !Enum.IsDefined(k)) return page.Build<User>([]);
-        return page.Build(await users.ListAsync(active, username, kind, page.Slice, ct));
+        return page.Build(await users.ListAsync(active, username, kind, usernamePrefix, emailPrefix, usable, usable is null ? null : Clock.UtcNowMicros(), page.Slice, ct));
     }
 
     public async Task<User> GetAsync(Guid id, CancellationToken ct = default) =>
@@ -319,6 +324,16 @@ public sealed class UserService(IUserRepository users, AdminGuard? guard = null,
         page ??= PageQuery.Default;
         await GetAsync(userId, ct);
         return page.Build(await users.ListRolesAsync(userId, appId, page.Slice, ct));
+    }
+
+    /// <summary>The roles of a user with the name of each role's application (one lookup per distinct application on the page).</summary>
+    public async Task<Page<UserRoleView>> ListRoleViewsAsync(Guid userId, Guid? appId = null, PageQuery? page = null, CancellationToken ct = default)
+    {
+        var roleList = await ListRolesAsync(userId, appId, page, ct);
+        var names = new Dictionary<Guid, string>();
+        foreach (var id in roleList.Items.Select(r => r.AppId).Distinct())
+            names[id] = apps is null ? "" : (await apps.GetAsync(id, ct))?.Name ?? "";
+        return new Page<UserRoleView>([.. roleList.Items.Select(r => new UserRoleView(r.Id, r.AppId, names[r.AppId], r.Name, r.Description, r.Version))], roleList.NextCursor);
     }
 
     public async Task AssignRoleAsync(Guid userId, Guid roleId, CancellationToken ct = default)

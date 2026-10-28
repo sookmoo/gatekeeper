@@ -1063,6 +1063,7 @@
         "tags": [
           "Users"
         ],
+        "description": "Filters combine with AND. username is an exact match; usernamePrefix and emailPrefix are case-insensitive prefixes of at least 2 characters (wildcard characters match themselves; 400 when shorter, too long or with control characters). active filters the enabled flag only; usable=true lists accounts that are enabled and, for test users, not expired; usable=false lists the others.",
         "parameters": [
           {
             "name": "active",
@@ -1083,6 +1084,27 @@
             "in": "query",
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "name": "usernamePrefix",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "emailPrefix",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "usable",
+            "in": "query",
+            "schema": {
+              "type": "boolean"
             }
           },
           {
@@ -1645,6 +1667,7 @@
         "tags": [
           "Users"
         ],
+        "description": "Each item carries appName, the name of the role's application (read-only).",
         "parameters": [
           {
             "name": "id",
@@ -1689,7 +1712,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/PageOfRole"
+                  "$ref": "#/components/schemas/PageOfUserRoleView"
                 }
               }
             }
@@ -2879,6 +2902,27 @@
           }
         }
       },
+      "PageOfUserRoleView": {
+        "required": [
+          "items",
+          "nextCursor"
+        ],
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/UserRoleView"
+            }
+          },
+          "nextCursor": {
+            "type": [
+              "null",
+              "string"
+            ]
+          }
+        }
+      },
       "PasswordRequest": {
         "required": [
           "password"
@@ -3173,6 +3217,44 @@
               "string"
             ],
             "format": "date-time"
+          }
+        }
+      },
+      "UserRoleView": {
+        "required": [
+          "id",
+          "appId",
+          "appName",
+          "name",
+          "description",
+          "version"
+        ],
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "appId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "appName": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "version": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int64"
           }
         }
       }

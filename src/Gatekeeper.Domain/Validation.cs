@@ -36,6 +36,19 @@ public static partial class Validation
             ("email", EmailError(email)),
             ("displayName", Length(displayName, MaxTextLength, required: false))));
 
+    public const int MinPrefixLength = 2;
+
+    /// <summary>Filters of the user list: a prefix is at least <see cref="MinPrefixLength"/> characters (a one-letter search would list nearly everyone) and clean text.</summary>
+    public static void UserListFilters(string? usernamePrefix, string? emailPrefix) =>
+        Throw(Check(("usernamePrefix", PrefixError(usernamePrefix)), ("emailPrefix", PrefixError(emailPrefix))));
+
+    private static string? PrefixError(string? value)
+    {
+        if (value is null) return null;
+        if (value.Length < MinPrefixLength) return $"must be at least {MinPrefixLength} characters.";
+        return Length(value, MaxTextLength, required: false);
+    }
+
     public static readonly TimeSpan DefaultTestLifetime = TimeSpan.FromDays(30);
     public static readonly TimeSpan MaxTestLifetime = TimeSpan.FromDays(365);
 

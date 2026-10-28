@@ -392,9 +392,15 @@ public static class CliApp
 
             var lActive = new Option<bool?>("--active") { Description = "Filter by active state (true/false)" };
             var lKind = KindOpt("Only this kind: person, test or shared");
-            cmd.Subcommands.Add(Cmd("list", "List users", c => { c.Options.Add(lActive); c.Options.Add(lKind); }, async x =>
+            var lUsable = new Option<bool?>("--usable") { Description = "Filter by usable (enabled and not expired): true/false" };
+            var lPrefix = new Option<string?>("--prefix") { Description = "Usernames starting with this text (case-insensitive, at least 2 characters)" };
+            var lEmailPrefix = new Option<string?>("--email-prefix") { Description = "E-mail addresses starting with this text (case-insensitive, at least 2 characters)" };
+            cmd.Subcommands.Add(Cmd("list", "List users", c => { c.Options.Add(lActive); c.Options.Add(lUsable); c.Options.Add(lKind); c.Options.Add(lPrefix); c.Options.Add(lEmailPrefix); }, async x =>
             {
                 var query = new List<string>();
+                if (x.Get(lUsable) is { } usable) query.Add($"usable={usable.ToString().ToLowerInvariant()}");
+                if (x.Get(lPrefix) is { } prefix) query.Add($"usernamePrefix={Uri.EscapeDataString(prefix)}");
+                if (x.Get(lEmailPrefix) is { } emailPrefix) query.Add($"emailPrefix={Uri.EscapeDataString(emailPrefix)}");
                 if (x.Get(lActive) is { } active) query.Add($"active={active.ToString().ToLowerInvariant()}");
                 if (x.Get(lKind) is { } kind) query.Add($"kind={kind}");
                 x.Print(await x.Api.GetListAsync(query.Count == 0 ? "/v1/users" : $"/v1/users?{string.Join('&', query)}"), UserFields);

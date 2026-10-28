@@ -281,12 +281,26 @@ public sealed class PostgresUserRepository(Factory factory) : PostgresRepository
     public Task<User?> GetAsync(Guid id, CancellationToken ct = default) =>
         Run(db => db.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Id == id, ct), ct: ct);
 
-    public Task<IReadOnlyList<User>> ListAsync(bool? active = null, string? username = null, UserKind? kind = null, Slice? slice = null, CancellationToken ct = default) => Run<IReadOnlyList<User>>(async db =>
+    /// <summary>The LIKE pattern for "starts with <paramref name="prefix"/>": backslash, % and _ are escaped with a backslash.</summary>
+    internal static string LikePrefix(string prefix) => prefix.Replace("\\", "\\\\").Replace("%", "\\%").Replace("_", "\\_") + "%";
+
+    public Task<IReadOnlyList<User>> ListAsync(bool? active = null, string? username = null, UserKind? kind = null, string? usernamePrefix = null, string? emailPrefix = null,
+        bool? usable = null, DateTimeOffset? now = null, Slice? slice = null, CancellationToken ct = default) => Run<IReadOnlyList<User>>(async db =>
     {
         var query = db.Users.AsNoTracking();
         if (active is not null) query = query.Where(u => u.IsActive == active);
         if (username is not null) query = query.Where(u => u.Username == username); // citext: case-insensitive
         if (kind is not null) query = query.Where(u => u.Kind == kind);
+        // ILIKE with an explicit escape character: the caller's text is a literal prefix (%, _ and \ match themselves).
+        if (usernamePrefix is not null) query = query.Where(u => EF.Functions.ILike(u.Username, LikePrefix(usernamePrefix), "\\"));
+        if (emailPrefix is not null) query = query.Where(u => EF.Functions.ILike(u.Email, LikePrefix(emailPrefix), "\\"));
+        if (usable is { } want)
+        {
+            var at = now ?? Clock.UtcNowMicros();
+            query = want
+                ? query.Where(u => u.IsActive && (u.ExpiresAt == null || u.ExpiresAt > at))
+                : query.Where(u => !u.IsActive || (u.ExpiresAt != null && u.ExpiresAt <= at));
+        }
         return await query.OrderBy(u => u.Username).Page(slice).ToListAsync(ct);
     }, ct: ct);
 

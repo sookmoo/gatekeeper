@@ -30,6 +30,19 @@
             <option value="false" selected="@(Model.Active == "false")">No</option>
         </select>
     </label>
+    <label>Usable
+        <select name="usable">
+            <option value="">Any</option>
+            <option value="true" selected="@(Model.Usable == "true")">Yes</option>
+            <option value="false" selected="@(Model.Usable == "false")">No</option>
+        </select>
+    </label>
+    <label>Username starts with
+        <input name="prefix" value="@Model.Prefix" maxlength="64">
+    </label>
+    <label>E-mail starts with
+        <input name="emailPrefix" value="@Model.EmailPrefix" maxlength="128">
+    </label>
     <label>Username (exact)
         <input name="username" value="@Model.Username" maxlength="64">
     </label>

@@ -101,7 +101,7 @@ public class Users5eQaTests : IClassFixture<WebFixture>
     }
 
     [Fact]
-    public async Task More_than_three_apps_resolve_names_through_the_list_and_a_vanished_app_shows_unknown()
+    public async Task Application_names_come_with_the_roles_without_extra_lookups_and_a_role_without_one_shows_unknown()
     {
         var calls = new List<string>();
         var items = new List<string>();
@@ -126,7 +126,7 @@ public class Users5eQaTests : IClassFixture<WebFixture>
             var n = Unique("nm" + i);
             names.Add(n);
             var a = await AppAsync(api, n);
-            items.Add($"{{\"id\":\"{await RoleAsync(api, a, "role" + i)}\",\"appId\":\"{a}\",\"name\":\"role{i}\",\"description\":\"\"}}");
+            items.Add($"{{\"id\":\"{await RoleAsync(api, a, "role" + i)}\",\"appId\":\"{a}\",\"appName\":\"{n}\",\"name\":\"role{i}\",\"description\":\"\"}}");
         }
         items.Add($"{{\"id\":\"{Guid.NewGuid()}\",\"appId\":\"{phantomApp}\",\"name\":\"ghost\",\"description\":\"\"}}");
         var b = await f.SignedInAsync();
@@ -134,11 +134,8 @@ public class Users5eQaTests : IClassFixture<WebFixture>
         var html = await b.GetStringAsync($"/Users/{userId}/Roles");
         foreach (var n in names) Assert.Contains($"<td>{n}</td>", html);
         Assert.Contains("<td>(unknown)</td>", html);
-        // bounded calls: one list call plus one lookup for the app the list lacked, not one lookup per role
-        var appCalls = calls.Where(c => c.StartsWith("GET /v1/applications")).ToList();
-        Assert.Contains(appCalls, c => c.StartsWith("GET /v1/applications?"));
-        Assert.True(appCalls.Count <= 2, string.Join(" | ", appCalls));
-        Assert.Contains(appCalls, c => c.Contains(phantomApp.ToString()));
+        // slice 8g: the API names each role's application, so the page makes no application lookups at all
+        Assert.DoesNotContain(calls, c => c.Contains("/v1/applications"));
     }
 
     [Fact]

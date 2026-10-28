@@ -104,9 +104,9 @@ public abstract class QaSlice4aStoreTests : IDisposable
     {
         var (_, _, users, _) = Open();
         for (var i = 0; i < 7; i++) await users.AddAsync(U($"p{i}", active: i % 2 == 0));
-        Assert.Equal(["p0", "p2", "p4"], (await users.ListAsync(true, null, null, new Slice(0, 3))).Select(x => x.Username));
-        Assert.Equal(["p6"], (await users.ListAsync(true, null, null, new Slice(3, 3))).Select(x => x.Username));
-        Assert.Equal(["p1", "p3"], (await users.ListAsync(false, null, null, new Slice(0, 2))).Select(x => x.Username));
+        Assert.Equal(["p0", "p2", "p4"], (await users.ListAsync(true, slice: new Slice(0, 3))).Select(x => x.Username));
+        Assert.Equal(["p6"], (await users.ListAsync(true, slice: new Slice(3, 3))).Select(x => x.Username));
+        Assert.Equal(["p1", "p3"], (await users.ListAsync(false, slice: new Slice(0, 2))).Select(x => x.Username));
         Assert.Single(await users.ListAsync(username: "P3"));
         Assert.Empty(await users.ListAsync(username: "p"));      // exact, not prefix
         Assert.Empty(await users.ListAsync(username: "p%"));     // LIKE metacharacters are literals
