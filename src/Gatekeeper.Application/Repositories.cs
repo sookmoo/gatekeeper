@@ -39,7 +39,12 @@ public interface IUserRepository
 {
     Task<User> AddAsync(User user, CancellationToken ct = default);
     Task<User?> GetAsync(Guid id, CancellationToken ct = default);
-    Task<IReadOnlyList<User>> ListAsync(bool? active = null, string? username = null, UserKind? kind = null, Slice? slice = null, CancellationToken ct = default);
+    /// <param name="usernamePrefix">Case-insensitive prefix of the username (literal text: LIKE wildcards in it match themselves).</param>
+    /// <param name="emailPrefix">Case-insensitive prefix of the e-mail address (literal text).</param>
+    /// <param name="usable">True: active and not expired at <paramref name="now"/>; false: the others. Null: no filter.</param>
+    /// <param name="now">The instant "expired" is judged at; required with <paramref name="usable"/>.</param>
+    Task<IReadOnlyList<User>> ListAsync(bool? active = null, string? username = null, UserKind? kind = null, string? usernamePrefix = null, string? emailPrefix = null,
+        bool? usable = null, DateTimeOffset? now = null, Slice? slice = null, CancellationToken ct = default);
     Task<User?> UpdateAsync(User user, long? expectedVersion = null, CancellationToken ct = default);
     Task<bool> DeleteAsync(Guid id, long? expectedVersion = null, CancellationToken ct = default);
 

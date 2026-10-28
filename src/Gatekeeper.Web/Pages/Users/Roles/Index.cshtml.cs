@@ -35,10 +35,10 @@ public class IndexModel(GatekeeperApi api) : PageModel
             Target = await api.GetUserAsync(session, id, ct);
             var page = await api.ListUserRolesAsync(session, id, null, cursor, PageSize, ct);
             NextCursor = page.NextCursor;
-            var names = await UserAccess.AppNamesAsync(api, session, page.Items.Select(r => r.AppId).ToList(), ct);
+            // The API names each role's application, so no per-application GET is needed.
             Items = page.Items.Select(r =>
             {
-                names.TryGetValue(r.AppId, out var app);
+                var app = string.IsNullOrEmpty(r.AppName) ? null : r.AppName;
                 var admin = app is not null && GatekeeperApi.IsAdminRole(new AppDto(r.AppId, app), r);
                 return new UserRoleRow(r, app, admin);
             }).ToList();

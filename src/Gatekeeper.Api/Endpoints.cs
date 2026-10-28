@@ -152,8 +152,9 @@ public static class Endpoints
         });
 
         var users = v1.MapGroup("/users").WithTags("Users");
-        users.MapGet("/", (UserService s, bool? active, string? username, string? kind, int? limit, string? cursor, CancellationToken ct) =>
-            s.ListAsync(active, username, ParseKind(kind), PageQuery.Parse(limit, cursor), ct));
+        users.MapGet("/", (UserService s, bool? active, string? username, string? kind, string? usernamePrefix, string? emailPrefix, bool? usable, int? limit, string? cursor, CancellationToken ct) =>
+            s.ListAsync(active, username, ParseKind(kind), PageQuery.Parse(limit, cursor), ct, usernamePrefix, emailPrefix, usable))
+            .WithDescription("Filters combine with AND. username is an exact match; usernamePrefix and emailPrefix are case-insensitive prefixes of at least 2 characters (wildcard characters match themselves; 400 when shorter, too long or with control characters). active filters the enabled flag only; usable=true lists accounts that are enabled and, for test users, not expired; usable=false lists the others.");
         users.MapPost("/", async (HttpContext http, UserRequest r, UserService s, CancellationToken ct) =>
         {
             var created = await Noted(http, s.CreateAsync(r.Username, r.Email, r.DisplayName, r.IsActive ?? true, r.Kind ?? UserKind.Person, r.ExpiresAt, ct));
@@ -203,7 +204,8 @@ public static class Endpoints
         }).WithDescription("Ends all of the user's sessions and raises the user's session cut-off in one step: a sign-in that is still being completed, and access tokens without a session issued before now, are refused as well. The audit note carries sessionsCutOff=<time>. The user's version does not change.")
           .ProducesProblem(StatusCodes.Status404NotFound);
         users.MapGet("/{id:guid}/roles", (Guid id, UserService s, Guid? application, int? limit, string? cursor, CancellationToken ct) =>
-            s.ListRolesAsync(id, application, PageQuery.Parse(limit, cursor), ct));
+            s.ListRoleViewsAsync(id, application, PageQuery.Parse(limit, cursor), ct))
+            .WithDescription("Each item carries appName, the name of the role's application (read-only).");
         users.MapPut("/{id:guid}/roles/{roleId:guid}", async (Guid id, Guid roleId, UserService s, CancellationToken ct) =>
         {
             await s.AssignRoleAsync(id, roleId, ct);

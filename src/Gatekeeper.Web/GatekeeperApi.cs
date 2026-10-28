@@ -7,7 +7,8 @@ namespace Gatekeeper.Web;
 
 public sealed record AppDto(Guid Id, string Name, long Version = 0);
 
-public sealed record RoleDto(Guid Id, Guid AppId, string Name, string Description, long Version = 0);
+/// <summary>AppName is only filled by the user-roles list (the API adds the name of the role's application there).</summary>
+public sealed record RoleDto(Guid Id, Guid AppId, string Name, string Description, long Version = 0, string? AppName = null);
 
 public sealed record UserDto(Guid Id, string Username, string Email, string DisplayName, bool IsActive, string Kind, DateTimeOffset? ExpiresAt, long Version = 0);
 
@@ -152,12 +153,16 @@ public sealed class GatekeeperApi(HttpClient http, WebSessions sessions, TimePro
     public async Task DeleteRoleAsync(WebSession s, Guid id, long version, CancellationToken ct) =>
         await SendAsync<object>(s, HttpMethod.Delete, $"v1/roles/{id}", null, ct, version);
 
-    public Task<Page<UserDto>> ListUsersAsync(WebSession s, string? kind, bool? active, string? username, string? cursor, int limit, CancellationToken ct)
+    public Task<Page<UserDto>> ListUsersAsync(WebSession s, string? kind, bool? active, string? username, string? cursor, int limit, CancellationToken ct,
+        string? usernamePrefix = null, string? emailPrefix = null, bool? usable = null)
     {
         var path = $"v1/users?limit={limit}";
         if (kind is not null) path += $"&kind={Uri.EscapeDataString(kind)}";
         if (active is { } a) path += $"&active={(a ? "true" : "false")}";
         if (!string.IsNullOrEmpty(username)) path += $"&username={Uri.EscapeDataString(username)}";
+        if (!string.IsNullOrEmpty(usernamePrefix)) path += $"&usernamePrefix={Uri.EscapeDataString(usernamePrefix)}";
+        if (!string.IsNullOrEmpty(emailPrefix)) path += $"&emailPrefix={Uri.EscapeDataString(emailPrefix)}";
+        if (usable is { } u) path += $"&usable={(u ? "true" : "false")}";
         if (cursor is not null) path += $"&cursor={Uri.EscapeDataString(cursor)}";
         return SendAsync<Page<UserDto>>(s, HttpMethod.Get, path, null, ct);
     }
