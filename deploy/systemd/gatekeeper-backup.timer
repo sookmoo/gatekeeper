@@ -1,0 +1,14 @@
+[Unit]
+Description=Gatekeeper database backup (daily)
+
+# Installed by deploy/install.sh but NOT enabled. Enable it deliberately, after reading README "Backup and restore" and after one manual
+# deploy/backup.sh run (dumps contain password hashes and the audit trail; choose the directory, encryption and off-host copy first):
+#   systemctl --user enable --now gatekeeper-backup.timer
+# Change the period with a drop-in (systemctl --user edit gatekeeper-backup.timer).
+[Timer]
+OnCalendar=*-*-* 02:30:00
+RandomizedDelaySec=15min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
